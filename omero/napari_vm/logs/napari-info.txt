@@ -1,0 +1,52 @@
+napari: 0.6.6 (from conda)
+Platform: Linux-6.12.0-100.28.2.2.el9uek.x86_64-x86_64-with-glibc2.34
+Python: 3.11.15 | packaged by conda-forge | (main, Mar  5 2026, 16:45:40) [GCC 14.3.0]
+Qt: 5.15.15
+PyQt5: 5.15.11
+NumPy: 1.26.4
+SciPy: 1.17.1
+Dask: 2026.1.2
+VisPy: 0.15.2
+magicgui: 0.10.1
+superqt: 0.8.0
+in-n-out: 0.2.1
+app-model: 0.4.0
+psygnal: 0.15.0
+npe2: 0.8.1
+pydantic: 2.12.5
+
+OpenGL:
+  - PyOpenGL: 3.1.10
+  - GL version:  
+  - MAX_TEXTURE_SIZE: ()
+  - GL_MAX_3D_TEXTURE_SIZE: None
+
+Screens:
+  - screen 1: resolution 800x600, scale 1.0
+
+Optional:
+  - numba: 0.64.0
+  - triangle not installed
+  - napari-plugin-manager: 0.1.10
+  - bermuda: 0.1.7
+  - PartSegCore: 0.15.14
+
+Experimental Settings:
+  - Async: False
+  - Autoswap buffers: False
+  - Triangulation backend: Fastest available
+
+Settings path:
+  - /home/jeff/.config/napari/napari-omero-bigfish_04e4f29ab21c756c88be434b928290225250802d/settings.yaml
+
+Launch command:
+  - /home/jeff/micromamba/envs/napari-omero-bigfish/bin/napari --info
+
+Plugins:
+  - napari-metadata: 0.1.1 (2 contributions)
+  - napari-svg: 0.2.1 (2 contributions)
+  - napari-console: 0.1.4 (0 contributions)
+  - napari: 0.6.6 (88 contributions)
+  - napari-bigfish: 0.8 (4 contributions)
+  - napari-omero: 0.6.0 (7 contributions)
+

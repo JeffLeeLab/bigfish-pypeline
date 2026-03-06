@@ -1,0 +1,8 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Napari
+Comment=Launch Napari in the napari-omero-bigfish environment
+Exec=/usr/bin/env bash -lc "$HOME/Github/bigfish-pypeline/omero/napari_vm/launch-napari.sh"
+Terminal=true
+Categories=Science;Education;

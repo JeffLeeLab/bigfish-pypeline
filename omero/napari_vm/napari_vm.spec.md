@@ -1,114 +1,269 @@
 # Feature Spec: Browser-Hosted Napari + OMERO Image-ID Loading + napari-bigfish
 
 ## Goal
-Deliver a proof-of-concept (POC) that lets users open a browser, load an OMERO image by ID in napari, and run napari-bigfish spot detection — all without installing anything locally. The VM streams a napari desktop session via noVNC so any lab member with browser access and OMERO credentials can perform basic smFISH spot analysis.
+Deliver a proof-of-concept (POC) where users open a browser, launch napari on a VM, load an OMERO image by ID, and run napari-bigfish spot detection without local installs.
 
 ## Scope
 Included:
-- VM-side lightweight desktop environment with VNC server and noVNC/websockify.
-- HTTPS reverse-proxy route (`/napari/`) via existing nginx.
-- Isolated Python 3.11 environment (`napari-omero-bigfish`) managed by micromamba/conda/mamba.
-- `napari`, `napari-omero`, `napari-bigfish`, `omero-py`, and ICE client dependencies installed in the environment.
-- OMERO image loading by ID (`Image:<ID>` URL or CLI).
-- Per-user OMERO authentication (no shared/stored credentials).
-- Desktop launcher shortcuts for napari (plain) and napari + OMERO ID prompt.
-- POC user SOP documentation covering load → scale check → spot detection → result export.
+- Lightweight VM desktop + VNC + noVNC/websockify.
+- HTTPS route `https://<vm-host>/napari/` via existing nginx.
+- Isolated Python 3.11 environment `napari-omero-bigfish` managed by micromamba (fallback mamba/conda).
+- Installed stack: `napari`, `napari-omero`, `napari-bigfish`, `omero-py`, `zeroc-ice`, Qt backend.
+- OMERO image loading by ID (`Image:<ID>`) from launcher and plugin flow.
+- Per-user interactive authentication only (no stored credentials).
+- Desktop shortcuts for plain napari and OMERO ID prompt launcher.
+- SOP document for workflow: open -> load -> scale check -> detect -> export.
 
 Excluded:
-- Multi-user concurrent session support (single session only for POC).
-- Production hardening, session management, or user-quota enforcement.
-- Installing or administering an OMERO server on the VM (client-only).
-- Custom napari plugin development beyond using existing `napari-bigfish` widgets.
-- Large/tiled image streaming optimisation.
-- Automated CI/CD pipeline for the VM environment.
+- Multi-user concurrency beyond single active session.
+- Production-grade hardening, quotas, autoscaling, HA.
+- Installing or administering an OMERO server on this VM.
+- New napari plugin development.
+- CI/CD automation.
 
-## Requirements
-- Napari must launch inside a noVNC-streamed desktop visible at `https://<vm-host>/napari/`.
-- Users must be able to load an OMERO image by specifying `Image:<ID>` (via CLI wrapper or plugin dialog).
-- `napari-bigfish` spot-detection widget must be functional on a loaded OMERO image layer.
-- Image scale (nm) must be verifiable/settable before analysis runs.
-- OMERO credentials must never be persisted in config files; authentication is per-user, per-session.
-- OMERO server host is fixed at `10.34.168.89:4064`; this value must be pre-configured as the default in the launcher/environment so users never need to enter it manually.
-- When loading an image, the user must be prompted to enter their OMERO username and password; credentials are not pre-filled or stored.
-- VM must have network connectivity to `10.34.168.89` on port 4064 (OMERO blitz).
-- Access to the noVNC endpoint must be restricted to university network / VPN and existing VM auth controls.
+## Fixed Requirements
+- Napari launches inside noVNC at `https://<vm-host>/napari/`.
+- OMERO host default is fixed to `10.34.168.89:4064`.
+- User is prompted for username/password at load time.
+- Credentials are never written to persistent disk.
+- Valid `Image:<ID>` loads as a napari layer.
+- Invalid `Image:<ID>` produces clear non-crashing feedback.
+- `napari-bigfish` runs on loaded OMERO layer and creates a `Points` layer.
+- Scale must be verified/set before running analysis.
+- VNC listens on localhost only; external access only through nginx over HTTPS and campus/VPN controls.
 
-## Constraints
-- Stack: Linux VM, Xfce/LXDE (or similar lightweight DE), TigerVNC/x11vnc, noVNC + websockify, nginx reverse proxy.
-- Libraries allowed: `napari`, `napari-omero`, `napari-bigfish`, `omero-py`, `zeroc-ice`, Qt backend (`qt-main` or `pyqt5`), `python-dotenv` (runtime config). Optional: `jupyter`, `matplotlib`.
-- Environment manager: micromamba preferred; fallback to mamba → conda.
-- Python version: 3.11 (compatibility overlap for napari-bigfish + napari-omero as of March 2026).
-- Performance/security constraints:
-  - One active analysis session at a time (POC).
-  - OMERO server address (`10.34.168.89:4064`) is set in config/env; username and password are entered interactively at image-load time and never written to disk.
-  - VNC server bound to localhost only; external access exclusively through HTTPS reverse proxy.
-  - Start with moderate image sizes and single-channel data; add ROI/crop-first workflow if performance is poor.
-- Coding conventions: Shell scripts for environment setup (`env-setup.sh`); reuse helpers from `src/bigfish_pypeline/omero_tools.py` and patterns from `omero/smFISH-quantification_optimise-parameters.ipynb` where applicable.
+## Architecture
+Browser -> nginx `/napari/` -> noVNC/websockify (`127.0.0.1:16080`) -> VNC (`127.0.0.1:5921`, display `:21`) -> lightweight X session -> napari in conda env.
 
-## Interfaces
-- API:
-  - OMERO blitz client connection (ICE) to `10.34.168.89:4064` — consumed, not exposed.
-  - No new REST/HTTP APIs; noVNC is the only browser-facing endpoint.
-- Components:
-  1. **VNC server** — headless X session on display `:1`.
-  2. **noVNC/websockify** — WebSocket-to-VNC bridge on localhost port (e.g., 6080).
-  3. **nginx location block** — `/napari/` reverse-proxying to websockify.
-  4. **Python environment** — `napari-omero-bigfish` (micromamba env, Python 3.11).
-  5. **Desktop launchers** — `Napari` and `Napari + OMERO ID prompt` (.desktop files or shell wrappers).
-- Data model:
-  - No persistent data store. Analysis results are ephemeral per-session (screenshot / layer export by user).
-  - OMERO images remain on the remote OMERO server; only pixel data fetched into memory for the session.
-- File changes expected:
-  - `omero/napari_vm/env-setup.sh` — environment creation and package installation script.
-  - `omero/napari_vm/launch-napari.sh` — napari launch wrapper (plain).
-  - `omero/napari_vm/launch-napari-omero.sh` — napari + OMERO ID prompt wrapper.
-  - `omero/napari_vm/napari-vnc.service` (or equivalent) — systemd unit / supervisord config for VNC + noVNC.
-  - Nginx config snippet for `/napari/` location block (site-specific, documented but not committed).
+OMERO is remote and client-only from the VM:
+- OMERO server: `10.34.168.89:4064`.
+- Client libraries in env: `omero-py` + ICE runtime.
+- No local OMERO server components installed.
 
-## Edge Cases
-- Invalid OMERO image ID → napari-omero must surface a clear error; wrapper script should catch and re-prompt.
-- OMERO server unreachable (network/firewall) → connection attempt must time out with an informative message, not hang.
-- User closes browser mid-session → VNC session persists on VM; document manual cleanup or idle-timeout policy.
-- Large image loaded without ROI → potential OOM; document guardrail (start small, crop first) and consider adding a memory-limit reminder in the launcher script.
-- Missing or incorrect image scale metadata → napari-bigfish results will be unreliable; SOP must mandate scale verification step before analysis.
-- Plugin version incompatibility between napari-omero and napari-bigfish → pin compatible versions in environment spec and validate with `napari --info`.
+## Deliverables (Implementation Artifacts)
+- `omero/napari_vm/env-setup.sh`
+  - Creates/updates env `napari-omero-bigfish`.
+  - Installs pinned package set and records `napari --info`.
+- `omero/napari_vm/launch-napari.sh`
+  - Launches plain napari in the target env.
+- `omero/napari_vm/launch-napari-omero.sh`
+  - Prompts for image ID, forces OMERO host/port defaults, launches `omero napari view Image:<ID>`.
+  - Uses ephemeral OMERO config dir to avoid credential persistence.
+- `omero/napari_vm/napari-vnc.service`
+  - Starts VNC and noVNC stack bound to localhost.
+- `omero/napari_vm/NGINX_SNIPPET.md`
+  - Site-specific `/napari/` reverse proxy snippet and notes.
+- `omero/napari_vm/SOP.md`
+  - User-facing workflow and troubleshooting.
+
+## Implementation Details
+
+### 1) Provision desktop + VNC/noVNC
+Reference package set (adjust to distro):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y xfce4 xfce4-terminal tigervnc-standalone-server novnc websockify nginx
+```
+
+VNC requirements:
+- Display `:1`.
+- Bind localhost only.
+- Disable external direct VNC access.
+
+Example VNC command contract:
+
+```bash
+vncserver :1 -localhost yes -geometry 1920x1080 -SecurityTypes None
+```
+
+noVNC/websockify contract:
+
+```bash
+websockify --web=/usr/share/novnc/ 127.0.0.1:16080 127.0.0.1:5921
+```
+
+### 2) nginx reverse proxy (`/napari/`)
+Required behavior:
+- HTTP upgrade for WebSocket.
+- Proxy target `http://127.0.0.1:16080/`.
+- Preserve host headers.
+- Restrict to university network/VPN policy already used on VM.
+
+Reference location block:
+
+```nginx
+location /napari/ {
+  proxy_pass http://127.0.0.1:16080/;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 86400;
+}
+```
+
+### 3) Python environment (`env-setup.sh`)
+Script responsibilities:
+- Detect manager priority: `micromamba` -> `mamba` -> `conda`.
+- Create env with Python 3.11.
+- Install dependencies from conda-forge when available.
+- Install plugins via pip if needed.
+- Run smoke checks and emit diagnostics.
+
+Package contract:
+- Base: `python=3.11`, `napari`, `pyqt`, `omero-py`, `zeroc-ice`, `python-dotenv`, `pip`.
+- Plugin layer: `napari-omero`, `napari-bigfish`.
+- Optional: `jupyter`, `matplotlib`.
+
+Required smoke checks in script:
+
+```bash
+micromamba run -n napari-omero-bigfish python -c "import napari, omero"
+micromamba run -n napari-omero-bigfish napari --info
+micromamba run -n napari-omero-bigfish python -m pip check
+```
+
+### 4) Launcher behavior
+`launch-napari.sh`:
+- Activates env and runs `napari`.
+- Exports defaults:
+  - `OMERO_HOST=10.34.168.89`
+  - `OMERO_PORT=4064`
+
+`launch-napari-omero.sh`:
+- Prompts for numeric image ID.
+- Performs fast connectivity check to `10.34.168.89:4064` with timeout.
+- Creates ephemeral runtime directory (example `OMERODIR=$(mktemp -d)`), trap-cleaned on exit.
+- Runs `omero -s "$OMERO_HOST" -p "$OMERO_PORT" napari view "Image:${ID}"`.
+- If launch fails (invalid ID/network/auth), prints clear error and re-prompts.
+- Prints mandatory scale reminder before analysis.
+
+Credential handling contract:
+- No username/password in script args.
+- No credential files in repo.
+- No persistent OMERO session cache after launcher exits.
+
+### 5) Service contract (`napari-vnc.service`)
+Service responsibilities:
+- Start VNC on a reserved high display (default `:21`) bound to localhost.
+- Start noVNC bridge on localhost `16080`.
+- Restart on failure.
+
+Implementation options:
+- Single service calling a helper script that starts both processes.
+- Or split into two units (`napari-vnc.service`, `napari-novnc.service`) with dependency.
+
+Minimum unit properties:
+- `After=network.target`
+- `Restart=on-failure`
+- `User=<vm-user>`
+- No privileged network bind required.
+- Reduced contention settings for shared VM (`Nice`, `CPUQuota`, lightweight session default).
+
+### 6) Desktop launchers
+Create two `.desktop` entries (or equivalent shortcuts):
+- `Napari` -> `launch-napari.sh`
+- `Napari + OMERO ID prompt` -> `launch-napari-omero.sh`
+
+Both must run inside the `napari-omero-bigfish` env.
+
+### 7) SOP workflow (`SOP.md`)
+Required SOP steps:
+1. Open `https://<vm-host>/napari/`.
+2. Launch `Napari + OMERO ID prompt`.
+3. Enter `Image:<ID>` value when prompted.
+4. Enter OMERO username/password when prompted.
+5. Verify scale (nm/px) in layer metadata before analysis.
+6. Open napari-bigfish widget and run spot detection.
+7. Review generated `Points` layer.
+8. Export result layer and/or screenshot.
+
+Required troubleshooting sections:
+- Invalid image ID.
+- Authentication failures.
+- OMERO server unreachable.
+- Missing scale metadata.
+- Large-image memory pressure and ROI-first strategy.
+
+### 8) Performance baseline
+Record in SOP appendix:
+- Reference image ID.
+- Load time.
+- Basic detection runtime.
+- Peak memory estimate (`/usr/bin/time -v` or `ps`).
+- Notes on acceptable POC threshold.
+
+## Edge Case Handling
+- Invalid `Image:<ID>`:
+  - Launcher loop catches non-zero exit and re-prompts.
+- OMERO unavailable/firewalled:
+  - Connectivity precheck with timeout and explicit error message.
+- Browser closed mid-session:
+  - VNC session remains; document cleanup command.
+- Large image OOM risk:
+  - SOP requires channel selection/ROI-first before full analysis.
+- Missing scale metadata:
+  - Launcher and SOP include mandatory warning prior to bigfish run.
+- Plugin compatibility drift:
+  - Pin versions in setup script and verify using `napari --info`.
+
+## Validation Plan
+
+### Automated/command checks
+- Environment smoke test:
+
+```bash
+micromamba run -n napari-omero-bigfish napari --info
+```
+
+- OMERO login prompt behavior:
+
+```bash
+micromamba run -n napari-omero-bigfish omero login -s 10.34.168.89 -p 4064
+```
+
+- Dependency integrity:
+
+```bash
+micromamba run -n napari-omero-bigfish python -m pip check
+```
+
+- Shell lint:
+
+```bash
+shellcheck omero/napari_vm/*.sh
+```
+
+### Manual checks
+- Browser access test on university network/VPN:
+  - Open `https://<vm-host>/napari/` and verify responsive desktop.
+- VNC exposure test:
+  - Confirm `5921` and `16080` are localhost-only.
+- Functional flow test:
+  - Valid ID loads layer, invalid ID fails clearly, bigfish generates `Points` layer.
+- Scale compliance test:
+  - Analyst confirms and records scale before running spot detection.
 
 ## Acceptance Criteria
-- [ ] `napari` launches without crash in a noVNC browser session at `https://<vm-host>/napari/`.
-- [ ] OMERO host is pre-set to `10.34.168.89:4064`; users are not required to type the server address.
-- [ ] When loading an image, the user is prompted to enter their OMERO username and password; login succeeds with valid credentials.
-- [ ] Loading a valid `Image:<ID>` displays the image as a napari layer.
-- [ ] Loading an invalid `Image:<ID>` returns a clear, non-crashing error message.
-- [ ] `napari-bigfish` spot-detection widget runs on a loaded OMERO image and produces a Points layer of detected spots.
-- [ ] Image scale can be inspected and set before analysis; missing scale triggers a visible warning or mandatory check.
-- [ ] VNC server is bound to localhost only; browser access is restricted through HTTPS nginx proxy and university network/VPN.
-- [ ] No OMERO credentials are persisted to disk after the session ends.
-- [ ] A known medium-sized image completes load + basic spot detection within an agreed time budget (define during POC testing).
-- [ ] POC SOP document exists covering the full user workflow (browser → napari → OMERO load → scale check → spot detection → export).
+- [ ] Napari launches in noVNC at `https://<vm-host>/napari/` without crash.
+- [ ] OMERO server defaults to `10.34.168.89:4064` without user typing host/port.
+- [ ] User is interactively prompted for OMERO credentials and valid login succeeds.
+- [ ] Valid `Image:<ID>` loads as napari image layer.
+- [ ] Invalid `Image:<ID>` returns clear, non-crashing message.
+- [ ] napari-bigfish spot detection runs and creates a `Points` layer.
+- [ ] Scale can be inspected/set before analysis, with explicit workflow check.
+- [ ] VNC is localhost-only; external access is HTTPS nginx path with network restrictions.
+- [ ] No OMERO credentials persist to disk after session end.
+- [ ] Medium reference image completes load + basic detection within agreed POC budget.
+- [ ] SOP exists and covers full workflow plus troubleshooting.
 
-## Task Breakdown
-1. **Provision desktop + VNC**: Install lightweight DE, TigerVNC server, bind to localhost display `:1`.
-2. **Deploy noVNC/websockify**: Install noVNC, configure websockify to bridge VNC, set up as a service.
-3. **Configure nginx reverse proxy**: Add `/napari/` location block proxying WebSocket traffic to websockify.
-4. **Create Python environment**: Write `env-setup.sh` — create `napari-omero-bigfish` env with micromamba, install all packages, pin versions.
-5. **Validate OMERO client connectivity**: Confirm ICE client ↔ `10.34.168.89:4064` communication; pre-configure host in launcher env; test `omero login` (username + password prompt) from env.
-6. **Verify plugin registration**: Run `napari --info`, confirm `napari-omero` and `napari-bigfish` are listed.
-7. **Build launcher scripts**: Create `launch-napari.sh` and `launch-napari-omero.sh` (ID prompt wrapper), add desktop shortcuts.
-8. **End-to-end smoke test**: Browser → noVNC → napari → OMERO login → load image → spot detection → export result.
-9. **Write POC SOP**: Document the user workflow, known limits, and troubleshooting steps.
-10. **Performance baseline**: Record load + analysis time for a reference image; note memory usage.
-
-## Validation
-- Tests:
-  - Environment smoke test — napari launches in VNC session (`napari --info` exits 0, GUI renders).
-  - OMERO connectivity test — `omero login -s 10.34.168.89 -p 4064` prompts for username/password, succeeds with valid credentials, fails gracefully with invalid ones.
-  - Image-ID loading test — valid ID loads a layer; invalid ID returns an error without crash.
-  - Analysis test — `napari-bigfish` spot detection produces a non-empty Points layer on a test image.
-  - Scale/metadata test — missing scale triggers warning or mandatory check.
-- Lint/type-check:
-  - Shell scripts pass `shellcheck`.
-  - Python environment resolves without dependency conflicts (`micromamba install --dry-run`).
-- Manual checks:
-  - Open `https://<vm-host>/napari/` from a browser on university network — napari desktop is visible and responsive.
-  - Confirm VNC port is not externally accessible (port scan from outside localhost).
-  - Walk through full SOP end-to-end with a lab member unfamiliar with the setup.
+## Traceability Matrix
+- AC1, AC8 -> Sections 1, 2, 5, Validation manual checks.
+- AC2, AC3, AC4, AC5 -> Sections 4, 7, Validation OMERO tests.
+- AC6, AC7 -> Sections 7, Edge cases, functional manual checks.
+- AC9 -> Section 4 credential handling contract.
+- AC10 -> Section 8 performance baseline.
+- AC11 -> Section 7 SOP deliverable.

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Napari + OMERO ID prompt
+Comment=Prompt for Image ID and open from OMERO in Napari
+Exec=/usr/bin/env bash -lc "$HOME/Github/bigfish-pypeline/omero/napari_vm/launch-napari-omero.sh"
+Terminal=true
+Categories=Science;Education;
