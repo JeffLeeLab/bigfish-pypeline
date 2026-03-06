@@ -37,5 +37,7 @@ smFISH_ch2_thresh: 30
 ## Bigfish dense region decomposition and clustering parameters
 alpha: 0.5
 beta: 1
+## Subpixel fitting (set to True to refine spot coordinates to sub-pixel resolution)
+subpixel_fitting_mode: False
 bf_radius: 600 # in nanometer
 nb_min_spots: 12

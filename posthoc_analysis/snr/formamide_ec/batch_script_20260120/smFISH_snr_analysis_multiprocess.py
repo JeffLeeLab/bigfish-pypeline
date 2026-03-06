@@ -8,9 +8,9 @@ import queue
 import multiprocessing
 import threading
 import time
+import sys
 import yaml
 import scipy
-from skimage.morphology import white_tophat, black_tophat, disk
 import numpy as np
 import pandas as pd
 import tifffile
@@ -18,36 +18,9 @@ import bigfish.stack as stack
 import bigfish.detection as detection
 import bigfish.plot as plot
 
-
-# calculate psf (thank you MK), with edit for consistent nomenclature
-def calculate_psf(voxel_size_z, voxel_size_yx, Ex, Em, NA, RI, microscope):
-    """
-    Use the formula implemented in Matlab version (sigma_PSF_BoZhang_v1)
-    to calculate the theoretical PSF size.
-    """
-    if microscope == "widefield":
-        psf_yx = 0.225 * Em / NA
-        psf_z = 0.78 * RI * Em / (NA ** 2)
-    elif microscope in ("confocal", "nipkow"):
-        psf_yx = 0.225 / NA * Ex * Em / np.sqrt(Ex ** 2 + Em ** 2)
-        psf_z = 0.78 * RI / NA ** 2 * Ex * Em / np.sqrt(Ex ** 2 + Em ** 2)
-    else:
-        # Unrecognised microscope
-        raise Exception(
-            "Unrecognised microscope argument for function calculate_psf()."
-        )
-    return psf_z, psf_yx
-
-
-# subtract background
-def subtract_background(image, radius, light_bg=False):
-    # you can also use 'ball' here to get a slightly smoother result at the
-    # cost of increased computing time
-    str_el = disk(radius)
-    if light_bg:
-        return black_tophat(image, str_el)
-    else:
-        return white_tophat(image, str_el)
+# Add src/ to path so bigfish_pypeline package is importable
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[4] / "src"))
+from bigfish_pypeline.image_utils import calculate_psf, subtract_background
 
 
 def compute_snr_spots_individual(
