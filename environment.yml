@@ -1,0 +1,26 @@
+# Set up:  conda env create -f environment.yml
+# Use:     conda activate bigfish-pypeline
+name: bigfish-pypeline
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - numpy=1.21.6
+  - scipy=1.7.3
+  - scikit-image=0.19.3
+  - pywavelets=1.4.1  # newer versions make pip upgrade numpy when installing big-fish
+  - scikit-learn=1.0.2
+  - matplotlib=3.5.3
+  - pandas=1.3.5
+  - mrc=0.3.0
+  - tifffile>=2024.6.18,<2025
+  - cellpose=3.1.1.2
+  - zeroc-ice=3.6.5
+  - omero-py=5.21.0
+  - pyyaml
+  - tqdm>=4.67.1,<5
+  - jupyterlab>=4.4.5,<5
+  - ipykernel>=6.30.1,<7
+  - pip
+  - pip:
+      - big-fish==0.6.2

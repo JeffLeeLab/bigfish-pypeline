@@ -3,14 +3,14 @@
 > **Revised**: 2026-03-06 — strengthened from original brief with implementation details, edge-case handling, port allocation, code reuse strategy, and OMERO metadata extraction.
 > Original brief preserved at `streamlit_minimal_brief_original.md`.
 
-> **Review comment:** I could not find `docs/streamlit_vm/streamlit_minimal_brief_original.md` in the current workspace, so this reference may need updating or restoring.
+> **Review comment:** I could not find `test/streamlit/docs/streamlit_minimal_brief_original.md` in the current workspace, so this reference may need updating or restoring.
 
 ## Summary
 
 - Create a **Streamlit** web application to help end-users (biologists with limited coding experience) find suitable parameters for BigFISH smFISH spot-detection analysis.
 - The application replicates the interactive workflow in `omero/smFISH-quantification_optimise-parameters.ipynb`, but entirely within the browser — no local software, no ImageJ, no Jupyter required.
 - Application name: **`bigfish-optimise`**. Hosted at `https://<vm-host>/bigfish-optimise/`.
-- Source code location: `{project_root}/streamlit/bigfish-optimise/`.
+- Source code location: `{project_root}/test/streamlit/bigfish-optimise/`.
 - User selects a single image (one at a time), iterates through detection parameters, visually validates results, and downloads a YAML configuration file for batch processing on a cluster.
 
 ## Implementation Plan
@@ -18,11 +18,11 @@
 ### 1. Environment Setup
 
 - **Environment manager**: micromamba (preferred) on the Oracle VM, consistent with the existing napari VM pattern (see `docs/napari_vm/env-setup.sh`).
-- **Base dependencies**: Derived from `pixi.toml` lock (Python 3.9.x, bigfish 0.6.2, numpy, scipy, scikit-image, omero-py, zeroc-ice).
+- **Base dependencies**: Derived from `environment.yml` at the repository root (Python 3.9.x, bigfish 0.6.2, numpy, scipy, scikit-image, omero-py, zeroc-ice).
 - **Additional dependency**: `streamlit>=1.32` (and its transitive dependencies — includes Plotly).
 - **No cellpose** in this environment — too heavy for the VM. Placeholder only.
 - Environment name: `bigfish-optimise` (separate from `napari-omero-bigfish`).
-- An `env-setup.sh` script will be provided to create/update the environment reproducibly.
+- The environment is defined in `test/streamlit/bigfish-optimise/environment.yml` and created with `conda env create -f test/streamlit/bigfish-optimise/environment.yml`.
 
 > **Review comment:** I would tighten this section before implementation. In this repo the conda package name is `big-fish`, not `bigfish`, and the plan later imports `plotly` directly, so I would keep Plotly as an explicit dependency rather than rely on Streamlit to bring it in transitively. It is also worth making the setup script explicitly idempotent if it is described as "create/update".
 
@@ -38,9 +38,8 @@ streamlit/
     ├── bigfish_processing.py     # Core bigfish pipeline functions
     ├── omero_client.py           # OMERO connection wrapper (thin adapter around src/bigfish_pypeline/omero_tools.py)
     ├── config_export.py          # YAML config generation for batch scripts
-    ├── env-setup.sh              # micromamba environment setup script
+    ├── environment.yml           # conda environment spec
     ├── bigfish-optimise.service  # systemd user service file
-    ├── requirements.txt          # pip fallback dependency list
     └── README.md                 # App-specific documentation
 ```
 
@@ -255,7 +254,7 @@ User=jeff
 Group=jeff
 
 ExecStart=/home/jeff/micromamba/envs/bigfish-optimise/bin/streamlit run \
-    /home/jeff/Github/bigfish-pypeline/streamlit/bigfish-optimise/app.py \
+    /home/jeff/Github/bigfish-pypeline/test/streamlit/bigfish-optimise/app.py \
     --server.port 8502 \
     --server.address 127.0.0.1 \
     --server.baseUrlPath /bigfish-optimise \
@@ -317,7 +316,7 @@ sudo systemctl start bigfish-optimise
 ### 8. Validation Plan & Acceptance Criteria
 
 #### Environment Validation
-- [ ] `micromamba activate bigfish-optimise` succeeds
+- [ ] `conda activate bigfish-optimise` succeeds
 - [ ] `python -c "import streamlit; import bigfish; import omero"` exits 0
 - [ ] `streamlit run app.py --server.headless=true` starts without errors
 

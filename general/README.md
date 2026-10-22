@@ -6,24 +6,11 @@ Measure (1) individual spot counts in the cell + (2) spot counts within signal d
 
 ## INSTALLATION
 
-### Set up virtual conda environment 
+### Environment
 
-Make sure to use x86 version of Miniconda3, not the arm64 version (even if using M1 mac computers): https://docs.conda.io/en/latest/miniconda.html
+Set up the `bigfish-pypeline` environment as described in the [main README](../README.md#installation), then activate it:
 
-    conda create -n bigfish_v6 python=3.7
-    conda activate bigfish_v6
-
-    # virtual environment can be detactivated as follows
-    conda deactivate
-
-### BigFISH installation
-
-    pip install big-fish
-    pip install ipykernel
-    pip install jupyterlab
-
-    # if segmenting tissue culture cells also install cellpose (the version may need to be 0.7.2)
-    pip install cellpose 
+    conda activate bigfish-pypeline
 
 ## smFISH QUANTIFICATION
 

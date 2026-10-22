@@ -1,8 +1,8 @@
 # Implementation Plan: `bigfish-optimise` Streamlit Application
 
 > **Created**: 2026-03-06
-> **Brief**: `docs/streamlit_vm/streamlit_minimal_brief.md`
-> **Target directory**: `streamlit/bigfish-optimise/`
+> **Brief**: `test/streamlit/docs/streamlit_minimal_brief.md`
+> **Target directory**: `test/streamlit/bigfish-optimise/`
 
 ---
 
@@ -15,9 +15,10 @@
 5. [Phase 4 — Streamlit UI — sidebar & layout](#phase-4--streamlit-ui--sidebar--layout)
 6. [Phase 5 — Streamlit UI — pipeline execution & visualisation](#phase-5--streamlit-ui--pipeline-execution--visualisation)
 7. [Phase 6 — YAML config export](#phase-6--yaml-config-export)
-8. [Phase 7 — Deployment (VM, nginx, systemd)](#phase-7--deployment-vm-nginx-systemd)
-9. [Phase 8 — Testing & validation](#phase-8--testing--validation)
-10. [Appendix — File-by-file specification](#appendix--file-by-file-specification)
+8. [Pre-deployment checkpoint — Local laptop functional test](#pre-deployment-checkpoint--local-laptop-functional-test)
+9. [Phase 7 — Deployment (VM, nginx, systemd)](#phase-7--deployment-vm-nginx-systemd)
+10. [Phase 8 — Testing & validation](#phase-8--testing--validation)
+11. [Appendix — File-by-file specification](#appendix--file-by-file-specification)
 
 ---
 
@@ -43,90 +44,32 @@ All questions from the brief have been resolved:
 ### Step 1.1 — Create directory structure
 
 ```bash
-mkdir -p streamlit/bigfish-optimise/pages
+mkdir -p test/streamlit/bigfish-optimise/pages
 ```
 
 Files to create:
 ```
-streamlit/bigfish-optimise/
+test/streamlit/bigfish-optimise/
 ├── app.py
 ├── bigfish_processing.py
 ├── omero_client.py
 ├── config_export.py
-├── env-setup.sh
+├── environment.yml
 ├── bigfish-optimise.service
-├── requirements.txt
 ├── README.md
 └── pages/
     └── .gitkeep
 ```
 
-### Step 1.2 — `env-setup.sh`
+### Step 1.2 — `environment.yml`
+
+The conda environment spec is `test/streamlit/bigfish-optimise/environment.yml`, created with:
 
 ```bash
-#!/usr/bin/env bash
-# env-setup.sh — create/update the bigfish-optimise micromamba environment
-# Usage: bash env-setup.sh
-set -euo pipefail
-
-ENV_NAME="bigfish-optimise"
-PYTHON_VERSION="3.9"
-
-# Check micromamba is available
-if ! command -v micromamba &>/dev/null; then
-    echo "ERROR: micromamba not found. Install it first."
-    exit 1
-fi
-
-echo ">>> Creating/updating environment: ${ENV_NAME}"
-micromamba create -n "${ENV_NAME}" -y -c conda-forge \
-    "python=${PYTHON_VERSION}.*" \
-    "numpy=1.21.*" \
-    "scipy=1.7.*" \
-    "scikit-image=0.19.*" \
-    "scikit-learn=1.0.*" \
-    "matplotlib=3.5.*" \
-    "pandas" \
-    "tifffile>=2024.6.18" \
-    "pyyaml" \
-    "bigfish=0.6.2" \
-    "omero-py=5.21.*" \
-    "zeroc-ice=3.6.5" \
-    "plotly" \
-    "streamlit>=1.32"
-
-echo ">>> Environment '${ENV_NAME}' ready."
-echo ">>> Activate with: micromamba activate ${ENV_NAME}"
-
-# Validate
-micromamba run -n "${ENV_NAME}" python -c "
-import streamlit, bigfish, omero
-print(f'streamlit {streamlit.__version__}')
-print(f'bigfish   {bigfish.__version__}')
-print('omero-py  OK')
-print('All imports passed.')
-"
+conda env create -f test/streamlit/bigfish-optimise/environment.yml
 ```
 
-### Step 1.3 — `requirements.txt`
-
-```
-# Fallback pip requirements (prefer micromamba env-setup.sh)
-streamlit>=1.32
-bigfish==0.6.2
-omero-py==5.21.0
-zeroc-ice==3.6.5
-numpy==1.21.6
-scipy==1.7.3
-scikit-image==0.19.3
-matplotlib==3.5.3
-pandas
-tifffile>=2024.6.18
-pyyaml
-plotly
-```
-
-> **Review comment:** The environment section is one of the riskier parts of the plan as written. In this repo the conda package is `big-fish` in `pixi.toml` / `bigfish_v6.yml`, so `bigfish=0.6.2` looks likely to fail. Also, the script says "create/update" but currently always uses `micromamba create`, which is not idempotent once the env already exists. I would also treat the pip fallback as unvalidated until it is tested end-to-end, especially for `zeroc-ice` / `omero-py`.
+> **Review comment:** The environment section is one of the riskier parts of the plan as written. In this repo the conda package is `big-fish` in `environment.yml`, so `bigfish=0.6.2` looks likely to fail. Also, the script says "create/update" but currently always uses `micromamba create`, which is not idempotent once the env already exists. I would also treat the pip fallback as unvalidated until it is tested end-to-end, especially for `zeroc-ice` / `omero-py`.
 
 ---
 
@@ -1036,6 +979,35 @@ def generate_yaml(
 
 ---
 
+## Pre-deployment checkpoint — Local laptop functional test
+
+Before touching the VM-specific deployment steps, run a minimal end-to-end check on the laptop to validate that the app starts and the core workflow behaves correctly.
+
+### Step 6.2 — Run the app locally on the laptop
+
+From the repository root:
+
+```bash
+conda run --live-stream -n bigfish-optimise streamlit run test/streamlit/bigfish-optimise/app.py
+```
+
+This local checkpoint is intentionally limited to application functionality and should **not** go through VM-hosting steps such as nginx, systemd, SELinux, reverse-proxy configuration, or `baseUrlPath` setup.
+
+### Step 6.3 — Minimal local functional check
+
+On the laptop, verify only the following:
+
+1. The Streamlit UI loads without import/runtime errors.
+2. Sidebar widgets render and parameter changes trigger reruns cleanly.
+3. If OMERO is reachable from the laptop network/VPN, connect and load a known image ID.
+4. Run one full analysis for a single channel and confirm the main result sections render.
+5. Toggle auto/manual threshold and confirm spot counts update.
+6. Download YAML and confirm the file is generated with the expected fields.
+
+If OMERO is not reachable from the laptop, still complete the UI startup check locally and defer OMERO connectivity verification to the VM validation phase below.
+
+---
+
 ## Phase 7 — Deployment (VM, nginx, systemd)
 
 > **Pattern reference**: matches the probedesign app deployment on the same VM.
@@ -1071,7 +1043,7 @@ Type=simple
 User=jeff
 Group=jeff
 ExecStart=/home/jeff/micromamba/envs/bigfish-optimise/bin/streamlit run \
-    /home/jeff/Github/bigfish-pypeline/streamlit/bigfish-optimise/app.py \
+    /home/jeff/Github/bigfish-pypeline/test/streamlit/bigfish-optimise/app.py \
     --server.port 8502 --server.address 127.0.0.1 \
     --server.baseUrlPath /bigfish-optimise --server.headless true
 Restart=on-failure
@@ -1130,7 +1102,7 @@ sudo systemctl reload nginx
 
 ### Step 7.5 — Streamlit config file (optional)
 
-Create `streamlit/bigfish-optimise/.streamlit/config.toml`:
+Create `test/streamlit/bigfish-optimise/.streamlit/config.toml`:
 
 ```toml
 [server]
@@ -1171,9 +1143,7 @@ curl -s -o /dev/null -w "%{http_code}" https://<vm-host>/probedesign/
 set -euo pipefail
 
 echo "=== Environment smoke test ==="
-micromamba activate bigfish-optimise
-
-python -c "
+conda run -n bigfish-optimise python -c "
 import streamlit
 import bigfish
 import bigfish.detection
@@ -1325,10 +1295,9 @@ After deployment, walk through:
 | `bigfish_processing.py` | Pure computation functions; PSF, background subtraction, LoG, detection, decomposition, clustering | `numpy`, `bigfish`, `scikit-image` |
 | `omero_client.py` | OMERO connection & image fetching; wraps `src/bigfish_pypeline/omero_tools.py` | `bigfish_pypeline.omero_tools` |
 | `config_export.py` | Generate YAML matching batch script schema | `pyyaml` |
-| `env-setup.sh` | Create micromamba environment | shell, `micromamba` |
+| `environment.yml` | Conda environment spec | conda |
 | `bigfish-optimise.service` | systemd system-level service (`/etc/systemd/system/`) | systemd |
 | `.streamlit/config.toml` | Streamlit server defaults | — |
-| `requirements.txt` | Fallback pip dependencies | pip |
 | `README.md` | App documentation | — |
 | `pages/.gitkeep` | Reserve multi-page structure | — |
 
