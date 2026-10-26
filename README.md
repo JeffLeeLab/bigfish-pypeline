@@ -8,6 +8,7 @@ Pre-process and quantify single-molecule Fluorescence *in situ* Hybridisation (s
 - [ ] General code hygiene to modularise each steps so they can user-defined. Combine workflow modes into one and make them toggle-able via configuration script based on which modules the user would like to keep. 
 - [ ] Implement an option to bring pre-segmented masks without breaking the workflow. 
 - [ ] Implement Streamlit web app (optimisation --> handover to batch) ([test/streamlit/](test/streamlit/))
+- [ ] Think about making a portable package with streamlit. 
 
 
 ## Installation
@@ -17,7 +18,7 @@ Pre-process and quantify single-molecule Fluorescence *in situ* Hybridisation (s
    - **macOS / Linux:** run them in a new Terminal window.
 2. **Get this repository:** [download the ZIP](https://github.com/jefflee1103/bigfish-pypeline/archive/refs/heads/main.zip) and unzip it, or clone it with [Git](https://git-scm.com/downloads):
 
-       git clone https://github.com/jefflee1103/bigfish-pypeline.git
+       git clone https://github.com/JeffLeeLab/bigfish-pypeline.git
 
 3. **Create the environment** (one-off, takes a few minutes):
 
