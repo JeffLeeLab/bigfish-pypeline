@@ -1,8 +1,9 @@
 ## Environment
 
 - Main env: `bigfish-pypeline`, defined in `environment.yml` (Miniforge conda). Run code with `conda run -n bigfish-pypeline <cmd>`.
-- Streamlit dev env: `bigfish-optimise`, defined in `test/streamlit/bigfish-optimise/environment.yml`.
-- Cellpose is pinned to 3.x (code uses the v3 `models.Cellpose` API).
+- MSP dev env: `bigfish-msp`, defined in `docs/modularisation-streamlit-project/msp-environment.yml`. Do not modify the main env during MSP development.
+- Cellpose: the main env is pinned to 3.x (v3 `models.Cellpose` API); the MSP dev env uses Cellpose 4.
+- MSP planning documents live in `docs/modularisation-streamlit-project/` with an `msp-` prefix.
 
 ## Documentations
 
