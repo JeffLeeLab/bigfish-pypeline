@@ -827,3 +827,5 @@ Still open: the check of OMERO session sharing on the lab server (1.13), to be r
 - `~/bigfish-testdata/phase1/` holds the full-size runs of this phase and the v1 runs in the new env (about 100 MB).
 - `tests/data/` holds about 10 MB.
 - `msp` is 17 commits ahead of GitHub: only the Phase 1 plan has been pushed, none of the Phase 1 work.
+
+**Decisions by the user (22 Nov 2026):** the change in subpixel positions caused by the newer packages (deviation 5) is accepted. `msp` is pushed to GitHub. Sign-off on Phase 1 and the merge into `main` wait for the OMERO check on the lab server.
