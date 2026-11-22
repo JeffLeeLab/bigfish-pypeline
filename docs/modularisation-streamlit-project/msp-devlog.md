@@ -222,3 +222,22 @@ Notes:
 Config: `tests/data/sypN_DAPI_Phal_jim-exon_crop_config.yaml`, written in the version 1 layout of spec section 6.2 with the settings of 0.6 (top-hat at 5 px, manual threshold 18, alpha 0.5, beta 1, cluster radius 600 nm, minimum spots 12, `confocal`, RI 1.45, subpixel fitting off) and per-cell results from label files in the same folder. It is checked against the config schema once that exists (Phase 1); the tests change the threshold mode and subpixel fitting from this base.
 
 Point for Phase 1: with the label image stored next to the crop, the file filter of the config also matches `…_seglabels.tif`. File discovery needs a rule for label files that sit in the input folder.
+
+### 0.8 Nuclear label image for the crop (22 Nov 2026)
+
+`tests/data/sypN_DAPI_Phal_jim-exon_crop_seglabels.tif`: 2D, 384 × 384, `uint16`, 0 as background, 44 labels numbered 1–44, 18 of them touching the border; 65 nm pixel size in the metadata. Checked: 2D, same Y × X as the crop, whole numbers of 0 or more, 0 as background, every label in one piece.
+
+How it was made, in the main env (Cellpose 3.1.1.2, CPU):
+
+- DAPI channel, maximum projection over the 11 planes; brightest spots capped at the 97th percentile; Gaussian smoothing of 2 px; divided by a 60 px blur to even out the brightness.
+- Cellpose `nuclei` model, `diameter=60`, `flow_threshold=0.8`, `cellprob_threshold=-2.0`.
+- For each label only the largest piece kept, holes filled, labels under 200 px dropped (none were), labels renumbered.
+- A threshold-and-watershed draft was also made and set aside: it cut nuclei into pieces and left gaps in the dense centre.
+
+Cellpose's default thresholds missed about half the nuclei, and its automatic diameter (17.5 px) outlined the bright DNA spots instead of nuclei.
+
+**Deviation from the plan:** the user reviewed the draft overlay and accepted it without hand correction. Reason given: Cellpose is never fully accurate on DAPI in brain tissue, and the project implements Cellpose, it does not test its accuracy. The label image is used to test the assignment of spots to labels, which works the same for any label image (brief R7). Known weak points of the draft: labels 18, 22, 34 and 39 may each hold two nuclei; labels 10, 29, 37, 41, 42 and 43 are small round objects that may not be nuclei; a few dim nuclei have no label.
+
+Working rule from this: segmentation quality on the test image is not brought to the user for judgement.
+
+The draft, the DAPI projection, the figures and the scripts are in `~/bigfish-testdata/label_draft/`.
