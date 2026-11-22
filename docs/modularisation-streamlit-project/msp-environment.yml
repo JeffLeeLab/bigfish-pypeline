@@ -21,6 +21,7 @@ dependencies:
   - omero-py=5.22.1
   - pydantic=2.14.4
   - plotly=7.1.0
+  - psutil=7.2.2  # free memory, for the number of workers
   - tk=8.6.13
   - jupyterlab=4.6.6
   - ipykernel=7.4.0

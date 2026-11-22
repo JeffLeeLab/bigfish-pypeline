@@ -644,3 +644,38 @@ Findings and choices:
 - big-fish cannot cluster whole-pixel positions when the voxel sizes are written as decimals. `clusters.py` now handles this: whole voxel sizes are passed as whole numbers (same result as v1), and for voxel sizes such as 64.5 nm the positions are passed as decimals.
 - Each worker joins the OMERO session once and keeps the connection for its later images. A dropped connection is retried once while a channel is read, but not while the image information is read.
 - If the tables themselves cannot be written (for example a full disk), the error is passed up to the runner, because it is a problem with the output folder and not with the image.
+
+### 1.10 Batch runner (22 Nov 2026)
+
+- `batch.py`: `run_batch(config, …)` carries out the run flow of spec 7.1 without Cellpose and returns the run folder, the final status (`finished`, `cancelled` or `stopped`) and a message. Problems found before any image is processed raise `BatchError` with a plain message, and no run folder is made.
+- `psutil` 7.2.2 (already installed as a dependency of other packages) is now listed in `msp-environment.yml`; it gives the free memory for the number of workers.
+- Checks: the test kit with 1 and 2 workers gives identical tables that agree with v1; a cancelled run, a run whose worker stops once, twice, or with a single worker, and a repeated run all behave as the spec describes; 27 tests pass (about 40 s) and no worker processes are left behind.
+
+Number of workers (`workers: auto`): the smaller of (CPU cores − 1) and (free memory − 2 GB) ÷ (memory per worker), not more than the number of images. Memory per worker is 35 bytes for each voxel of one channel of the largest image, at least 0.5 GB; this gives 5.1 GB for 2048 × 2048 × 35, as measured in Phase 0. A number given in the config is used as it is, with a warning in the log when memory may run short.
+
+`progress.json` holds: `status` (`running`, `finished`, `cancelled`, `stopped`), `step` (`calibration`, `images`, `end`), `n_images`, `n_finished`, `in_progress` (names), `channels` (counts of done, failed and skipped), `calibration` (total and finished), `workers`, `started`, `updated` and `message`.
+
+Sample of `run.log` (test kit):
+
+```
+2026-11-22 22:44:31  1 image(s):
+                       sypN_DAPI_Phal_jim-exon_crop.tif
+2026-11-22 22:44:31  Workers: 1 worker(s), as set in the config.
+2026-11-22 22:44:31  sypN_DAPI_Phal_jim-exon_crop: started
+2026-11-22 22:44:33  sypN_DAPI_Phal_jim-exon_crop, channel 2: done, threshold 18, 692 spots, 6 clusters, 44 cells
+2026-11-22 22:44:33  sypN_DAPI_Phal_jim-exon_crop: finished
+2026-11-22 22:44:33  Summary: 1 of 1 image(s) finished, 0 not processed; channels: 1 done, 0 failed, 0 skipped. Total time 2 s.
+```
+
+Findings and choices:
+
+- Python 3.12 has no public way to stop the workers of a `ProcessPoolExecutor` at once. The runner ends each worker process itself (`terminate`, then `kill` if needed), through the executor's internal list of processes. This works the same on macOS, Windows and Linux; Python 3.14 adds a public call for it.
+- If the first image cannot be read, the run stops before processing, because that image is used to check the layout and the channels. A later unreadable image only fails.
+- A worker that runs out of memory with an error, instead of stopping, is treated like a stopped worker.
+- "A single worker" means one worker at the moment of the stop: a run that started with two and has already been halved once ends at the next stop.
+- When the OMERO session ends, images in progress are discarded straight away, as for cancel.
+- If calibration gives no usable value for a channel, the run ends with status `stopped` and keeps `calibration.csv`.
+- If the tables cannot be written (for example a full disk), the run ends with status `stopped`.
+- Calibration filters are matched against the file name (local) or `<ID>_<name>` (OMERO).
+- The thread settings (`OMP_NUM_THREADS` and the two others) are put back to their old values when the run ends.
+- For a `cellpose` source the run stops before processing with a message; Cellpose is added in Phase 2.
