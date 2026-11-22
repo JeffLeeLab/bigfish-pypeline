@@ -1,0 +1,3 @@
+sypN_DAPI_Phal_jim-exon_crop_ch2
+auto-threshold value attempted: 13.0
+spots counts found with the auto-threshold attempt: 610

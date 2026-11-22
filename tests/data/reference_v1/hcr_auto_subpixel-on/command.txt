@@ -1,0 +1,5 @@
+working folder: /Users/jefflee/bigfish-testdata/reference_v1/crop/hcr_auto_subpixel-on
+command: env PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bigfish-pypeline python /Users/jefflee/Documents/Tools/bigfish-pypeline-v1/HCRv3_spot-count/batch_script/HCRv3_data_analysis_multiprocess.py
+stdout and stderr: /Users/jefflee/bigfish-testdata/reference_v1/crop/hcr_auto_subpixel-on/run.log
+started: 2026-11-22 20:18:55 +0000
+exit code: 0

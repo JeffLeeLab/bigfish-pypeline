@@ -1,0 +1,10 @@
+run_folder,script,threshold_mode,threshold_value,subpixel,n_spots,n_clusters
+general_manual18_subpixel-off,general,manual,18,off,692,6
+general_manual18_subpixel-on,general,manual,18,on,692,6
+general_auto_subpixel-off,general,auto,13.0,off,869,6
+general_auto_subpixel-on,general,auto,13.0,on,869,6
+hcr_manual18_subpixel-off,HCRv3,manual,18,off,473,
+hcr_manual18_subpixel-on,HCRv3,manual,18,on,473,
+hcr_auto_subpixel-off,HCRv3,auto,13.0,off,610,
+hcr_auto_subpixel-on,HCRv3,auto,13.0,on,610,
+hcr_auto_bailout,HCRv3,auto (bailout),13.0,off,610,

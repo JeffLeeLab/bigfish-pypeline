@@ -304,3 +304,54 @@ Memory is given as the process's physical footprint, the figure Activity Monitor
 - With `np.random.seed(0)` before `build_reference_spot`, decomposition gives 36,550 spots and 196 clusters every time (v1 without a seed: 36,490–37,086 spots and 199–207 clusters).
 - Rolling ball, for information: 23,680 spots at threshold 18; its own automatic threshold is 13.0, with 28,199 spots; 36,623 spots after decomposition and 261 clusters at threshold 18. Rolling ball sets 36 % of pixels to zero against 4.8 % for top-hat. The comparison of the two methods is Phase 2 work.
 - Repeated by the orchestrator on three planes: 0.92 s per plane for top-hat and 1.25 s for rolling ball.
+
+### 0.9 v1 reference run on the crop (22 Nov 2026)
+
+The same nine runs as in 0.6, on `tests/data/sypN_DAPI_Phal_jim-exon_crop.tif` itself, with unmodified v1 scripts (commit `264ffde`) in the main env and the same settings. No script needed a code change.
+
+| Run folder | Script | Threshold | Subpixel | Spots | Clusters |
+|---|---|---|---|---|---|
+| `general_manual18_subpixel-off` | general | manual 18 | off | 692 | 6 |
+| `general_manual18_subpixel-on` | general | manual 18 | on | 692 | 6 |
+| `general_auto_subpixel-off` | general | auto (13) | off | 869 | 6 |
+| `general_auto_subpixel-on` | general | auto (13) | on | 869 | 6 |
+| `hcr_manual18_subpixel-off` | HCRv3 | manual 18 | off | 473 | – |
+| `hcr_manual18_subpixel-on` | HCRv3 | manual 18 | on | 473 | – |
+| `hcr_auto_subpixel-off` | HCRv3 | auto (13) | off | 610 | – |
+| `hcr_auto_subpixel-on` | HCRv3 | auto (13) | on | 610 | – |
+| `hcr_auto_bailout` | HCRv3 | auto (13), bailout at 100 spots | off | 610 (from the bailout file) | – |
+
+The automatic threshold on the crop is 13.0 (15.0 on the full-size image), read from the bailout file as in 0.6.
+
+Where the files are:
+
+- `tests/data/reference_v1/` (in the repository, 0.3 MB): for each run its config, `command.txt` and `.npz` output; for the general runs also the spot table and the reference-spot TIFF; the bailout text file; `summary.csv`, `conda_env_export.yml`, `v1_commit.txt`, the per-cell tables with the script that makes them, and a `README.md`.
+- `~/bigfish-testdata/reference_v1/crop/`: the complete run folders, with logs and QC images.
+
+Repeatability: each of the four general runs was run twice and gave identical arrays, tables and reference spots. The two subpixel-off general runs are also identical to the runs made on candidate A during the crop search (0.7), and the HCRv3 spots are identical to the detection computed then. With fewer than 2,000 detected spots, subpixel fitting on and off now give the same number of spots and clusters, unlike on the full-size image.
+
+Per-cell reference counts (`per_cell_counts.csv` in the four subpixel-off run folders, made by `tests/data/reference_v1/per_cell_counts.py` in the main env):
+
+- big-fish `multistack.extract_cell` with the nuclear label image, `ndim=3`, clusters passed as `others_coord`, and `remove_cropped_cell=False`, as in the v1 notebook `general/smFISH-quantification_optimise-parameters.ipynb`. The v1 notebook `smFISH-quantification_get-cell-level-results.ipynb` does not call `extract_cell`, so the call could not be taken from there.
+- Columns: `label`, `touches_border`, `n_spots`, and for the general runs `n_spots_in_clusters`, `n_spots_outside_clusters` and `n_clusters`.
+
+| Run | Spots | In a nucleus | Outside any nucleus | Clusters with their centre in a nucleus |
+|---|---|---|---|---|
+| `general_manual18_subpixel-off` | 692 | 413 | 279 | 5 of 6 |
+| `general_auto_subpixel-off` | 869 | 510 | 359 | 5 of 6 |
+| `hcr_manual18_subpixel-off` | 473 | 255 | 218 | – |
+| `hcr_auto_subpixel-off` | 610 | 333 | 277 | – |
+
+How `extract_cell` (big-fish 0.6.2) behaves, read from its source and confirmed on the crop:
+
+- The `cell_id` it returns is the label value in the label image.
+- With `remove_cropped_cell=True` (its default) it drops every cell that touches the outermost row or column, which leaves the 26 nuclei away from the border. The reference tables keep all 44 and mark the 18 border nuclei in `touches_border`.
+- A spot is assigned by looking up its (y, x) position in the cell's 2D mask; z is not used. Decimal positions are rounded, not cut down to the whole number below. A cluster is assigned by its centre.
+- `n_spots_in_clusters` in the reference tables counts each spot in the nucleus it sits in, the same definition as the spec's `cells.csv` (section 8.2).
+
+Cross-check: looking each spot and cluster centre up directly in the label image gives the same counts as `extract_cell` for every nucleus, in all four runs. The new cell assignment (spec section 5.8) uses this direct look-up.
+
+Notes:
+
+- Only the subpixel-off runs have per-cell tables, because of the `extract_cell` error described in 0.5. On this crop no subpixel position rounds beyond the image edge, so the error would not have appeared here.
+- The configs and `command.txt` files in `tests/data/reference_v1/` contain the folder paths of the laptop the runs were made on. They are records of what was run, not files to run again as they are.

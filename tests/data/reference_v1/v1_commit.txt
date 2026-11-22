@@ -1,0 +1,6 @@
+$ git -C /Users/jefflee/Documents/Tools/bigfish-pypeline-v1 rev-parse HEAD
+264ffded3ecd0a634b9a3b317d8482229f08c0a5
+$ git -C /Users/jefflee/Documents/Tools/bigfish-pypeline-v1 describe --tags
+v1.0
+$ git -C /Users/jefflee/Documents/Tools/bigfish-pypeline-v1 status --short
+(end of status output)
