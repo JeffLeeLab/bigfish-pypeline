@@ -503,3 +503,19 @@ Choices the spec does not settle:
 - NaN and infinite values are checked only in the channels that are read. Colour (RGB) files are rejected.
 - ImageJ files over 4 GB store the whole image as one block; these are read through a memory map, one channel at a time.
 - A file cut short is reported as damaged, using the problems `tifffile` logs while reading. This check is per process, which suits the batch workers.
+
+### 1.8 Tables and run folder (22 Nov 2026)
+
+- `outputs.py`: the spots, clusters, cells, images and calibration tables of spec 8.2; per-image files in `per_image/`; the combined tables; the run folder; `run_config.yaml`.
+- An image's files are written under temporary names (`….csv.tmp`) and renamed once all are written, `_images.csv` last, so an image whose `_images.csv` exists is complete.
+- The combined tables are made by joining the per-image files as text, so a large run does not have to fit in memory.
+- Checks: column names and order against spec 8.2 for 2D and 3D; `run_config.yaml` loads back to an equal config; 42 tests pass.
+
+Choices the spec does not settle:
+
+- The optional spots columns (subpixel positions, `snr`, `log_intensity`) are set once for the whole run: they are present when any channel uses them and stay empty for the other channels. Every per-image file of a run therefore has the same columns.
+- An image that failed as a whole writes only its `_images.csv`. `_cells.csv` is written only when the image has cell results; when segmentation found no cells it holds the column names only.
+- A combined table is written only when at least one image has that kind of file.
+- CSV files are plain UTF-8 without a byte-order mark, with the same line endings on every system. Excel on Windows may show accented image names wrongly; R and pandas read them correctly.
+- In the run name, characters Windows does not allow are replaced with `_`, and spaces and full stops at the end are removed.
+- A local run with neither an input folder nor an output folder is stopped with a message.
