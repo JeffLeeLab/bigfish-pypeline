@@ -829,3 +829,5 @@ Still open: the check of OMERO session sharing on the lab server (1.13), to be r
 - `msp` is 17 commits ahead of GitHub: only the Phase 1 plan has been pushed, none of the Phase 1 work.
 
 **Decisions by the user (22 Nov 2026):** the change in subpixel positions caused by the newer packages (deviation 5) is accepted. `msp` is pushed to GitHub. Sign-off on Phase 1 and the merge into `main` wait for the OMERO check on the lab server.
+
+**Sign-off (22 Nov 2026):** the user signed off Phase 1 and asked for `msp` to be merged into `main`. The OMERO check on the lab server (manual check 1) has not been run; it is left as a follow-up and stays in the plan's open points, together with the small real OMERO batch.
