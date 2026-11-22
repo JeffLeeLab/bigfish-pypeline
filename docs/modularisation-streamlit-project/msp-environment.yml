@@ -19,7 +19,6 @@ dependencies:
   - pytorch=2.14.1  # from conda-forge, so that conda picks the Apple GPU, CUDA or CPU build
   - zeroc-ice=3.6.5
   - omero-py=5.22.1
-  - mrc=0.3.1  # needed by big-fish
   - pydantic=2.14.4
   - plotly=7.1.0
   - tk=8.6.13
@@ -29,6 +28,7 @@ dependencies:
   - pip=26.2.2
   - pip:
       - cellpose==4.2.1.1  # pip only; conda-forge stops at 4.1.1, which has no cpsam_v2
+      - mrc==0.4.0  # needed by big-fish; pip only, conda-forge stops at 0.3.1, which cannot write files with numpy 2
       - -e /Users/jefflee/Documents/Incubator/big-fish  # temporary: local fork, replaced by a git tag in task 0.5
       # pip runs from the folder holding this file, so the repository root is two levels up.
       - -e ../..
