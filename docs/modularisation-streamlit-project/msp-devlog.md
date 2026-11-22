@@ -578,3 +578,40 @@ Choices the spec does not settle:
 Still to be confirmed on the lab server: that a joined worker can read images, that leaving with `close(hard=False)` keeps the main login alive, and which errors a dropped connection and an ended session really raise.
 
 Carried to Phase 5: the batch process taking over a session handed to it by the app (keeping it alive and closing it at the end).
+
+### 1.5 Decomposition, subpixel fitting and clusters (22 Nov 2026)
+
+- `decomposition.py`: `decompose_dense_regions` (as v1, in 2D and 3D) and `get_seed`. `subpixel.py`: `fit_subpixel`. `clusters.py`: `detect_clusters`.
+- Both `fit_subpixel` and `detect_clusters` keep the order of the spots, so row i is the same spot in every output table.
+- 42 tests pass (about 40 s; the crop's subpixel fits take most of it).
+
+Comparison with v1 on the crop (top-hat 5 px, alpha 0.5, beta 1, cluster radius 600 nm, minimum 12 spots):
+
+| Result | Manual 18 | Auto (13.0) |
+|---|---|---|
+| Spots and clusters, subpixel off | identical (692 and 6) | identical (869 and 6) |
+| Reference spot from `rna` | identical | identical |
+| Cluster membership and cluster sizes, subpixel on | identical | identical |
+| Subpixel positions | differ, see below | differ, see below |
+
+**Subpixel positions differ from v1 because of the newer packages, not the new code.** As the spec asks, the unchanged v1 scripts were run in `bigfish-msp` on the crop (`~/bigfish-testdata/phase1/v1_in_new_env/`; the four `.npz` files are kept in `tests/data/reference_v1_new_env/`). Their results are identical to the new code, value for value. Compared with v1 in the main env (scipy 1.7.3, numpy 1.21.6), subpixel fitting in the new env (scipy 1.18.1, numpy 2.5.5) moves:
+
+| Run | Spots | Moved > 0.01 px | Moved > 0.1 px | Moved > 0.5 px | Largest move (z / y / x, px) |
+|---|---|---|---|---|---|
+| General, manual 18 | 692 | 6.4 % | 3.2 % | 2 | 1.75 / 0.0005 / 0.0007 |
+| General, auto | 869 | 6.4 % | 3.2 % | 3 | 0.89 / 1.33 / 0.45 |
+| HCRv3, manual 18 | 473 | 8.5 % | 3.8 % | 1 | 0.63 / 0.0005 / 0.0007 |
+| HCRv3, auto | 610 | 8.0 % | 3.6 % | 2 | 0.63 / 1.33 / 0.45 |
+
+- The typical spot moves by about 3 × 10⁻⁸ px. The larger moves are almost all in Z; one spot in the auto runs moves in Y and X.
+- Cluster centres move by at most 0.08 px. The same spots fail to fit in both envs.
+- The tests compare the pipeline with the new-env results to within 10⁻⁶ px, and with the main-env results within the limits above.
+- For the user to judge at the phase review: whether this change in subpixel positions is acceptable.
+
+Findings and choices:
+
+- big-fish picks the 2,000 spots for a reference spot with numpy's general random generator, and builds three reference spots for each channel (two in the pipeline, one inside `get_dense_region`). The seed is set before each of the three, so all use the same spots, and the generator is put back as it was afterwards.
+- The seed comes from `run.seed`, the image name and the channel number through SHA-256, so it is the same in every process and on every system.
+- How big-fish shows each case where decomposition is skipped: no spot clear of the image edge gives an empty reference spot; a model that cannot be fitted raises `RuntimeError`; no dense regions gives an empty list (v1 stopped with an error here). The result carries `skipped` and a warning text for each case except the last.
+- With 30 spots or fewer clear of the edge, big-fish still builds a reference spot and decomposition goes on, as in v1. Its own warning is turned into a warning in the result, so it reaches `images.csv`.
+- big-fish only accepts a cluster radius in whole nm, so `clusters.radius_nm` in the config must be a whole number (spec 6.2 does not say).

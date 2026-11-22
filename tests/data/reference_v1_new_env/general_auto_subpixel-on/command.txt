@@ -1,0 +1,1 @@
+command: env PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bigfish-msp python /Users/jefflee/Documents/Tools/bigfish-pypeline-v1/general/batch_script/smFISH_data_analysis_multiprocess.py

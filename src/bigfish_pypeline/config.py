@@ -228,7 +228,7 @@ class SubpixelSettings(_Settings):
 
 class ClusterSettings(_Settings):
     enabled: bool = True
-    radius_nm: PositiveNumber = 500
+    radius_nm: PositiveInt = 500
     min_spots: PositiveInt = 4
 
 

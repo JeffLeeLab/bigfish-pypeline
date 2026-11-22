@@ -1,0 +1,1 @@
+command: env PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bigfish-msp python /Users/jefflee/Documents/Tools/bigfish-pypeline-v1/HCRv3_spot-count/batch_script/HCRv3_data_analysis_multiprocess.py
