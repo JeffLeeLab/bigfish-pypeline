@@ -485,3 +485,21 @@ Choices the spec does not settle:
 - A cluster centre given as a decimal number is rounded to the nearest pixel and kept inside the image, so a centre on the edge cannot fail as it does in `extract_cell`.
 - With clustering switched off, `n_spots_in_clusters` and `n_clusters` are 0 and `mean_spots_per_cluster` is empty.
 - A label file with an extra axis of length 1 is rejected as not 2D.
+
+### 1.3 Local image input (22 Nov 2026)
+
+- `io.py`: `list_images` (file list), `output_name` and `check_output_names`, `get_image_info` (shape, data type, suggested layout, time points, positions and voxel sizes from the file header), `read_channel` and `read_channels` (one array per channel, `ZYX` or `YX`), `check_voxel_sizes` (warning when a file disagrees with the config).
+- Only the planes of the channels asked for are read. On the full-size image, channel 2 takes 0.3 s and 0.3 GB, against 1.2 GB for reading the whole file.
+- Checks: generated files in every layout and in 8-bit, 16-bit and 32-bit float; the crop and the full-size image are reported as `ZCYX` with 200 nm and 65 nm; 96 tests pass.
+
+Choices the spec does not settle:
+
+- An axis of length 1 is not counted, so a file with one channel is `ZYX`, not `ZCYX`.
+- The confirmed layout decides how the axes are read, even when the file's metadata suggests another order.
+- A TIFF without ImageJ or OME metadata can only be read as `ZYX`, `CYX` or `YX`, because such a file cannot record both Z and channels. v1 had the same limit.
+- Voxel sizes are taken from ImageJ and OME metadata only, not from the general TIFF resolution tags.
+- The extension is matched whatever its case (`.TIF` is listed); the filter text is case-sensitive; hidden files are left out. Two names that differ only in case count as a clash, because their result files would overwrite each other on macOS and Windows.
+- `x.ome.tif` gives the output name `x.ome`.
+- NaN and infinite values are checked only in the channels that are read. Colour (RGB) files are rejected.
+- ImageJ files over 4 GB store the whole image as one block; these are read through a memory map, one channel at a time.
+- A file cut short is reported as damaged, using the problems `tifffile` logs while reading. This check is per process, which suits the batch workers.
