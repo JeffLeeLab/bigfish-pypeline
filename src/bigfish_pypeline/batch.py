@@ -675,7 +675,8 @@ def memory_per_worker(voxels_per_channel):
     return max(MIN_MEMORY_PER_WORKER, BYTES_PER_VOXEL_PER_WORKER * voxels_per_channel)
 
 
-def choose_workers(requested, n_images, voxels_per_channel, cpu_count, available_memory):
+def choose_workers(requested, n_images, voxels_per_channel, cpu_count, available_memory,
+                   total_memory=None):
     """
     Number of worker processes for a run.
 
@@ -684,15 +685,21 @@ def choose_workers(requested, n_images, voxels_per_channel, cpu_count, available
     voxels_per_channel: voxels in one channel of the largest image.
     cpu_count: number of processor cores (None when not known).
     available_memory: memory available now, in bytes.
+    total_memory: memory of the computer, in bytes (None: taken to be the
+        available memory).
 
     "auto" gives the smaller of (cores − 1) and (available memory − reserve)
     ÷ (memory per worker), never more than the number of images and at
-    least 1. A number given is used as it is, but never more than the
-    number of images.
+    least 1. When the available memory is short for one worker but the
+    computer's memory is enough, one worker is used, with a warning: a
+    computer in everyday use often reports little available memory and
+    frees more when it is needed. A number given is used as it is, but
+    never more than the number of images.
 
     Returns (n_workers, reason, warning): the reason is a sentence for the
     log, the warning is None or a sentence saying memory may run short.
-    Raises BatchError when "auto" finds not enough memory for one worker.
+    Raises BatchError when "auto" finds that the computer's memory is too
+    small for one worker.
     """
     per_worker = memory_per_worker(voxels_per_channel)
     usable = available_memory - MEMORY_RESERVE
@@ -705,10 +712,21 @@ def choose_workers(requested, n_images, voxels_per_channel, cpu_count, available
 
     if requested == "auto":
         if fit_in_memory < 1:
-            raise BatchError(
-                f"There is not enough memory for one worker: {memory_text}. "
-                "Close other programs and try again."
+            if total_memory is None:
+                total_memory = available_memory
+            if total_memory - MEMORY_RESERVE < per_worker:
+                raise BatchError(
+                    f"There is not enough memory for one worker: this computer has "
+                    f"{_gb(total_memory)} of memory, and a worker needs about {_gb(per_worker)} "
+                    f"with {_gb(MEMORY_RESERVE)} kept free. Use a computer with more memory, "
+                    "or smaller images."
+                )
+            reason = f"1 worker(s), chosen automatically: {memory_text} (room for 0)"
+            warning = (
+                f"little memory is available at the moment ({memory_text}). The run goes on "
+                "with one worker, but may be slow. Closing other programs frees memory."
             )
+            return 1, reason, warning
         cores = max(1, (cpu_count or 1) - 1)
         n_workers = max(1, min(cores, fit_in_memory, n_images))
         reason = (
@@ -1503,7 +1521,7 @@ def plan_run(config, omero_conn=None):
         subsets = _calibration_subsets(config, images)
         n_workers, workers_reason, workers_warning = choose_workers(
             config.run.workers, len(images), _largest_channel(config, headers),
-            os.cpu_count(), psutil.virtual_memory().available,
+            os.cpu_count(), psutil.virtual_memory().available, psutil.virtual_memory().total,
         )
     except BaseException:
         if owned_conn is not None:

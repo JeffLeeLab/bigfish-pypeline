@@ -354,11 +354,22 @@ def test_auto_workers():
     assert batch.memory_per_worker(FULL_CHANNEL) == 35 * FULL_CHANNEL
 
 
+def test_auto_workers_little_memory_available():
+    """Short of available memory but enough in the computer: one worker and a warning."""
+    n, reason, warning = batch.choose_workers("auto", 10, FULL_CHANNEL, 8, 4e9, total_memory=16e9)
+    assert n == 1
+    assert "room for 0" in reason
+    assert warning.startswith("little memory is available at the moment")
+
+
 def test_auto_workers_not_enough_memory():
     with pytest.raises(batch.BatchError, match="not enough memory for one worker"):
-        batch.choose_workers("auto", 10, FULL_CHANNEL, 8, 6e9)
+        batch.choose_workers("auto", 10, FULL_CHANNEL, 8, 4e9, total_memory=6e9)
     with pytest.raises(batch.BatchError, match="not enough memory"):
-        batch.choose_workers("auto", 10, 100, 8, 2.2e9)
+        batch.choose_workers("auto", 10, 100, 8, 1e9, total_memory=2.2e9)
+    # without the computer's total, the available memory stands in for it
+    with pytest.raises(batch.BatchError, match="not enough memory"):
+        batch.choose_workers("auto", 10, FULL_CHANNEL, 8, 6e9)
 
 
 def test_workers_from_config():
@@ -374,7 +385,7 @@ def test_workers_from_config():
 
 def test_not_enough_memory_stops_before_processing(tmp_path, monkeypatch):
     folder = tiny_images(tmp_path / "input", ["a"])
-    monkeypatch.setattr(batch.psutil, "virtual_memory", lambda: SimpleNamespace(available=1e9))
+    monkeypatch.setattr(batch.psutil, "virtual_memory", lambda: SimpleNamespace(available=1e9, total=2e9))
     with pytest.raises(batch.BatchError, match="not enough memory"):
         run_fake(local_config(folder, tmp_path / "out", workers="auto"))
     assert not (tmp_path / "out").exists()

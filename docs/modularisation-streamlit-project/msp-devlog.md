@@ -692,3 +692,11 @@ Choices the spec does not settle:
 - Exit codes: 0 when the run finished (also when some images failed; the last lines say how many), 1 for a problem before or during the run, 130 when the run was cancelled.
 - `check` on an OMERO config logs in, so it asks for the password.
 - The `app` command is added in Phase 5.
+
+### Decision: `workers: auto` when little memory is free (22 Nov 2026)
+
+Deviation from spec section 7.2, decided by the user. On a Mac in everyday use the free memory reported is low: about 4 GB of 17 GB on this laptop with an editor and a browser open. A worker for the full-size image is estimated at 5.1 GB, so the spec's rule would refuse to start a run that v1 carries out without trouble.
+
+- When the free memory, less the 2 GB reserve, is too small for one worker but the computer's total memory is enough, the run goes on with one worker and a warning in the log that it may be slow.
+- The run stops before processing only when the computer's total memory is too small for one worker.
+- More than one worker is still chosen from the free memory.
