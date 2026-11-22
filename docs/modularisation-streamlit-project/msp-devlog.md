@@ -142,3 +142,45 @@ After the push, `msp-environment.yml` installs big-fish from `git+https://github
 The fixes have not been offered to the original big-fish project (optional in the spec).
 
 Found along the way, for task 0.9 and Phase 1: `multistack.extract_cell` stops with an `IndexError` when a subpixel coordinate rounds up to the image size (for example 511.5 on a 512 px image). This is in big-fish 0.6.2 itself and does not depend on package versions. The per-cell reference counts in 0.9 therefore use whole-pixel coordinates.
+
+### 0.6 v1 reference run on the full-size image (22 Nov 2026)
+
+Stored in `~/bigfish-testdata/reference_v1/full/`: one folder per run with its config, `command.txt`, `run.log`, `time.txt`, `bf_output/` and `bf_output_qc/`; plus `summary.csv`, `conda_env_export.yml`, `v1_commit.txt` and `image_sha256.txt`.
+
+All runs use the unmodified v1 scripts (commit `264ffde`) in the main env, on channel 2, with one worker. Settings: voxel sizes 200 nm (Z) and 65 nm (YX), ex 570, em 610, NA 1.45, RI 1.45, confocal, top-hat background at 5 px, alpha 0.5, beta 1, cluster radius 600 nm, minimum spots 12. The general configs are the earlier config with only the input, output, worker, threshold-mode and subpixel lines changed. No v1 script needed a code change.
+
+| Run folder | Script | Threshold | Subpixel | Spots | Clusters | Time (s) | Peak memory (GB) |
+|---|---|---|---|---|---|---|---|
+| `general_manual18_subpixel-off` | general | manual 18 | off | 37,086 | 207 | 98 | 3.7 |
+| `general_manual18_subpixel-on` | general | manual 18 | on | 36,699 | 200 | 329 | 4.9 |
+| `general_auto_subpixel-off` | general | auto (15) | off | 41,274 | 234 | 137 | 4.1 |
+| `general_auto_subpixel-on` | general | auto (15) | on | 41,861 | 240 | 437 | 5.1 |
+| `hcr_manual18_subpixel-off` | HCRv3 | manual 18 | off | 24,631 | – | 74 | 4.6 |
+| `hcr_manual18_subpixel-on` | HCRv3 | manual 18 | on | 24,631 | – | 239 | 4.7 |
+| `hcr_auto_subpixel-off` | HCRv3 | auto (15) | off | 27,514 | – | 106 | 5.2 |
+| `hcr_auto_subpixel-on` | HCRv3 | auto (15) | on | 27,514 | – | 339 | 5.5 |
+| `hcr_auto_bailout` | HCRv3 | auto (15), bailout at 100 spots | off | 27,514 (from the bailout file) | – | 96 | 5.5 |
+
+Times and peak memory are for the whole script (image loading included), measured with `/usr/bin/time -l` while a conda env was being built on the same laptop, so the times are a rough guide only. Task 0.10 measures the steps properly.
+
+Additions to the plan:
+
+- `hcr_auto_bailout`: neither v1 script writes the automatic threshold anywhere except the HCRv3 bailout text file. This extra run, with bailout switched on, records it with unmodified v1 code: **15.0**, with 27,514 spots, matching the two HCRv3 auto runs. The general script takes the same steps up to the threshold, so the value applies to its auto runs too.
+- `extra_general_manual18_subpixel-off_repeat`: a second run of `general_manual18_subpixel-off` with the same settings (see below). Its config points to a temporary output folder; the outputs were copied here afterwards.
+
+What the saved arrays hold:
+
+- HCRv3 `spots`: the detected spots (z, y, x), before any decomposition. Whole numbers with subpixel fitting off, decimal numbers with it on.
+- General `spots_post_clustering` (z, y, x, cluster index; -1 outside clusters) and `clusters` (z, y, x, number of spots, index): after decomposition and clustering.
+
+Checks on the outputs:
+
+- HCRv3 runs with subpixel fitting on and off hold the same number of spots; fitting moves a spot by 0.3 px on average and never by more than 2 px in any direction.
+- Every spot detected at threshold 18 is also detected at the automatic threshold of 15.
+- In each general run, the number of spots marked as belonging to a cluster equals the sum of the cluster sizes.
+
+**The v1 general script does not give the same result twice on this image.** The repeat run gave 36,490 spots and 199 clusters against 37,086 and 207 in the stored run, a difference of 1.6 % in spots. Cause: with more than 2,000 detected spots, big-fish builds the reference spot from 2,000 spots picked at random, with no fixed seed (`bigfish/detection/utils.py`, `build_reference_spot`), and the reference spot decides how dense regions are split. Consequences:
+
+- The differences between the general runs with subpixel fitting on and off (37,086 against 36,699; 41,274 against 41,861) are of the same size as this run-to-run variation and cannot be read as an effect of subpixel fitting.
+- For the full-size image, Phase 1 can compare detected spots exactly (HCRv3 outputs) but decomposed spots and clusters only as counts, within about 2 %, as the spec expects.
+- The crop for the test kit must hold fewer than 2,000 detected spots so that its v1 results are repeatable. This is added to the conditions for the crop in 0.7.
