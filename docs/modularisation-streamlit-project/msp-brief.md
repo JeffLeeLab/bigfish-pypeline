@@ -667,4 +667,32 @@ Alternative: a Quarto website on GitHub Pages (e.g. `jeffleelab.github.io/bigfis
 
 Suggestion: Quarto on GitHub Pages. Read the Docs (with MkDocs) if a version switcher or the familiar Read the Docs look matters.
 
-Decision: Let's stick to quarto then. 
+Decision: Let's stick to quarto then.
+
+## Spec review (17 Nov 2026)
+
+Two outside reviews of `msp-spec.md` (`archive/msp-spec-review-argon.md`, `archive/msp-spec-review-astra.md`) were checked against the repo, the big-fish fork and current package releases. The decisions below change or add to the ones above.
+
+**R1 Phase order (changes A3).** The dev env uses Python 3.12 and Cellpose 4 from Phase 0; Phase 1 no longer builds on the v1 stack with Cellpose 3. Reason: Cellpose 3 results are not a target (A1), so that code would be written and then thrown away. The v1 reference comes from the unchanged main env. Cost: restructuring and upgrading now happen together. If Phase 1 differs from v1, the v1 script is run in the new env to separate the two causes.
+
+**R2 Test images (changes A2).** One full-size image, one crop and one reviewed label image for the crop, in place of the six-image set. Other cases are generated in the tests. Reason: rolling ball and Cellpose 4 change results by design, so a large v1 reference set would be replaced almost at once. big-fish's own tests do not cover detection, decomposition, fitting or clusters, so the crop comparison and the synthetic tests carry that check.
+
+**R3 Spot intensity.** The value of `rna_log` at the spot's own position (z, y, x), not the MIP value. Reason: the two agree except where something brighter lies above or below the spot, and there the MIP value belongs to the other object.
+
+**R4 Cancel and worker failures.** Cancel stops the workers at once and discards images in progress. After a worker stops unexpectedly, the run restarts with fewer workers and retries the images in progress once. Reason: Python's process pool does neither by itself, and it cannot tell which image caused a stop.
+
+**R5 Earlier answers folded into the spec.** Windows and Linux testing (Phase 7) comes before the release (Phase 8); `posthoc_analysis/` is archived in Phase 8; the app font is Inter; Cellpose `batch_size` stays at 1; the run folder is grouped by type; file names use the channel index.
+
+**Checked and left unchanged.** PyTorch 2.14.1 exists (released 30 Sep 2026). Rolling ball at 5 px took about 1.2 s per 2048 × 2048 plane against 0.9 s for the current top-hat (one random plane, main env), so it stays the default background method.
+
+## Before Phase 0 (22 Nov 2026)
+
+**R6 Test image (changes R2).** `20240308_sypN_DAPI_Phal_jim-exon_jim-intron_100x_00001.tiff`: ZCYX, 35 × 4 × 2048 × 2048, 16-bit, 65 nm pixels, 200 nm Z-steps; channels 0 DAPI, 1 Phalloidin, 2 jim exon, 3 jim intron. Only the exon channel (2) is used for testing, not the intron channel. The DAPI channel is kept for later work on nucleus segmentation. A small crop may be made public and may be cut down in Z. The earlier analysis of this image series used a v1 general config (manual threshold 18, cluster radius 600 nm, minimum spots 12) written for a related image set, so its values are the starting point for the reference run.
+
+**R7 Crop labels.** The crop's label image holds nuclei, drafted from the DAPI channel and corrected by the user. Reason: Cellpose does not suit these brain images; cell assignment treats any label image the same way, so nuclei test it equally well, and they suit exon/intron work and later nucleus segmentation.
+
+**R8 Cellpose 4 (changes Phase 0 and Phase 2).** Still built in Phase 2, checked by automated tests only. No Cellpose-SAM benchmark in Phase 0; Phase 2 measures its time and memory for the worker estimate without judging the masks. The user reviews masks on a suitable image (e.g. cultured cells) supplied later, before the release. Reason: Cellpose-SAM does not suit the lab's brain images.
+
+**R9 Models.** `msp-plan.md` names the model that orchestrates the work and the models and effort levels that carry out each task.
+
+Reviews archived to `archive/`.
