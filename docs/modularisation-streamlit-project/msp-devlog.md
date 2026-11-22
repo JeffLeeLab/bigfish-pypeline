@@ -722,3 +722,30 @@ Deviation from spec section 7.2, decided by the user. On a Mac in everyday use t
 Not covered: Ctrl+C on Windows (left to Phase 7; the `cancel` file is tested on every system).
 
 Carried forward: `outputs.label_images` has no effect yet, because label files given by the user are not copied into the run folder; the `labels/` folder comes with Cellpose in Phase 2.
+
+### 1.14 Full-size image comparison (22 Nov 2026)
+
+Five runs of `bigfish-pypeline batch` on channel 2 of the full-size image, with top-hat at 5 px and the reference settings, one worker. Configs, printed output and run folders are in `~/bigfish-testdata/phase1/full/`.
+
+| Run | Threshold | Detected spots | Spots | Clusters | v1 spots / clusters | Time (v1) | Peak memory |
+|---|---|---|---|---|---|---|---|
+| HCRv3 settings, manual | 18 | 24,631 | 24,631 | – | 24,631, identical positions | 62 s (74 s) | 4.1 GB |
+| HCRv3 settings, auto | 15.0 | 27,514 | 27,514 | – | 27,514, identical positions | 61 s (106 s) | 4.8 GB |
+| General, manual | 18 | 24,631 | 36,360 | 199 | 37,086 / 207 | 73 s (98 s) | 4.4 GB |
+| General, auto | 15.0 | 27,514 | 41,249 | 246 | 41,274 / 234 | 75 s (137 s) | 4.0 GB |
+| General, manual, subpixel on | 18 | 24,631 | 36,360 | 201 | 36,699 / 200 | 306 s (329 s) | 4.8 GB |
+
+Peak memory is the largest resident memory of one process, which reads lower than the physical footprint used in Phase 0.
+
+**Detection is identical to v1.** After decomposition the counts differ by up to 2 %, which v1's random reference spot explains:
+
+- v1 itself gave 37,086, 36,699 and 36,490 spots in its three runs at threshold 18 (207, 200 and 199 clusters).
+- The new code with six different seeds gave 36,360, 36,915, 36,528, 37,126, 36,756 and 36,441 spots (197 to 212 clusters). All three v1 results lie inside this range.
+- 96 % of the positions in the v1 run are also found by the new run with seed 0; two v1 runs share 98 % with each other.
+- A repeat of the new run with the same seed gives identical tables, which v1 could not do.
+
+Because the difference is explained, the v1 script was not run in the new env on the full-size image; on the crop, where no random choice is made, that comparison gave identical results (1.5).
+
+The auto runs are faster than v1 mainly because v1 ran the LoG filter a second time for its elbow plot.
+
+`tests/test_full_image.py` keeps this check: identical detection, spot count within 3 % and cluster count within 10 % of the v1 run, and at least 95 % of v1's positions found.
