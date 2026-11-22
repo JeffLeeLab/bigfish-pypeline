@@ -274,8 +274,8 @@ def test_failed_image_is_reported(images, tmp_path, capsys):
     code, out, err = run_command(capsys, "batch", config, "--output-folder", tmp_path / "out")
     assert code == 0, err
     lines = out.splitlines()
-    assert "1 of 2 image(s) had a channel that failed" in lines[-3]
-    assert lines[-2] == "The run finished: 2 image(s) processed."
+    assert lines[-3] == "The run finished: 2 image(s) processed."
+    assert "1 of 2 image(s) had a channel that failed" in lines[-2]
     assert lines[-1].startswith("Run folder: ")
 
 

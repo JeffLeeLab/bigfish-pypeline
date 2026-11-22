@@ -700,3 +700,25 @@ Deviation from spec section 7.2, decided by the user. On a Mac in everyday use t
 - When the free memory, less the 2 GB reserve, is too small for one worker but the computer's total memory is enough, the run goes on with one worker and a warning in the log that it may be slow.
 - The run stops before processing only when the computer's total memory is too small for one worker.
 - More than one worker is still chosen from the free memory.
+
+### 1.12 End-to-end tests (22 Nov 2026)
+
+`tests/test_end_to_end.py` starts `bigfish-pypeline batch` as a separate process, as a user would, with the real pipeline. 18 tests pass in about 75 s, and no processes are left behind.
+
+| Case | Result |
+|---|---|
+| Test kit with label files | spots, clusters and cell counts agree with v1 (692 spots, 44 cells) |
+| Test kit with segmentation off | no cells table; `cell_id` −1; spots unchanged |
+| Mixed batch of 8 images, 2 workers: different sizes, a blank image, another layout, a corrupt file, NaN values, a name with spaces, accents and Japanese characters, a missing label file, a `bigfish_results/` folder from an earlier run | the run finishes; 5 images done, 3 failed with their reasons; tables in name order; earlier results not picked up as images |
+| Three FISH channels with their own manual thresholds | all three processed (v1 allowed two) |
+| 2D batches (`YX`, `CYX`) | no Z columns |
+| 8-bit, 16-bit and 32-bit float input | processed; float gives the same spots as 16-bit |
+| Empty `output_folder`, and a second run in the same minute | results in `<input>/bigfish_results/`; second folder numbered |
+| Repeat from `run_config.yaml` | same tables |
+| Ctrl+C, and a `cancel` file | exit code 130, status `cancelled`, tables hold exactly the finished images, no temporary files |
+| One worker process killed during a run with 2 workers | restart with 1 worker, lost images tried again, all 8 images done |
+| First image unreadable or of another layout; output folder not writable | plain message, exit code 1, no run folder |
+
+Not covered: Ctrl+C on Windows (left to Phase 7; the `cancel` file is tested on every system).
+
+Carried forward: `outputs.label_images` has no effect yet, because label files given by the user are not copied into the run folder; the `labels/` folder comes with Cellpose in Phase 2.

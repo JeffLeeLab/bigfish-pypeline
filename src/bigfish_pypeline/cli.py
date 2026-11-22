@@ -244,11 +244,12 @@ def _check(arguments):
 def _batch(arguments):
     config = _load(arguments)
     result = run_batch(config, config_file=Path(os.path.abspath(arguments.config)), show=_say)
-    _say()
     if result.status == "finished":
         for line in _failure_lines(result.run_folder):
             _say(line)
-    _say(result.message)
+    if result.status == "stopped":
+        # the runner has printed the final message of a finished or cancelled run
+        _say(result.message)
     _say(f"Run folder: {result.run_folder}")
     if result.status == "finished":
         return EXIT_OK
