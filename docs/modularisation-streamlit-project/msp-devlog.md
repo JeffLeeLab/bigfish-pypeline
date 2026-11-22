@@ -679,3 +679,16 @@ Findings and choices:
 - Calibration filters are matched against the file name (local) or `<ID>_<name>` (OMERO).
 - The thread settings (`OMP_NUM_THREADS` and the two others) are put back to their old values when the run ends.
 - For a `cellpose` source the run stops before processing with a message; Cellpose is added in Phase 2.
+
+### 1.11 Command line (22 Nov 2026)
+
+- `cli.py`: `bigfish-pypeline batch <config.yaml>` and `bigfish-pypeline check <config.yaml>`, both with `--input-folder`, `--filter`, `--output-folder` and `--workers`; `bigfish-pypeline --version`. The command is declared in `pyproject.toml`. `python -m bigfish_pypeline.cli` does the same.
+- `check` carries out every check a run makes before processing and prints what the run would do (images in order, channels and thresholds, cell results, output folder, workers), without saving anything. To share these checks, the first part of `run_batch` became `plan_run` in `batch.py`.
+- Mistakes in a config, and problems found before the run, are printed as plain messages without a Python traceback.
+- Checks: both commands run on the test kit from another folder; 21 tests pass.
+
+Choices the spec does not settle:
+
+- Exit codes: 0 when the run finished (also when some images failed; the last lines say how many), 1 for a problem before or during the run, 130 when the run was cancelled.
+- `check` on an OMERO config logs in, so it asks for the password.
+- The `app` command is added in Phase 5.

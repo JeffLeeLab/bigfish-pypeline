@@ -11,6 +11,9 @@ license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 dynamic = ["version"]
 
+[project.scripts]
+bigfish-pypeline = "bigfish_pypeline.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

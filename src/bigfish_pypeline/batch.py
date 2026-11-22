@@ -1427,28 +1427,53 @@ def _restore_variables(old):
             os.environ[name] = value
 
 
-def run_batch(config, config_file=None, omero_conn=None, show=None,
-              image_function=None, calibration_function=None):
+@dataclass
+class RunPlan:
+    """What the checks before a run found.
+
+    images: the RunImage of every image, in run order.
+    headers: what could be read of each image's file (None when it cannot be read).
+    label_folder: the folder of label files, or None when there is no segmentation.
+    subsets: for each channel to calibrate, the images used to calibrate it.
+    n_workers, workers_reason, workers_warning: the number of workers, a
+        sentence giving the reason, and a sentence saying memory may run
+        short (None when it should be fine).
+    omero: the host, port and session key of an OMERO run (None values for a local run).
+    omero_conn: the OMERO connection of the run, or None.
+    owned_conn: the connection the checks logged in, which `close` ends; None
+        when the caller brought its own connection.
     """
-    Run every image of a batch, as set out in the config.
 
-    config: the run's Config.
-    config_file: path of the config file, written in the log (optional).
-    omero_conn: an OMERO connection that is already logged in. When None and
-        the input is OMERO, this function logs in (the password is asked for)
-        and closes the session at the end.
-    show: a function called with each log line (e.g. print), or None.
-    image_function, calibration_function: stand-ins for `process_image` and
-        `calibration_threshold`, used by the tests.
+    images: list
+    headers: list
+    label_folder: object
+    subsets: dict
+    n_workers: int
+    workers_reason: str
+    workers_warning: object
+    omero: dict
+    omero_conn: object = None
+    owned_conn: object = None
 
-    Problems found before any image is processed raise BatchError with a
-    plain message, and no run folder is made.
+    def close(self):
+        """End the OMERO session this plan logged in to, if any."""
+        conn, self.owned_conn = self.owned_conn, None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
-    Returns a BatchResult with the run folder, the final status
-    ("finished", "cancelled" or "stopped") and a plain message.
+
+def plan_run(config, omero_conn=None):
     """
-    image_function = image_function or process_image
-    calibration_function = calibration_function or calibration_threshold
+    Carry out every check made before a run, and return what was found.
+
+    Nothing is created. For OMERO input this logs in (the password is asked
+    for) unless `omero_conn` is given; call `close` on the result when done.
+
+    Raises BatchError with a plain message for any problem.
+    """
     source = config.run.input.source
 
     # checks that need only the config
@@ -1480,22 +1505,54 @@ def run_batch(config, config_file=None, omero_conn=None, show=None,
             config.run.workers, len(images), _largest_channel(config, headers),
             os.cpu_count(), psutil.virtual_memory().available,
         )
+    except BaseException:
+        if owned_conn is not None:
+            try:
+                owned_conn.close()
+            except Exception:
+                pass
+        raise
+    return RunPlan(images, headers, label_folder, subsets, n_workers, workers_reason,
+                   workers_warning, omero, omero_conn, owned_conn)
+
+
+def run_batch(config, config_file=None, omero_conn=None, show=None,
+              image_function=None, calibration_function=None):
+    """
+    Run every image of a batch, as set out in the config.
+
+    config: the run's Config.
+    config_file: path of the config file, written in the log (optional).
+    omero_conn: an OMERO connection that is already logged in. When None and
+        the input is OMERO, this function logs in (the password is asked for)
+        and closes the session at the end.
+    show: a function called with each log line (e.g. print), or None.
+    image_function, calibration_function: stand-ins for `process_image` and
+        `calibration_threshold`, used by the tests.
+
+    Problems found before any image is processed raise BatchError with a
+    plain message, and no run folder is made.
+
+    Returns a BatchResult with the run folder, the final status
+    ("finished", "cancelled" or "stopped") and a plain message.
+    """
+    image_function = image_function or process_image
+    calibration_function = calibration_function or calibration_threshold
+
+    plan = plan_run(config, omero_conn)
+    try:
         try:
             run_folder = outputs.make_run_folder(config)
         except outputs.OutputError as error:
             raise BatchError(str(error)) from None
 
         thresholds = dict(config.resolved.thresholds) if config.resolved is not None else {}
-        run_config = config.with_full_paths().with_resolved([image.listed for image in images], thresholds)
-        run = _Run(run_config, run_folder, images, label_folder, subsets, thresholds,
-                   n_workers, omero, show, image_function, calibration_function)
-        return _run(run, config_file, workers_reason, workers_warning)
+        run_config = config.with_full_paths().with_resolved([image.listed for image in plan.images], thresholds)
+        run = _Run(run_config, run_folder, plan.images, plan.label_folder, plan.subsets, thresholds,
+                   plan.n_workers, plan.omero, show, image_function, calibration_function)
+        return _run(run, config_file, plan.workers_reason, plan.workers_warning)
     finally:
-        if owned_conn is not None:
-            try:
-                owned_conn.close()
-            except Exception:
-                pass
+        plan.close()
 
 
 def _run(run, config_file, workers_reason, workers_warning):
