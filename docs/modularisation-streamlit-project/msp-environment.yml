@@ -29,6 +29,6 @@ dependencies:
   - pip:
       - cellpose==4.2.1.1  # pip only; conda-forge stops at 4.1.1, which has no cpsam_v2
       - mrc==0.4.0  # needed by big-fish; pip only, conda-forge stops at 0.3.1, which cannot write files with numpy 2
-      - -e /Users/jefflee/Documents/Incubator/big-fish  # temporary: local fork, replaced by a git tag in task 0.5
+      - big-fish @ git+https://github.com/JeffLeeLab/big-fish.git@v0.6.2.post1  # lab fork with fixes for the current numpy, scikit-image and matplotlib
       # pip runs from the folder holding this file, so the repository root is two levels up.
       - -e ../..

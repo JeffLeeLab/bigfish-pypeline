@@ -61,7 +61,7 @@ Development computer: MacBook Pro, Apple M1 Pro, 10 CPU cores, 16 GB memory, mac
 | pip | 26.2.2 | conda-forge |
 | setuptools | 84.2.1 (not pinned) | conda-forge |
 | cellpose | 4.2.1.1 | pip |
-| big-fish | 0.6.2, local fork in editable mode until the fork is tagged (0.5) | pip |
+| big-fish | 0.6.2.post1, from the fork's tag `v0.6.2.post1` (first built with the local fork in editable mode) | pip |
 | bigfish-pypeline | 2.0.0.dev0, editable from the repository | pip |
 
 - Installed by pip as Cellpose's own requirements, not pinned in the env file: torchvision 0.29.2, opencv-python-headless 5.1.0.95, segment-anything 1.0, imagecodecs 2026.11.11, fastremap 1.21.0, fill-voids 2.1.2, natsort 8.4.0, roifile 2026.11.6.
@@ -83,7 +83,7 @@ Notes:
 
 ### 0.5 big-fish fork (22 Nov 2026)
 
-Fork: `/Users/jefflee/Documents/Incubator/big-fish`, branch `msp-patches` from `master` (0.6.2, commit `e951ea8`). Three local commits; not yet pushed or tagged.
+Fork: `/Users/jefflee/Documents/Incubator/big-fish`, branch `msp-patches` from `master` (0.6.2, commit `e951ea8`). Three commits, pushed to `JeffLeeLab/big-fish` with the tag `v0.6.2.post1` (commit `4e7cb28`) after the user's approval.
 
 big-fish's own tests in `bigfish-msp` (`conda run -n bigfish-msp python -m pytest bigfish`, run from the fork):
 
@@ -115,7 +115,7 @@ Changes to big-fish:
 
 Changes 1–6 are in commit `5ff991e`, change 7 in `a75f00f`, change 8 in `4e7cb28`.
 
-Change 7 alters behaviour, not only a removed call: in the main env, png images with whole numbers of more than 8 bits keep their values, and with the patch they are rescaled to 8-bit. It sits in its own commit so it can be dropped.
+Change 7 alters behaviour, not only a removed call: in the main env, png images with whole numbers of more than 8 bits keep their values, and with the patch they are rescaled to 8-bit. It sits in its own commit. The user reviewed it and chose to keep it.
 
 Env change that followed: `mrc` 0.4.0 from pip replaces 0.3.1 from conda-forge (conda-forge has no 0.4.0). It fixes the 4 `.dv` failures.
 
@@ -130,5 +130,15 @@ Calls that still work but are due to be removed, left unchanged:
 - `region.mean_intensity` (`detection/dense_decomposition.py`), used by `simulate_gaussian_mixture`, which the pipeline calls; `convex_area`, `equivalent_diameter` and `remove_small_objects(min_size=)` in `segmentation/`: removed in scikit-image 2.0.
 - `sklearn.utils.fixes.parse_version`: an internal scikit-learn helper that big-fish uses for its version checks.
 - `deep_learning/` needs an old TensorFlow, which is not installed; the pipeline does not use it.
+
+After the push, `msp-environment.yml` installs big-fish from `git+https://github.com/JeffLeeLab/big-fish.git@v0.6.2.post1`, and `bigfish-msp` was removed and built again from the file. In the rebuilt env:
+
+- big-fish 0.6.2.post1 is installed from the tag, with `mrc` 0.4.0; all other versions are as in 0.4, and `pip check` reports no broken requirements.
+- big-fish's tests, run on the installed copy (`python -m pytest --pyargs bigfish`): 697 passed.
+- The smoke check runs through.
+- `python -m pytest` in the repository: 1 passed.
+- PyTorch still uses the Apple GPU, and `BIGFISH_TEST_DATA` is set.
+
+The fixes have not been offered to the original big-fish project (optional in the spec).
 
 Found along the way, for task 0.9 and Phase 1: `multistack.extract_cell` stops with an `IndexError` when a subpixel coordinate rounds up to the image size (for example 511.5 on a 512 px image). This is in big-fish 0.6.2 itself and does not depend on package versions. The per-cell reference counts in 0.9 therefore use whole-pixel coordinates.
