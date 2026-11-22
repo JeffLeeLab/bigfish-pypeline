@@ -51,7 +51,7 @@ With subpixel fitting off the positions are whole pixels; with it on they are de
 Columns:
 
 - `label`: the nucleus's number in the label image.
-- `touches_border`: `True` if the nucleus reaches the edge of the image (18 of 44). The tests compare only the nuclei that do not.
+- `touches_border`: `True` if the nucleus reaches the edge of the image (18 of 44).
 - `n_spots`: spots inside the nucleus.
 - General runs only: `n_spots_in_clusters`, `n_spots_outside_clusters`, and `n_clusters` (clusters whose centre lies inside the nucleus).
 

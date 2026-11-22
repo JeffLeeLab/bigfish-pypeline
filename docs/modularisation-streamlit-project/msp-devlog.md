@@ -458,3 +458,30 @@ Choices the spec does not settle:
 
 - Data type of the result. Top-hat returns the type of the image, as in v1. Rolling ball follows ImageJ: 8-bit and 16-bit images keep their type, with values below the background set to 0; other types come back as 64-bit float.
 - `light_bg=True` gives a different kind of result for the two methods: rolling ball keeps dark objects on a white background, as ImageJ does; top-hat turns them bright on a dark background, as v1 does. The pipeline never sets `light_bg`, because fluorescence images have a dark background.
+
+### 1.2 Config (22 Nov 2026)
+
+- `config.py`: the layout and defaults of spec 6.2 as `pydantic` models, `load_config`, `save_config`, `parse_config` (for the notebook and the app) and `apply_overrides` (command-line values).
+- Every problem in a file is reported at once, each as one plain message naming the setting, e.g. "`channels[0].clusters.nb_min_spot` is not a known setting – did you mean `min_spots`?".
+- Checks: the test kit config loads unchanged and is the same after saving and loading again; 112 tests pass.
+
+Choices the spec does not settle:
+
+- Required with no default, besides `image.axes` and `image.voxel_size_nm`: `config_version`, at least one channel, and each channel's `index`.
+- Messages name a setting by its full path (`channels[0].threshold.value`), not by its bare name as in the spec's example.
+- The `resolved` block holds `images` (a list of names) and `thresholds` (channel index → calibrated value).
+- A new input folder, filter, dataset ID or list of image IDs drops `resolved`; a new output folder or number of workers keeps it.
+- `yes`, `no`, `on` and `off` given where a number or text is expected are reported with a note that YAML reads them as true or false.
+- Not checked when a file is loaded, left to `check` and `batch`: an OMERO source without a dataset ID or image IDs.
+
+### 1.7 Cell assignment and label files (22 Nov 2026)
+
+- `segmentation.py`: `read_label_file` reads `<image>_seglabels.tif` and accepts only a 2D image of the image's Y × X size holding whole numbers of 0 or more. Whole numbers saved as decimals (as Fiji may do) are accepted. Each kind of unusable file gives a one-line reason.
+- `cells.py`: `assign_cells` gives the `cell_id` of every spot and cluster and the cell table of spec 8.2.
+- Checks: on the crop, the cell table equals the v1 per-cell reference for all 44 labels in the four subpixel-off runs, including the 18 nuclei that touch the border; 39 tests pass.
+
+Choices the spec does not settle:
+
+- A cluster centre given as a decimal number is rounded to the nearest pixel and kept inside the image, so a centre on the edge cannot fail as it does in `extract_cell`.
+- With clustering switched off, `n_spots_in_clusters` and `n_clusters` are 0 and `mean_spots_per_cluster` is empty.
+- A label file with an extra axis of length 1 is rejected as not 2D.
