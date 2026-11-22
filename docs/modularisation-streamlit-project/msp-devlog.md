@@ -553,3 +553,28 @@ Choices and differences from the posthoc function:
 - The SNR is empty when the ring is empty or has no variation, where the posthoc function gave 0. None of the crop's spots is affected.
 - The function takes the spot radius in pixels (`spot_radius_px`), which the pipeline already has; the posthoc function converted it from nm itself, with the same result.
 - `log_intensity` keeps the data type of `rna_log` (16-bit whole numbers for a 16-bit image).
+
+### 1.13 OMERO input, first part (22 Nov 2026)
+
+Written and tested without a server; the check on the lab server is still to be run by the user.
+
+- `io.py`, OMERO section: `list_omero_images` (by dataset ID or image IDs), `omero_output_name` (`<image ID>_<image name>`), `get_omero_image_info` (sizes, pixel type, voxel sizes in nm, channel names), `read_omero_channel` and `read_omero_channels`, `read_omero_channels_with_retry`, and the session helpers `session_key`, `join_session` and `detach_session`.
+- `connect_to_omero` and `get_omero_image` in `omero_tools.py` are used as they are.
+- `omero` is loaded only when an OMERO function is called, so local runs do not need it.
+- `tests/manual/omero_session_check.py`: the script for the lab-server check. The main process logs in, two helper processes join the login, read the image and leave, and the main login is tested again afterwards.
+- Checks: 60 tests with stand-in connections pass.
+
+omero-py calls used: the session key from `conn.c.getSessionId()`; joining with `BlitzGateway(host, port, secure=True).connect(sUuid=key)`; leaving with `conn.close(hard=False)`.
+
+Choices the spec does not settle:
+
+- A dataset's images are sorted by name, then ID. A list of image IDs keeps its order, with repeats left out.
+- As for local files, an axis of length 1 is not counted. OMERO stores no axis order, so `ZCYX` and `CZYX` are both accepted for an image with several planes and channels.
+- A voxel size with a unit the code does not know is treated as missing, where the archived app used the number as if it were nm.
+- An image in another OMERO group is reported as not found; the connection's group is not changed.
+- The session key is removed from every error message, and omero-py's own INFO and DEBUG messages, which contain the key, are switched off.
+- If the server does not answer while a worker rejoins the session, this is reported as an ended session and stops the run, because omero-py does not tell the two cases apart.
+
+Still to be confirmed on the lab server: that a joined worker can read images, that leaving with `close(hard=False)` keeps the main login alive, and which errors a dropped connection and an ended session really raise.
+
+Carried to Phase 5: the batch process taking over a session handed to it by the app (keeping it alive and closing it at the end).
