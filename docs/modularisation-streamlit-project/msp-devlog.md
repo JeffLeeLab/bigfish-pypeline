@@ -428,3 +428,5 @@ Phase 0 "done when" (spec section 11):
 - `~/bigfish-testdata/` holds 2.1 GB: the image (1.1 GB), the crop search (0.9 GB, mostly working copies that can be deleted), reference results (51 MB), benchmarks and the label draft.
 - `tests/data/` adds 10 MB to the repository.
 - An older, empty `test/` folder sits next to `tests/` in the working copy; it is not tracked by git.
+
+**Sign-off (22 Nov 2026):** the user signed off Phase 0 and approved pushing `msp` to GitHub. The merge into `main` has not been decided yet.
