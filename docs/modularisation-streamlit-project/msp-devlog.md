@@ -355,3 +355,76 @@ Notes:
 
 - Only the subpixel-off runs have per-cell tables, because of the `extract_cell` error described in 0.5. On this crop no subpixel position rounds beyond the image edge, so the error would not have appeared here.
 - The configs and `command.txt` files in `tests/data/reference_v1/` contain the folder paths of the laptop the runs were made on. They are records of what was run, not files to run again as they are.
+
+### 0.11 Phase 0 review (22 Nov 2026)
+
+Checks run in a fresh shell:
+
+| Check | Result |
+|---|---|
+| `conda run -n bigfish-msp python -m pytest` in the repository | 1 passed |
+| big-fish's own tests on the installed fork tag (`python -m pytest --pyargs bigfish`) | 697 passed |
+| PyTorch device in `bigfish-msp` | Apple GPU available |
+| `BIGFISH_TEST_DATA` | set; full-size image and reference results present |
+| Main env | `conda env export` identical to the export stored with the reference run; `environment.yml` unchanged since `v1.0` |
+| v1 copy of the code | no changes |
+
+Phase 0 "done when" (spec section 11):
+
+| Condition | Where recorded |
+|---|---|
+| big-fish's tests pass in `bigfish-msp` | 0.5 and the table above |
+| Reference outputs recorded | 0.6 (full-size image), 0.9 (crop) |
+| Test kit recorded | 0.7 (crop and config), 0.8 (labels), 0.9 (reference results in `tests/data/`) |
+| Benchmark numbers recorded | 0.10 |
+| `pytest` runs in `bigfish-msp` | 0.3, 0.4 and the table above |
+
+**Summary of the phase**
+
+- Stack: every version in the spec's table was available for Apple silicon; versions and device are listed in 0.4.
+- big-fish: eight changes in the fork, tagged `v0.6.2.post1` and pushed (0.5).
+- Detection on the new stack gives exactly the v1 spots on the full-size image (0.10).
+- Test kit: a 384 × 384 × 11 crop with 44 nuclear labels, its config and nine v1 reference runs, all repeatable (0.7–0.9).
+- Rolling ball costs about 10 s more per channel than top-hat and stays the default. Memory per worker is about 5 GB for a 35-plane channel (0.10).
+
+**Deviations from the spec and the plan**
+
+| # | Deviation | Task |
+|---|---|---|
+| 1 | `mrc` 0.4.0 from pip added to the env (big-fish needs it; conda-forge stops at 0.3.1, which fails with numpy 2). | 0.4, 0.5 |
+| 2 | Streamlit and `streamlit-image-coordinates` are not in the env until Phase 5. | 0.4 |
+| 3 | `pyproject.toml` lists no dependencies and does not yet declare the `bigfish-pypeline` command. | 0.3 |
+| 4 | The env file installs the pipeline with `-e ../..`, not `-e .`, because of where the file sits. | 0.4 |
+| 5 | big-fish change 7 (`save_image` converts png and jpg to 8-bit) alters behaviour beyond replacing a removed call. Kept by the user's decision. | 0.5 |
+| 6 | The big-fish fixes have not been offered to the original project. | 0.5 |
+| 7 | An extra HCRv3 run with bailout on records the automatic threshold, for the full-size image and for the crop. | 0.6, 0.9 |
+| 8 | An extra repeat of one general run on the full-size image shows that v1 results vary from run to run there. | 0.6 |
+| 9 | Added condition for the crop: fewer than 2,000 detected spots. | 0.7 |
+| 10 | The nuclear label image is the Cellpose 3 draft, accepted by the user without hand correction. | 0.8 |
+| 11 | Per-cell reference tables keep the nuclei that touch the border and mark them, instead of leaving them out. | 0.9 |
+| 12 | Memory is measured as physical footprint, which reads higher than resident memory. | 0.10 |
+| 13 | Tests are run with `python -m pytest`, because `conda run … pytest` finds another pytest on this laptop. | 0.4 |
+
+**Points carried into Phase 1**
+
+1. Memory per worker is about 5 GB for 35 planes and 4.4 GB for 30, above the 3–4 GB in spec section 7.2. The LoG filter sets the peak. `workers: auto` has to use the measured figure; lowering it would mean changing how the LoG filter is run and showing the spots stay the same.
+2. Rolling ball has to be applied one plane at a time (0.10).
+3. On the full-size image the v1 decomposition is not repeatable, so decomposed spots and clusters are compared as counts there (within about 2 %), and exactly on the crop.
+4. The config's file filter also matches `…_seglabels.tif` when labels sit next to the images; file discovery needs a rule for this.
+5. `extract_cell` rounds decimal positions and fails at the image edge; the new cell assignment looks positions up directly and has to handle the edge.
+6. The first and last planes of a Z-cropped image hold extra spots; this affects any image whose signal continues beyond the stack.
+7. big-fish still uses calls that scikit-image will remove in 0.27, 0.28 and 2.0 (listed in 0.5); the env keeps scikit-image below 0.27.
+8. The test kit config is written in the version 1 layout and is checked against the schema once it exists.
+
+**Manual checks for the user**
+
+1. Look at `~/bigfish-testdata/reference_v1/full/general_manual18_subpixel-off/bf_output_qc/…_finaldetection.png` and the matching elbow plot in `general_auto_subpixel-off`: do the spots, clusters and the automatic threshold of 15 look right for this image?
+2. Open `tests/data/sypN_DAPI_Phal_jim-exon_crop.tif` in Fiji: three channels, 11 planes, pixel size 0.065 µm and Z-step 0.2 µm shown correctly.
+3. Read through the deviations above, and deviation 5 and point 1 in particular.
+4. Confirm that `msp` can be pushed to GitHub (the commits for tasks 0.2–0.11 are on this laptop only) and say when to merge it into `main`.
+
+**Housekeeping**
+
+- `~/bigfish-testdata/` holds 2.1 GB: the image (1.1 GB), the crop search (0.9 GB, mostly working copies that can be deleted), reference results (51 MB), benchmarks and the label draft.
+- `tests/data/` adds 10 MB to the repository.
+- An older, empty `test/` folder sits next to `tests/` in the working copy; it is not tracked by git.
