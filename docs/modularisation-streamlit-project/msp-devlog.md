@@ -749,3 +749,81 @@ Because the difference is explained, the v1 script was not run in the new env on
 The auto runs are faster than v1 mainly because v1 ran the LoG filter a second time for its elbow plot.
 
 `tests/test_full_image.py` keeps this check: identical detection, spot count within 3 % and cluster count within 10 % of the v1 run, and at least 95 % of v1's positions found.
+
+### 1.15 Phase 1 review (22 Nov 2026)
+
+Checks run in a fresh shell:
+
+| Check | Result |
+|---|---|
+| `conda run -n bigfish-msp python -m pytest` (whole suite, with the full-size image) | 604 passed in 5 min 21 s |
+| The same without the full-size image (`-m "not full_image"`) | 600 passed in about 3 min |
+| v1 imports in the main env (`image_utils`, `omero_tools` from `src/`, Python 3.9) | work as before |
+| Main env | `conda env export` identical to the export stored with the reference run |
+| v1 files (`environment.yml`, `image_utils.py`, `omero_tools.py`, the v1 folders) | unchanged since `v1.0` |
+| Worker processes left after the tests | none |
+
+Phase 1 "done when" (spec section 11):
+
+| Condition | Result | Entry |
+|---|---|---|
+| Detected spots identical to v1, crop and full-size image | identical, position for position | 1.4, 1.14 |
+| Decomposed spots and clusters identical on images with up to 2,000 spots | identical on the crop | 1.5, 1.9 |
+| Above 2,000 spots, counts compared and the difference recorded | within the range of v1's own runs | 1.14 |
+| Per-cell counts on the crop match `extract_cell` | identical for all 44 nuclei, border ones included | 1.7, 1.9 |
+| A cancelled run and a run with a stopped worker leave combined tables | yes, with stand-ins and with the real pipeline | 1.10, 1.12 |
+| Any difference from v1 explained | subpixel positions: caused by the newer packages, shown by running the v1 script in the new env | 1.5 |
+
+Still open: the check of OMERO session sharing on the lab server (1.13), to be run by the user.
+
+**What Phase 1 delivered**
+
+- The package modules of spec 4.1 except `qc.py`, with Cellpose still to be added to `segmentation.py`: 5,700 lines in `src/bigfish_pypeline/`, 604 tests.
+- `bigfish-pypeline check` and `bigfish-pypeline batch`, for local folders and OMERO, 2D and 3D images, any number of FISH channels.
+- A run folder with `run_config.yaml`, `run.log`, `progress.json`, per-image tables and combined tables.
+- On the full-size image a run takes 61–75 s where v1 took 74–137 s, with the same peak memory.
+
+**v1 faults fixed** (spec section 11): manual thresholds for more than two channels; errors recorded for each image and channel, and stopped workers restarted, in place of workers ending silently; the config given as a file and read with the safe loader; images processed in name order; bailout recorded in the log and in `images.csv`. Also: an image without dense regions made the v1 general script stop with an error.
+
+**Deviations from the spec and the plan**
+
+| # | Deviation | Entry |
+|---|---|---|
+| 1 | `workers: auto` uses 5 GB per worker for a full-size channel, not 3–4 GB. User's decision. | 1.0 |
+| 2 | With little free memory, `workers: auto` runs one worker with a warning and stops only when the computer's total memory is too small. User's decision. | Decision entry |
+| 3 | Files ending in `_seglabels` are never listed as images. User's decision. | 1.0 |
+| 4 | `image_utils.py` and `omero_tools.py` are kept unchanged until Phase 8, so `calculate_psf` and the top-hat exist twice. | 1.0 |
+| 5 | Subpixel positions differ from v1 for 3–4 % of spots by more than 0.1 px, because of the newer packages. | 1.5 |
+| 6 | `clusters.radius_nm` must be a whole number. | 1.5 |
+| 7 | `psutil` added to the env file. | 1.10 |
+| 8 | An extra reference folder, `tests/data/reference_v1_new_env/` (0.1 MB). | 1.5 |
+| 9 | A TIFF without ImageJ or OME metadata can only be read as `ZYX`, `CYX` or `YX`. | 1.3 |
+| 10 | An SNR that cannot be worked out is empty, where the posthoc script gave 0. | 1.6 |
+| 11 | Workers are stopped through an internal part of Python's process pool, because Python 3.12 offers no public way. | 1.10 |
+| 12 | Taking over an OMERO session handed over by the app is left to Phase 5. | 1.13 |
+| 13 | The elbow values are not worked out during a run yet; they come with the elbow plot in Phase 3. `outputs.label_images` has no effect until Phase 2. | 1.9, 1.12 |
+| 14 | The v1 script was run in the new env on the crop only, not on the full-size image, because the difference there is explained by the random reference spot. | 1.14 |
+
+**Points carried into Phase 2 and Phase 3**
+
+1. Cellpose: the run stops with a message for `source: cellpose` until Phase 2; labels then reach the workers as files in `labels/`.
+2. The final per-worker memory figure and reserve, with every step switched on and with the Cellpose model loaded (Phase 2).
+3. QC images, `run_info.yaml`, `.npz` files, keep-awake and the full `run.log` contents (Phase 3). `decompose_dense_regions` already returns the reference spot and whether decomposition was skipped.
+4. OMERO: after the lab-server check, a small real OMERO batch; a retry when the connection drops while image information is read; what the errors of a dropped connection and an ended session really look like.
+5. Ctrl+C on Windows (Phase 7).
+6. The guide should explain: plain TIFFs need ImageJ or OME metadata to hold Z and channels; CSV files are UTF-8 without a byte-order mark; the meaning of `finished`, `cancelled` and `stopped`.
+
+**Manual checks for the user**
+
+1. Run the OMERO check on the lab network: `python tests/manual/omero_session_check.py --image-id <ID>` in the `bigfish-msp` env, and pass on the printed lines.
+2. Try the commands on the test kit, from the repository folder with `bigfish-msp` active:
+   `bigfish-pypeline check tests/data/sypN_DAPI_Phal_jim-exon_crop_config.yaml --output-folder ~/Desktop/bigfish_test`, then the same with `batch`. Look at `run.log`, `images.csv`, `spots.csv` and `cells.csv` in the run folder: are the wording and the columns what you expect?
+3. Look at a full-size run folder, e.g. `~/bigfish-testdata/phase1/full/runs/2026-11-22_2258_general_manual18_subpixel-off/`.
+4. Decide whether the change in subpixel positions (deviation 5, numbers in 1.5) is acceptable.
+5. Read the "choices the spec does not settle" in entries 1.2, 1.3, 1.8, 1.9 and 1.10, which decide what users see.
+
+**Housekeeping**
+
+- `~/bigfish-testdata/phase1/` holds the full-size runs of this phase and the v1 runs in the new env (about 100 MB).
+- `tests/data/` holds about 10 MB.
+- `msp` is 17 commits ahead of GitHub: only the Phase 1 plan has been pushed, none of the Phase 1 work.
