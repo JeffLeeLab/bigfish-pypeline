@@ -541,3 +541,15 @@ Findings and choices:
 - big-fish gives no automatic threshold when 7 or fewer candidate spots have a LoG value above 0. In practice this means blank or nearly empty images. The channel then has zero spots, an empty threshold and a warning; the lower limit is not used in place of a missing threshold.
 - The elbow values are worked out from the `rna_log` already in hand, so the LoG filter runs once. The automatic threshold is taken from the same calculation and equals big-fish `automated_threshold_setting`. This uses two internal big-fish functions (`_get_candidate_thresholds`, `_get_spot_counts`), which is safe while the env installs the fork at a fixed tag.
 - The bailout limit is exceeded when the count is above the limit, as in v1.
+
+### 1.6 Spot measurements (22 Nov 2026)
+
+- `measurements.py`: `compute_snr_spots_individual` (from the posthoc script, extended to 2D), `compute_log_intensity` (value of `rna_log` at the spot's own position) and `measure_spots` (both, according to the switches).
+- Checks: for the 692 spots of the crop, the SNR equals the posthoc function exactly; 2D values equal the 3D formula with Z left out; 25 tests pass.
+- Time: SNR for 40,000 spots in a 2048 × 2048 × 30 image takes 1.6 s.
+
+Choices and differences from the posthoc function:
+
+- The SNR is empty when the ring is empty or has no variation, where the posthoc function gave 0. None of the crop's spots is affected.
+- The function takes the spot radius in pixels (`spot_radius_px`), which the pipeline already has; the posthoc function converted it from nm itself, with the same result.
+- `log_intensity` keeps the data type of `rna_log` (16-bit whole numbers for a 16-bit image).
