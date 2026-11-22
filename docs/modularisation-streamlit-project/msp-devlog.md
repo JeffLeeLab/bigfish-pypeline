@@ -831,3 +831,15 @@ Still open: the check of OMERO session sharing on the lab server (1.13), to be r
 **Decisions by the user (22 Nov 2026):** the change in subpixel positions caused by the newer packages (deviation 5) is accepted. `msp` is pushed to GitHub. Sign-off on Phase 1 and the merge into `main` wait for the OMERO check on the lab server.
 
 **Sign-off (22 Nov 2026):** the user signed off Phase 1 and asked for `msp` to be merged into `main`. The OMERO check on the lab server (manual check 1) has not been run; it is left as a follow-up and stays in the plan's open points, together with the small real OMERO batch.
+
+## Phase 2: Cellpose 4 and comparisons
+
+### 2.0 Decisions (22 Nov 2026)
+
+The user agreed the three proposals in the plan before any task started:
+
+1. **Label files given by the user** are not copied into the run folder. `outputs.label_images` applies to Cellpose labels only; `run_config.yaml` and `run.log` name the label folder used.
+2. **When the chosen device does not work:** with `device: auto` the next device is tried (CUDA, then Apple GPU, then CPU) and a warning is logged; a device named in the config that does not work stops the run before processing.
+3. **Rolling ball comparison:** the full-size test image (exon channel 2 and intron channel 3) and the crop. No other images were added.
+
+`main` (Phase 1) and `msp` (with the Phase 2 plan) were pushed to GitHub. The tasks have not started.
