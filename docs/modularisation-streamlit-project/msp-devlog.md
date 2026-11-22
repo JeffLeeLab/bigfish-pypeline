@@ -615,3 +615,32 @@ Findings and choices:
 - How big-fish shows each case where decomposition is skipped: no spot clear of the image edge gives an empty reference spot; a model that cannot be fitted raises `RuntimeError`; no dense regions gives an empty list (v1 stopped with an error here). The result carries `skipped` and a warning text for each case except the last.
 - With 30 spots or fewer clear of the edge, big-fish still builds a reference spot and decomposition goes on, as in v1. Its own warning is turned into a warning in the result, so it reaches `images.csv`.
 - big-fish only accepts a cluster radius in whole nm, so `clusters.radius_nm` in the config must be a whole number (spec 6.2 does not say).
+
+### 1.9 One image through every step (22 Nov 2026)
+
+- `batch.py`: `process_image` runs steps 1–8 and 10 for each FISH channel of one image, one channel at a time, and writes the image's tables. `calibration_threshold` gives one image's automatic threshold for the calibration pass.
+- Checks on the crop, through `process_image` and the written tables:
+
+| Settings | Result |
+|---|---|
+| Test kit config (manual 18) | spots, clusters and cell table identical to v1: 473 detected, 692 spots, 6 clusters, 44 cells |
+| Auto threshold | 13.0; 869 spots and 6 clusters, identical to v1 |
+| Decomposition and clusters off (HCRv3 case), manual and auto | 473 and 610 spots, identical to v1; cell tables identical |
+| Subpixel on | subpixel positions equal the v1 script run in the new env; pixel positions and `cell_id` unchanged |
+
+- Generated images cover three channels with their own thresholds, a failing channel, bailout, a blank image, 2D, a corrupt file, missing and wrong-size label files, voxel sizes that differ from the config, and a calibrated threshold. 28 tests pass; `process_image` also runs in a worker process started with "spawn".
+
+How results are recorded in `images.csv`:
+
+- A channel that fails is `failed` with a one-line reason; its threshold and number of detected spots are kept when detection had finished. The other channels are kept.
+- An image that cannot be used at all (unreadable file, layout that does not fit, a channel of the config missing from the image) has every channel `failed` and writes only its `_images.csv`.
+- Bailout gives `skipped` with the reason, e.g. "bailout: 5120 spots detected, above the limit of 5000"; the channel has no rows in the other tables.
+- An unusable label file gives `segmentation_status` `no_labels` and a warning with the reason; spots are still written with `cell_id = -1`.
+
+Findings and choices:
+
+- With subpixel fitting on, clusters are found on the subpixel positions, as in v1, so cluster membership can differ from a run with subpixel fitting off (one spot on the crop).
+- With clustering switched off in every channel, no clusters file is written; `n_clusters` is 0.
+- big-fish cannot cluster whole-pixel positions when the voxel sizes are written as decimals. `clusters.py` now handles this: whole voxel sizes are passed as whole numbers (same result as v1), and for voxel sizes such as 64.5 nm the positions are passed as decimals.
+- Each worker joins the OMERO session once and keeps the connection for its later images. A dropped connection is retried once while a channel is read, but not while the image information is read.
+- If the tables themselves cannot be written (for example a full disk), the error is passed up to the runner, because it is a problem with the output folder and not with the image.

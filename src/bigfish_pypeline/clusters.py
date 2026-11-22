@@ -35,6 +35,14 @@ def detect_clusters(spots, voxel_size, radius=500, nb_min_spots=4):
         spots_post_clustering = np.zeros((0, ndim + 1), dtype=dtype)
         clusters = np.zeros((0, ndim + 2), dtype=dtype)
         return spots_post_clustering, clusters
+    spots = np.asarray(spots)
+    if np.issubdtype(spots.dtype, np.integer):
+        # big-fish converts the positions to nm in their own data type, so
+        # whole-pixel positions need whole voxel sizes or decimal positions
+        if all(float(size).is_integer() for size in voxel_size):
+            voxel_size = tuple(int(size) for size in voxel_size)
+        else:
+            spots = spots.astype(np.float64)
     spots_post_clustering, clusters = detection.detect_clusters(
         spots=spots,
         voxel_size=voxel_size,

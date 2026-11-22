@@ -68,3 +68,22 @@ def test_zero_spots(ndim, dtype):
     assert clusters_found.shape == (0, ndim + 2)
     assert spots_post_clustering.dtype == dtype
     assert clusters_found.dtype == dtype
+
+
+def test_whole_pixel_spots_with_decimal_voxel_sizes():
+    """Whole-pixel positions work with voxel sizes written as decimals."""
+    spots = _group_and_scattered(3)
+    expected_spots, expected_clusters = clusters.detect_clusters(spots, (200, 65, 65), radius=500)
+
+    # whole voxel sizes given as decimals: the same result, still whole numbers
+    spots_post_clustering, clusters_found = clusters.detect_clusters(spots, (200.0, 65.0, 65.0), radius=500)
+    assert spots_post_clustering.dtype == np.int64
+    assert np.array_equal(spots_post_clustering, expected_spots)
+    assert np.array_equal(clusters_found, expected_clusters)
+
+    # voxel sizes that are not whole: the same clusters, positions as decimals
+    spots_post_clustering, clusters_found = clusters.detect_clusters(spots, (200.5, 64.5, 64.5), radius=500)
+    assert np.array_equal(spots_post_clustering[:, :3], spots)
+    assert np.array_equal(spots_post_clustering[:, 3], expected_spots[:, 3])
+    assert clusters_found.shape == (1, 5)
+    assert clusters_found[0, 3] == 10
