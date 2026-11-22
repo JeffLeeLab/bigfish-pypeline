@@ -30,3 +30,53 @@ Development computer: MacBook Pro, Apple M1 Pro, 10 CPU cores, 16 GB memory, mac
 - `pytest` collects from `tests/` only, so the archived tests under `docs/archive/` are left out.
 - `tests/test_package.py` imports the package and checks its version.
 - Check, in a throwaway Python 3.13 virtual environment: `pip install -e .` installs version `2.0.0.dev0` and `pytest` passes (1 test). The v1 scripts can still import `bigfish_pypeline.image_utils` in the main env.
+
+### 0.4 `bigfish-msp` env (22 Nov 2026)
+
+- `msp-environment.yml` builds the env with one command from the repository root: `conda env create -f docs/modularisation-streamlit-project/msp-environment.yml`.
+- Every version in the spec's table (section 4.3) has a conda-forge build for Apple silicon and Python 3.12, so nothing differs from the targets. The env file pins the versions installed.
+
+| Package | Installed | Source |
+|---|---|---|
+| python | 3.12.16 | conda-forge |
+| numpy | 2.5.5 | conda-forge |
+| scipy | 1.18.1 | conda-forge |
+| scikit-image | 0.26.0 | conda-forge |
+| scikit-learn | 1.9.1 | conda-forge |
+| matplotlib | 3.11.2 | conda-forge |
+| pandas | 3.1.1 | conda-forge |
+| tifffile | 2026.11.16 | conda-forge |
+| pyyaml | 6.0.3 | conda-forge |
+| tqdm | 4.70.1 | conda-forge |
+| pytorch | 2.14.1 (build `cpu_generic_py312_hfc0fe18_3`) | conda-forge |
+| zeroc-ice | 3.6.5 | conda-forge |
+| omero-py | 5.22.1 | conda-forge |
+| mrc | 0.3.1 | conda-forge |
+| pydantic | 2.14.4 | conda-forge |
+| plotly | 7.1.0 | conda-forge |
+| tk | 8.6.13 | conda-forge |
+| jupyterlab | 4.6.6 | conda-forge |
+| ipykernel | 7.4.0 | conda-forge |
+| pytest | 9.2.0 | conda-forge |
+| pip | 26.2.2 | conda-forge |
+| setuptools | 84.2.1 (not pinned) | conda-forge |
+| cellpose | 4.2.1.1 | pip |
+| big-fish | 0.6.2, local fork in editable mode until the fork is tagged (0.5) | pip |
+| bigfish-pypeline | 2.0.0.dev0, editable from the repository | pip |
+
+- Installed by pip as Cellpose's own requirements, not pinned in the env file: torchvision 0.29.2, opencv-python-headless 5.1.0.95, segment-anything 1.0, imagecodecs 2026.11.11, fastremap 1.21.0, fill-voids 2.1.2, natsort 8.4.0, roifile 2026.11.6.
+- pip installed no second copy of a conda package: PyTorch and numpy are present once each, from conda-forge, and `pip check` reports no broken requirements.
+- Device: PyTorch uses the Apple GPU. `torch.backends.mps.is_available()` is true and a test calculation on the `mps` device gives the right answer. The conda-forge build is named `cpu_generic` but includes the Apple GPU support.
+- `bigfish`, `bigfish.stack`, `bigfish.detection`, `cellpose` and `omero` all import.
+- `BIGFISH_TEST_DATA=/Users/jefflee/bigfish-testdata` is stored as a variable of the env.
+
+Additions to the spec's package table:
+
+- `mrc` (conda-forge), which big-fish requires.
+- Streamlit and `streamlit-image-coordinates` are left out until Phase 5.
+
+Notes:
+
+- The env file installs the pipeline with `-e ../..`, because conda runs pip from the folder that holds the env file, two levels below the repository root.
+- Tests are run with `conda run -n bigfish-msp python -m pytest`. On this laptop `conda run -n bigfish-msp pytest` picks up a separate pytest in `~/.local/bin`, which cannot see the env's packages.
+- Check: `python -m pytest` passes in `bigfish-msp` (1 test). The main env is unchanged (numpy 1.21.6, big-fish 0.6.2).

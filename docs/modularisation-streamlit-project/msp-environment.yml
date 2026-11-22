@@ -1,0 +1,34 @@
+# Development environment for the modularised pipeline (MSP).
+# Set up (from the repository root):  conda env create -f docs/modularisation-streamlit-project/msp-environment.yml
+# Use:                                conda activate bigfish-msp
+# Versions are those first built on macOS (Apple silicon); see msp-devlog.md.
+name: bigfish-msp
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12.16
+  - numpy=2.5.5
+  - scipy=1.18.1
+  - scikit-image=0.26.0  # keep below 0.27
+  - scikit-learn=1.9.1
+  - matplotlib=3.11.2
+  - pandas=3.1.1  # stays only if big-fish's tests pass with pandas 3
+  - tifffile=2026.11.16
+  - pyyaml=6.0.3
+  - tqdm=4.70.1
+  - pytorch=2.14.1  # from conda-forge, so that conda picks the Apple GPU, CUDA or CPU build
+  - zeroc-ice=3.6.5
+  - omero-py=5.22.1
+  - mrc=0.3.1  # needed by big-fish
+  - pydantic=2.14.4
+  - plotly=7.1.0
+  - tk=8.6.13
+  - jupyterlab=4.6.6
+  - ipykernel=7.4.0
+  - pytest=9.2.0
+  - pip=26.2.2
+  - pip:
+      - cellpose==4.2.1.1  # pip only; conda-forge stops at 4.1.1, which has no cpsam_v2
+      - -e /Users/jefflee/Documents/Incubator/big-fish  # temporary: local fork, replaced by a git tag in task 0.5
+      # pip runs from the folder holding this file, so the repository root is two levels up.
+      - -e ../..
