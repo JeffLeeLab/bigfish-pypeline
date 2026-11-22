@@ -519,3 +519,25 @@ Choices the spec does not settle:
 - CSV files are plain UTF-8 without a byte-order mark, with the same line endings on every system. Excel on Windows may show accented image names wrongly; R and pandas read them correctly.
 - In the run name, characters Windows does not allow are replaced with `_`, and spaces and full stops at the end are removed.
 - A local run with neither an input folder nor an output folder is stopped with a message.
+
+### 1.4 Spot detection (22 Nov 2026)
+
+- `detection.py`: `get_spot_radius_px`, `filter_channel` (gives `rna`, `rna_log`, `rna_mip`), `detect_spots` (manual, auto with lower limit, or a calibrated value), `get_elbow_values`, `calibrate_threshold` (median of the usable automatic thresholds) and `exceeds_bailout`. All work in 2D and 3D.
+- `tests/synthetic.py`: generator of test images with Gaussian spots at known positions, used by later tasks.
+
+Comparison with v1 (top-hat 5 px, reference settings), position for position:
+
+| Image | Threshold | v1 spots | New code |
+|---|---|---|---|
+| Crop | manual 18 | 473 | identical |
+| Crop | auto, 13.0 | 610 | identical, threshold 13.0 |
+| Full-size | manual 18 | 24,631 | identical |
+| Full-size | auto, 15.0 | 27,514 | identical, threshold 15.0 |
+
+18 tests pass; the full-size test takes about a minute.
+
+Findings and choices:
+
+- big-fish gives no automatic threshold when 7 or fewer candidate spots have a LoG value above 0. In practice this means blank or nearly empty images. The channel then has zero spots, an empty threshold and a warning; the lower limit is not used in place of a missing threshold.
+- The elbow values are worked out from the `rna_log` already in hand, so the LoG filter runs once. The automatic threshold is taken from the same calculation and equals big-fish `automated_threshold_setting`. This uses two internal big-fish functions (`_get_candidate_thresholds`, `_get_spot_counts`), which is safe while the env installs the fork at a fixed tag.
+- The bailout limit is exceeded when the count is above the limit, as in v1.
