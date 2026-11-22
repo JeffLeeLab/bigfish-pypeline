@@ -241,3 +241,66 @@ Cellpose's default thresholds missed about half the nuclei, and its automatic di
 Working rule from this: segmentation quality on the test image is not brought to the user for judgement.
 
 The draft, the DAPI projection, the figures and the scripts are in `~/bigfish-testdata/label_draft/`.
+
+### 0.10 Benchmarks on the full-size image (22 Nov 2026)
+
+Scripts, raw logs, `benchmarks.csv` and `conditions.txt` are in `~/bigfish-testdata/benchmarks/phase0/`.
+
+Conditions: `bigfish-msp` (Python 3.12.16, numpy 2.5.5, scipy 1.18.1, scikit-image 0.26.0, big-fish 0.6.2.post1), channel 2 of the full-size image (35 × 2048 × 2048), settings of 0.6. `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` and `MKL_NUM_THREADS` set to 1, as in a batch worker. One process at a time. Rolling ball from `misc/python-rolling-ball/imagej_rolling_ball.py` in JeffLeeLab/Image-analysis, commit `24bbbd4bf4f1d1c431faec62761dd7bd24a761f1`, called as `subtract_background(plane, radius=5)` on each Z-plane. The laptop was short of free memory during the runs (6–7 GB of swap in use), and other programs were open (load average 3–5).
+
+Memory is given as the process's physical footprint, the figure Activity Monitor shows as "Memory". The more common measure (resident memory, as reported by `/usr/bin/time`) leaves out memory that macOS has compressed and read 0.6–1.9 GB lower in these runs.
+
+**Background subtraction, whole channel (35 planes), 3 repeats each**
+
+| Method | Time, median (range) | Per plane | Peak memory |
+|---|---|---|---|
+| Top-hat, disk of radius 5 | 31.9 s (31.6–32.2) | 0.91 s | 0.6 GB |
+| Rolling ball, radius 5, one plane at a time | 42.0 s (42.0–42.4) | 1.20 s | 0.6 GB |
+| Rolling ball, radius 5, whole stack in one call | 45.5 s (1 run) | 1.30 s | 4.7 GB |
+
+- Rolling ball takes about 10 s longer per channel than top-hat (1.3 times), which is about 15 % of a worker's time for one channel with subpixel fitting off and about 3 % with it on. It stays the default method.
+- Rolling ball has to be called one plane at a time. Given the whole stack, the file makes a copy of all planes as decimal numbers and needs about 4.4 GB more.
+
+**v1 steps on the top-hat result** (3 repeats; 2 for subpixel fitting). "Extra memory" is the rise during the step.
+
+| Step | Time, median | Extra memory |
+|---|---|---|
+| Read the whole file (4 channels) | 0.16 s | 1.1 GB |
+| Read channel 2 only | 0.04 s | 0.3 GB |
+| LoG filter | 15.1 s | **4.4 GB** |
+| Local-maximum detection | 4.7 s | 0.4 GB |
+| Automatic threshold | 1.4 s | 0.3 GB |
+| Thresholding at 18 | 1.6 s | 0.8 GB |
+| Gaussian background removal (denoised copy for decomposition) | 8.7 s | 3.5 GB |
+| `build_reference_spot`, twice; `modelize_spot` | under 0.1 s | – |
+| `get_dense_region` | 2.2 s | 0.7 GB |
+| `precompute_erf` and `simulate_gaussian_mixture` | 0.9 s | – |
+| `fit_subpixel` (36,550 spots) | 241 s | – |
+| `detect_clusters` | 0.1 s | – |
+| Maximum projection | under 0.1 s | – |
+
+**One worker, one channel, from reading to clusters** (new process each, 1 run each)
+
+| Background | Subpixel | Image read | Time | Peak memory |
+|---|---|---|---|---|
+| Top-hat | off | channel 2 only | 67 s | 4.8 GB |
+| Top-hat | on | channel 2 only | 306 s | 4.8 GB |
+| Rolling ball | off | channel 2 only | 77 s | 4.8 GB |
+| Rolling ball | on | channel 2 only | 304 s | 4.8 GB |
+| Top-hat | off | whole file first, as v1 does | 68 s | 5.9 GB |
+
+**First estimate of memory per worker: about 5 GB for a 2048 × 2048 × 35 channel**, and about 4.4 GB for 30 planes. This is above the 3–4 GB the spec expected (section 7.2).
+
+- The LoG filter sets the peak: big-fish works on four copies of the channel as 64-bit decimal numbers at once (about 1.2 GB each). The Gaussian background removal for decomposition is the second-highest point (4.6 GB in total).
+- The background method and subpixel fitting do not change the peak.
+- Rule of thumb from these runs: 0.14 GB + 17 × (planes × height × width × 2 bytes).
+- Reading only the channel needed saves about 1.1 GB per worker on this 4-channel image.
+- Not included: Cellpose, QC figures, writing tables, cell assignment. A worker that keeps one channel's arrays while it processes the next would need about 1.7 GB more.
+- On this 16 GB laptop the estimate allows two workers at most. Lowering the peak would mean running the LoG filter on 32-bit numbers or on blocks of planes, which is a change to how big-fish is called and would have to be shown not to change the spots.
+
+**Checks made along the way**
+
+- Spots detected in `bigfish-msp` with top-hat at threshold 18 are identical to the v1 reference (`hcr_manual18_subpixel-off`): 24,631 spots, same coordinates, same order. The automatic threshold is 15.0, as in v1, with 27,514 spots. Detection therefore gives the same result on the new stack.
+- With `np.random.seed(0)` before `build_reference_spot`, decomposition gives 36,550 spots and 196 clusters every time (v1 without a seed: 36,490–37,086 spots and 199–207 clusters).
+- Rolling ball, for information: 23,680 spots at threshold 18; its own automatic threshold is 13.0, with 28,199 spots; 36,623 spots after decomposition and 261 clusters at threshold 18. Rolling ball sets 36 % of pixels to zero against 4.8 % for top-hat. The comparison of the two methods is Phase 2 work.
+- Repeated by the orchestrator on three planes: 0.92 s per plane for top-hat and 1.25 s for rolling ball.
