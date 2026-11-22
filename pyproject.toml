@@ -20,3 +20,6 @@ version = {attr = "bigfish_pypeline.__version__"}
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "full_image: needs the full-size image in BIGFISH_TEST_DATA (slow)",
+]

@@ -430,3 +430,19 @@ Phase 0 "done when" (spec section 11):
 - An older, empty `test/` folder sits next to `tests/` in the working copy; it is not tracked by git.
 
 **Sign-off (22 Nov 2026):** the user signed off Phase 0 and approved pushing `msp` to GitHub. `msp` was then merged into `main` and both were pushed. The repository's address on this laptop was updated to `JeffLeeLab/bigfish-pypeline`.
+
+## Phase 1: Package and unified pipeline
+
+### 1.0 Decisions and test helpers (22 Nov 2026)
+
+Decisions by the user before the tasks started:
+
+1. **OMERO server:** host `10.34.168.89`, port 4064, stored in the package as the default.
+2. **Label files next to images:** a file whose name ends in `_seglabels` is never listed as an image.
+3. **Memory per worker:** the LoG filter is run as in v1, and `workers: auto` is sized from the 5 GB measured in Phase 0 (two workers on a 16 GB laptop). This replaces the 3–4 GB expected in spec section 7.2 until the Phase 2 measurements.
+
+Set up for the phase:
+
+- `image_utils.py` and `omero_tools.py` stay unchanged until Phase 8, because the v1 scripts and notebooks on `main` import them in the main env.
+- `tests/conftest.py` gives the tests the paths to the test kit, its v1 reference results and the full-size image.
+- Tests that need the full-size image carry the mark `full_image`. They are skipped when `BIGFISH_TEST_DATA` is not set, and can be left out with `python -m pytest -m "not full_image"`.
