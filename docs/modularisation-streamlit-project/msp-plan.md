@@ -25,91 +25,151 @@ Sonnet at high effort is enough for well-defined tasks; xhigh adds cost without 
 
 ## Phase 0: Foundations
 
-Spec section 11, Phase 0. Test image and labels: brief R6–R8.
+Done, signed off and merged into `main` on 22 Nov 2026. Results, deviations and the points carried forward are in `msp-devlog.md` (entries 0.1–0.11).
+
+## Phase 1: Package and unified pipeline
+
+Spec section 11, Phase 1. Pipeline: sections 5–8. Tests and edge cases: sections 12 and 13. Cellpose, QC images, `run_info.yaml`, `.npz` files and keep-awake belong to Phases 2 and 3.
+
+**Ground rules for this phase**
+
+- Each task adds its module and its tests (`tests/test_<module>.py`). Tests run with `conda run -n bigfish-msp python -m pytest`.
+- `image_utils.py` and `omero_tools.py` stay exactly as they are until Phase 8, and `__init__.py` holds only the version. The v1 scripts and notebooks on `main` import them in the main env (Python 3.9), so they must keep working after each merge. New code goes into the modules of spec section 4.1.
+- Comparisons with v1 use top-hat background and the reference settings (devlog 0.6 and 0.9).
+- The LoG filter is run as in v1. `workers: auto` uses the memory measured in Phase 0 (about 5 GB per worker for a 2048 × 2048 × 35 channel); the final figure comes from Phase 2.
 
 | # | Task | Done by | Check | User |
 |---|---|---|---|---|
-| 0.1 | Commit the spec, archive the reviews, tag `main` as `v1.0`, create `msp` | Orchestrator | Done 22 Nov 2026 | Push `main`, `v1.0` and `msp` to GitHub |
-| 0.2 | Local test-data folder and v1 copy of the code | Orchestrator | Files in place; v1 scripts start | – |
-| 0.3 | Package skeleton, `tests/`, devlog | Sonnet 5.5, high | `pip install -e .` and `pytest` work | – |
-| 0.4 | `msp-environment.yml` and the `bigfish-msp` env | Sonnet 5.5, high | Env builds; versions and device recorded | – |
-| 0.5 | big-fish fork patches | Opus 5.5, medium | big-fish's own tests pass in `bigfish-msp` | Approve push and tag of the fork |
-| 0.6 | v1 reference run on the full-size image | Opus 5.5, medium | Outputs, configs, commands and env export stored | – |
-| 0.7 | Choose and save the crop | Opus 5.5, medium | Crop meets the spec's conditions | Pick the crop |
-| 0.8 | Nuclear label image for the crop | Opus 5.5, medium, then the user | 2D, same Y × X as the crop, whole numbers ≥ 0 | Correct the labels |
-| 0.9 | v1 reference run on the crop, with per-cell counts | Opus 5.5, medium | Reference outputs in `tests/data/` | – |
-| 0.10 | Benchmarks on the full-size image | Opus 5.5, medium | Numbers in the devlog | – |
-| 0.11 | Phase review | Orchestrator, then the user | Phase 0 done-when met | Sign off; say when to merge |
+| 1.0 | Shared test helpers; decisions recorded | Orchestrator | `pytest` passes | Answer the decisions below |
+| 1.1 | `psf.py`, `background.py`, `rolling_ball.py` | Opus 5.5, medium | Rolling ball matches the ImageJ fixture; top-hat and PSF match v1 | – |
+| 1.2 | `config.py` | Sonnet 5.5, high | Test kit config loads; wrong settings give plain messages | – |
+| 1.3 | `io.py`: local files | Opus 5.5, medium | Every layout reads correctly; file list as specified | – |
+| 1.4 | `detection.py` | Opus 5.5, medium | Detected spots on the crop identical to v1 | – |
+| 1.5 | `decomposition.py`, `subpixel.py`, `clusters.py` | Opus 5.5, medium | Spots and clusters on the crop identical to v1 | – |
+| 1.6 | `measurements.py` | Opus 5.5, medium | SNR matches the posthoc script in 3D | – |
+| 1.7 | `cells.py`; label files in `segmentation.py` | Opus 5.5, medium | Per-cell counts on the crop match the reference | – |
+| 1.8 | `outputs.py`: tables and basic run folder | Opus 5.5, medium | Columns and `-1` rules as in spec 8.2 | – |
+| 1.9 | One image through every step (`batch.py`) | Opus 5.5, medium | Tables for the crop agree with every v1 reference run | – |
+| 1.10 | Batch runner (`batch.py`) | Opus 5.5, medium | Cancelled run and stopped worker leave combined tables | – |
+| 1.11 | `cli.py`: `batch` and `check` | Sonnet 5.5, high | Both commands run on the test kit | – |
+| 1.12 | End-to-end tests | Sonnet 5.5, high | Cases of spec sections 12 and 13 for this phase pass | – |
+| 1.13 | OMERO input | Opus 5.5, medium, then the user | Tests without a server pass; session sharing works on the lab server | Run the check on the lab network |
+| 1.14 | Full-size image comparison | Orchestrator | Detection identical to v1; other counts within the v1 run-to-run range | – |
+| 1.15 | Phase review | Orchestrator, then the user | Phase 1 done-when met | Sign off; say when to merge |
 
-Task 0.6 uses the main env only, so it can run alongside 0.3–0.5.
+**Order:** 1.1–1.3 together. Then 1.4 followed by 1.5, with 1.6–1.8 alongside. Then 1.9 → 1.10 → 1.11 → 1.12. Task 1.13 starts after 1.3 and finishes after 1.10, because the workers' part needs the runner. Task 1.14 follows 1.11.
 
-### 0.2 Local test-data folder and v1 copy of the code
+**Decisions needed before the tasks start**
 
-- Create `~/bigfish-testdata/` and copy into it:
-  - the full-size image, from `~/Desktop/20240308_sypN_DAPI_Phal_jim-exon_jim-intron_100x_00001.tiff`;
-  - the earlier config, from `~/Documents/Laboratory/LCLIP/analysis_data/jim_stability/batch_script/smFISH_analysis_config.yaml`, saved as `jim_stability_smFISH_analysis_config.yaml`.
-- `git worktree add ../bigfish-pypeline-v1 v1.0`, so the v1 scripts always run from the tagged code, whatever changes on `msp`.
+1. **OMERO server.** The archived app used host `10.34.168.89`, port 4064. Is this still the lab server, and may it be stored in the package (public repository)?
+2. **Label files next to images.** Proposed rule: a file whose name ends in `_seglabels` is never listed as an image.
+3. **Memory per worker.** Proposed: keep the LoG filter as in v1 and size `workers: auto` from the measured 5 GB, which allows two workers on a 16 GB laptop.
 
-### 0.3 Package skeleton
+### 1.0 Test helpers
 
-- `pyproject.toml` for `src/bigfish_pypeline` (version `2.0.0.dev0`), with `pytest` settings.
-- `tests/` with one test that imports the package and reads its version.
-- `docs/modularisation-streamlit-project/msp-devlog.md`, started with the Phase 0 heading.
-- The existing `image_utils.py` and `omero_tools.py` stay as they are until Phase 1.
+- `tests/conftest.py`: paths to the test kit and its v1 reference results; tests that need the full-size image are skipped when `BIGFISH_TEST_DATA` is not set.
+- The answers to the decisions above go into the devlog.
 
-### 0.4 Environment
+### 1.1 PSF and background
 
-- `docs/modularisation-streamlit-project/msp-environment.yml` as in spec section 4.3, ending with `pip install -e .` for the package. Until the fork's tag exists (0.5), big-fish is installed from the local fork (`/Users/jefflee/Documents/Incubator/big-fish`) in editable mode.
-- Build `bigfish-msp`. Record in the devlog the versions actually installed and the device PyTorch uses (Apple GPU expected).
-- Set `BIGFISH_TEST_DATA=~/bigfish-testdata` as a variable of the `bigfish-msp` env (`conda env config vars set`), so it is set whenever the env is active.
+- `rolling_ball.py`: copy of `imagej_rolling_ball.py` with a header naming the source repository and commit (devlog 0.10), with its ImageJ reference tests and fixture (0.3 MB) copied into `tests/`.
+- `background.py`: `subtract_background(image, radius, light_bg=False, method="rolling_ball")`, applied plane by plane to 3D images and directly to 2D images; `tophat` as in v1.
+- `psf.py`: `calculate_psf` as in v1.
+- Checks: the ImageJ fixture tests pass; top-hat gives the same array as v1 `image_utils.subtract_background` on the crop; PSF values equal v1 for confocal, widefield and nipkow.
 
-### 0.5 big-fish fork
+### 1.2 Config
 
-- In the fork, a branch `msp-patches` from `master` (0.6.2): guard the `selem` imports, replace `selem=` with `footprint=`, replace `np.int`, then run big-fish's own tests in `bigfish-msp` and fix what fails. Set the version to `0.6.2.post1`.
-- After the user approves: push the branch and the tag `v0.6.2.post1` to `JeffLeeLab/big-fish`, switch the env file to `git+https://github.com/JeffLeeLab/big-fish.git@v0.6.2.post1` and rebuild the env once to confirm it installs.
-- Every change to big-fish is listed in the devlog.
+- `pydantic` models for the layout in spec 6.2, with its defaults and the principles of 6.1: unknown settings rejected with a suggestion, `image.axes` and `image.voxel_size_nm` required, safe YAML loader, folders relative to the config file.
+- Any number of channels; channel indices must not repeat.
+- The `resolved` block (image list, calibrated thresholds) and the two ways of reusing a `run_config.yaml` (spec 6.3). Command-line values override the file.
+- Checks: the test kit config loads unchanged; a config saved and loaded again is the same; each kind of mistake gives the message the spec describes.
 
-### 0.6 v1 reference run on the full-size image
+### 1.3 Local image input
 
-- Run from the v1 copy (0.2) in the main env: the general and HCRv3 batch scripts on channel 2 only.
-- Settings from the earlier config: voxel sizes 200 nm (Z) and 65 nm (YX), ex 570, em 610, NA 1.45, RI 1.45, confocal, top-hat background at 5 px, alpha 0.5, beta 1, cluster radius 600 nm, minimum spots 12.
-- Runs: manual threshold 18 and auto threshold; subpixel fitting on and off; no segmentation.
-- Store outputs, the config and command of each run and `conda env export` in `~/bigfish-testdata/reference_v1/full/`. If a v1 script cannot switch a setting without a code change, the devlog records exactly what was changed.
+- File list: folder, filter, extension, top level only, sorted by name, label files left out (decision 2), stop when two inputs give the same output name.
+- Reading with `tifffile`: layouts `ZCYX`, `CZYX`, `ZYX`, `CYX`, `YX`; only the chosen channels are read, numbered by their position in the file; a time axis of length 1 is dropped; several time points or positions are rejected.
+- Voxel sizes from ImageJ or OME metadata, in nm; different X and Y sizes are reported; image size read from the file header without loading the pixels (used for the worker estimate).
+- Checks: generated files in every layout and in 8-bit, 16-bit and 32-bit float read correctly; names with spaces and accents work; the crop reads as `ZCYX`, 11 × 3 × 384 × 384, 200 nm and 65 nm.
 
-### 0.7 Crop
+### 1.4 Spot detection
 
-- Using the full-size reference spots, list candidate crops (256–384 px square, with a Z range) that hold several whole nuclei, well over 30 isolated spots away from the edges and a dense region, and whose nuclei stay separate in the DAPI projection.
-- Show the user the two or three best candidates as projections (DAPI; exon with spots marked). The user picks one.
-- Save channels 0–2 of the chosen crop to `tests/data/` (about 10 MB) with axes and voxel sizes in the ImageJ metadata, and write its config with the same settings as 0.6 (`confocal`, RI 1.45; the spinning-disk microscope counts as confocal).
+- Spot radius from the PSF, LoG filter, local maxima and thresholding as in v1, for 2D and 3D images.
+- Threshold modes `manual` and `auto` with the lower limit; the elbow values are kept for the Phase 3 plot. No candidate spots gives zero spots, an empty threshold and a warning.
+- The median used by `calibrated` mode, with unusable images left out and listed. Bailout.
+- A generator of synthetic images with Gaussian spots at known positions, in `tests/`, shared by later tasks.
+- Checks: on the crop, manual threshold 18 gives the 473 spots of v1 and auto gives threshold 13.0 and the 610 spots of v1, position for position; synthetic spots are all found within 1 px; a blank image gives none.
 
-### 0.8 Nuclear label image
+### 1.5 Decomposition, subpixel fitting and clusters
 
-- Draft a 2D nuclear label image from the crop's DAPI channel (maximum projection), with a threshold and watershed split or Cellpose 3's `nuclei` model in the main env, whichever looks better. Show the user an overlay.
-- The user corrects it in Fiji, napari or the Cellpose GUI and saves it as `<crop>_seglabels.tif` in `tests/data/`.
-- Check the saved file: 2D, same Y × X as the crop, whole numbers of 0 or more, 0 as background.
+- As in spec 5.6, including the cases where decomposition is skipped and the two reference spots.
+- The random seed is set before each reference spot from `run.seed`, the image name and the channel number, in a way that gives the same number in every process.
+- Checks: on the crop, the four v1 general runs (manual and auto, subpixel on and off) are reproduced exactly (692 spots and 6 clusters; 869 and 6); two runs with the same seed give the same reference spot on a synthetic image with more than 2,000 spots; images with no spots and with very few are handled.
 
-### 0.9 v1 reference run on the crop
+### 1.6 Spot measurements
 
-- Same runs as 0.6, on the crop itself.
-- Per-cell reference counts from big-fish `extract_cell` with the nuclear label image.
-- Store in `tests/data/reference_v1/`: tables and `.npz` files the regression tests need, plus configs, commands and `conda env export`. Large QC images stay in `~/bigfish-testdata/reference_v1/crop/`.
+- SNR from the posthoc script's `compute_snr_spots_individual`, extended to 2D; `log_intensity` from `rna_log` at the spot's own position.
+- Checks: SNR values equal the posthoc function on the crop; synthetic 2D and 3D spots give the expected values; an empty or flat ring gives an empty value.
 
-### 0.10 Benchmarks
+### 1.7 Cell assignment and label files
 
-- In `bigfish-msp`, on channel 2 of the full-size image: time and peak memory of top-hat and rolling ball at 5 px, and of each v1 step (LoG, detection, decomposition, subpixel fitting, clusters).
-- Rolling ball is taken for now from `misc/python-rolling-ball/imagej_rolling_ball.py` in JeffLeeLab/Image-analysis (the commit is noted). It is copied into the package in Phase 1.
-- First estimate of memory per worker for a 2048 × 2048 × 35 channel.
+- Label files: read `<image>_seglabels.tif` from the label folder and accept only 2D whole-number labels of the image's Y × X size (spec 5.7). Cellpose is added to `segmentation.py` in Phase 2.
+- Assignment by looking up each spot's pixel position, and each cluster's centre, in the label image, including positions on the image edge; `touches_border`; `drop_border_cells`; the cell table of spec 8.2.
+- Checks: per-cell counts on the crop equal `per_cell_counts.csv` of the four subpixel-off reference runs; synthetic labels with adjacent cells, border cells and a cluster lying across a boundary; invalid label files are rejected.
 
-### 0.11 Phase review
+### 1.8 Tables and run folder
 
-- The orchestrator runs `pytest` and big-fish's tests in a fresh shell and writes the Phase 0 devlog entry: installed versions, device, big-fish changes, reference runs, crop and labels, benchmark numbers, deviations, and the manual checks for the user.
-- The user reviews the devlog, signs off, and says when to merge `msp` into `main`.
+- `spots`, `clusters`, `cells`, `images` and `calibration` tables with the columns and conventions of spec 8.2 (pixels and nm, Z columns only in 3D, `-1` for no cluster and no cell).
+- Run folder of spec 8.1 without QC images, `.npz` and `run_info.yaml`: folder name with a number added when it exists, `run_config.yaml` with every default filled in, per-image files written under temporary names and then renamed, combined tables.
+- Checks: column names and order; a 2D image has no Z columns; combining three per-image sets gives the expected rows; two runs with the same name get different folders.
 
-**Done when** (spec): big-fish's tests pass in `bigfish-msp`; the reference outputs, test kit and benchmark numbers are recorded; and `pytest` runs in `bigfish-msp`.
+### 1.9 One image through every step
+
+- The function a worker runs for one image: read the FISH channels needed, run steps 1–8 and 10 for each channel, write that image's tables, return a summary row for each channel.
+- Error handling for each channel and for the whole image (spec 7.3), bailout, warnings, and the warning when metadata disagree with the config.
+- Checks: on the crop, the tables agree with all v1 reference runs and with the per-cell reference; in a generated three-channel image with one bad channel the other channels are kept; a 2D image runs.
+
+### 1.10 Batch runner
+
+- Run flow of spec 7.1 without Cellpose: checks before the run, run folder, pool of worker processes started with "spawn", an image handed over only when a worker is free, `run.log`, `progress.json`, combining at the end.
+- Calibrated thresholds: the first pass over the subset, `calibration.csv`, values added to `run_config.yaml`.
+- `workers: auto` (spec 7.2) from the Phase 0 measurement, with the number used and the reason logged.
+- Cancel by Ctrl+C and by a `cancel` file; restart with half the workers after a worker stops, with one retry (spec 7.3).
+- Repeating a run from its `run_config.yaml`.
+- Checks: test kit run with one and two workers gives the same tables; a cancelled run and a run with a deliberately stopped worker leave combined tables for the finished images; a repeated run gives the same tables.
+
+### 1.11 Command line
+
+- `bigfish-pypeline batch` with its options and `bigfish-pypeline check` (spec 4.2), declared in `pyproject.toml`. Mistakes in a config are shown as plain messages. The `app` command is added in Phase 5.
+- Checks: both commands run on the test kit from another folder; options override the file.
+
+### 1.12 End-to-end tests
+
+- `bigfish-pypeline batch` on the test kit, with and without label files, and on generated images: different sizes in one batch, a layout that differs from the config, a corrupt file, a blank image, a 2D image, three channels with manual thresholds, awkward file names, a missing label file, an output folder that cannot be written.
+- A cancelled run, a deliberately stopped worker, and a repeated run.
+
+### 1.13 OMERO input
+
+- In `io.py`: images listed from a dataset ID or a list of image IDs; output names `<image ID>_<image name>` with characters Windows does not allow replaced; voxel sizes from the server in nm (from the archived app); default host and port (decision 1).
+- `connect_to_omero` and `get_omero_image` are used as they are. A second helper lets workers join the session by its key and detach without closing it. One retry when the connection drops; a clean stop when the session has ended (spec 7.3).
+- Checks without a server: tests with a stand-in connection.
+- Check on the lab server, run by the user on the lab network with their own password, which is typed into the terminal and never passed to the orchestrator: the main process logs in, two workers join, each reads an image and detaches, and the main session still works afterwards. The user supplies an image or dataset ID to test with.
+
+### 1.14 Full-size image comparison
+
+- Local tests against `~/bigfish-testdata/reference_v1/full/`: detected spots identical to v1 (24,631 at threshold 18; 27,514 at the automatic threshold of 15.0); decomposed spots and clusters compared as counts, with the difference from v1 recorded next to v1's own run-to-run difference.
+- One full batch run through `bigfish-pypeline batch`, with its time and peak memory noted.
+- If a difference appears that v1's random reference spot does not explain, the v1 script is run in `bigfish-msp` to show whether it comes from the package versions or from the new code.
+
+### 1.15 Phase review
+
+- The orchestrator runs the whole test suite in a fresh shell, checks in the main env that the v1 imports still work, and writes the Phase 1 devlog entry with deviations and the manual checks for the user.
+- The user reviews the devlog, signs off, and says when to merge.
+
+**Done when** (spec): on the crop and the full-size image, detected spots are identical to v1; decomposed spots and clusters are identical on images with up to 2,000 spots, and compared as counts above that; per-cell counts on the crop match `extract_cell` for cells not touching the border; a cancelled run and a run with a stopped worker leave combined tables; and any difference from v1 is explained in the devlog.
 
 ## Open points
 
-- **OMERO host and port** stored in the package (Phase 1).
+- **OMERO host and port** stored in the package: decision 1 of Phase 1.
 - **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
 
 ## Later phases
@@ -118,7 +178,6 @@ Planned in detail when the previous phase is merged. Usual split:
 
 | Phase | Mostly done by |
 |---|---|
-| 1 Package and unified pipeline | Opus 5.5, medium; Sonnet 5.5, high for config and file-discovery tests |
 | 2 Cellpose 4 and comparisons | Opus 5.5, medium |
 | 3 Outputs, logs and QC | Opus 5.5, medium for the run record; Sonnet 5.5, high for QC figures |
 | 4 Optimise notebook | Sonnet 5.5, high |

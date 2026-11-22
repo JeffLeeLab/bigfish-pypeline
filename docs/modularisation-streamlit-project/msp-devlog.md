@@ -429,4 +429,4 @@ Phase 0 "done when" (spec section 11):
 - `tests/data/` adds 10 MB to the repository.
 - An older, empty `test/` folder sits next to `tests/` in the working copy; it is not tracked by git.
 
-**Sign-off (22 Nov 2026):** the user signed off Phase 0 and approved pushing `msp` to GitHub. The merge into `main` has not been decided yet.
+**Sign-off (22 Nov 2026):** the user signed off Phase 0 and approved pushing `msp` to GitHub. `msp` was then merged into `main` and both were pushed. The repository's address on this laptop was updated to `JeffLeeLab/bigfish-pypeline`.
