@@ -184,3 +184,41 @@ Checks on the outputs:
 - The differences between the general runs with subpixel fitting on and off (37,086 against 36,699; 41,274 against 41,861) are of the same size as this run-to-run variation and cannot be read as an effect of subpixel fitting.
 - For the full-size image, Phase 1 can compare detected spots exactly (HCRv3 outputs) but decomposed spots and clusters only as counts, within about 2 %, as the spec expects.
 - The crop for the test kit must hold fewer than 2,000 detected spots so that its v1 results are repeatable. This is added to the conditions for the crop in 0.7.
+
+### 0.7 Crop for the test kit (22 Nov 2026)
+
+Chosen by the user from three candidates: **crop A**, top-left corner y = 1408, x = 1632, 384 × 384 px, planes 17–27 counted from 0 (11 planes), channels 0–2. Saved as `tests/data/sypN_DAPI_Phal_jim-exon_crop.tif` (9.7 MB, ImageJ TIFF, `ZCYX`, 65 nm pixels and 200 nm Z-steps in the metadata). The pixel values are identical to the same region of the full-size image.
+
+Conditions used in the search, on top of the plan's:
+
+- Fewer than 2,000 detected spots (see 0.6), so the v1 results on the crop are repeatable.
+- "Isolated" spot: at least 10 px from the Y and X sides, not in the first or last two planes, no other spot within 10 px in YX, and left unchanged by decomposition.
+- Spot and cluster numbers were taken from the v1 general script run on each candidate crop itself, not cut out of the full-image results.
+
+| | A (chosen) | B | C |
+|---|---|---|---|
+| Top-left corner (y, x) | 1408, 1632 | 544, 1504 | 32, 1184 |
+| Planes | 17–27 | 22–32 | 22–32 |
+| Whole nuclei, counted by eye | about 16 | about 12 | about 12 |
+| Detected spots at threshold 18 | 473 | 651 | 463 |
+| Isolated spots | 51 | 61 | 55 |
+| Spots after decomposition, manual 18 | 692 | 978 | 699 |
+| Clusters, manual 18 | 6 | 6 | 4 |
+| Auto threshold on the crop | 13 | 12 | 12 |
+| Detected spots at the auto threshold | 610 | 1,015 | 845 |
+| Spots after decomposition, auto | 869 | 1,493 | 1,247 |
+| Clusters, auto | 6 | 10 | 6 |
+
+For all three, a second v1 run with the same settings gave identical arrays, with the manual and with the automatic threshold.
+
+Notes:
+
+- All candidates are 384 px with 11 planes. At 256 px and 320 px the best positions had only 33 and 46 isolated spots.
+- Eleven planes cover 2.2 µm, less than the depth of a nucleus. Nuclei in the crop are whole in Y and X but cut in Z. More planes at 384 px would exceed the 10 MB limit.
+- In a crop's own run the first and last planes hold extra spots (for A, 85 and 75 against a median of 34 per plane), from signal whose peak lies just outside the Z range.
+- The automatic threshold is 12–13 on the crops against 15 on the full-size image, because cropping changes the background.
+- The candidates, their figures, the search scripts and the v1 runs on each are in `~/bigfish-testdata/crop_candidates/`.
+
+Config: `tests/data/sypN_DAPI_Phal_jim-exon_crop_config.yaml`, written in the version 1 layout of spec section 6.2 with the settings of 0.6 (top-hat at 5 px, manual threshold 18, alpha 0.5, beta 1, cluster radius 600 nm, minimum spots 12, `confocal`, RI 1.45, subpixel fitting off) and per-cell results from label files in the same folder. It is checked against the config schema once that exists (Phase 1); the tests change the threshold mode and subpixel fitting from this base.
+
+Point for Phase 1: with the label image stored next to the crop, the file filter of the config also matches `…_seglabels.tif`. File discovery needs a rule for label files that sit in the input folder.

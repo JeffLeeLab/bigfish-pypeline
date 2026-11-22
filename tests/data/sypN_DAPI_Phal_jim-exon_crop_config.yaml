@@ -1,0 +1,73 @@
+# Test kit config for sypN_DAPI_Phal_jim-exon_crop.tif.
+# Same settings as the v1 reference run: top-hat background at 5 px, manual threshold 18.
+config_version: 1
+run:
+  name: testkit_crop
+  input:
+    source: local
+    folder: .
+    filter: sypN_DAPI_Phal_jim-exon_crop
+    extension: .tif
+    omero:
+      host: ""
+      port: 4064
+      username: ""
+      dataset_id:
+      image_ids: []
+  output_folder: ""
+  workers: 1
+  keep_awake: false
+  seed: 0
+image:
+  axes: ZCYX
+  voxel_size_nm: {z: 200, yx: 65}
+microscope:
+  type: confocal
+  NA: 1.45
+  RI: 1.45
+channels:
+  - index: 2
+    name: jim-exon
+    ex: 570
+    em: 610
+    background: {method: tophat, radius_px: 5}
+    threshold:
+      mode: manual
+      value: 18
+      lower_limit:
+      calibration_filter: ""
+    bailout: {enabled: false, max_spots: }
+    decomposition: {enabled: true, alpha: 0.5, beta: 1}
+    subpixel: {enabled: false}
+    clusters: {enabled: true, radius_nm: 600, min_spots: 12}
+    measurements: {snr: false, intensity: false}
+segmentation:
+  enabled: true
+  source: label_files
+  label_folder: .
+  channel: 0
+  projection: max
+  clip: {enabled: false, value: 100}
+  background: {enabled: true, method: rolling_ball, radius_px: 200}
+  median_px:
+  gaussian_sigma_px:
+  cellpose:
+    model: cpsam_v2
+    diameter:
+    flow_threshold: 0.4
+    cellprob_threshold: 0
+    min_size: 15
+    normalize: true
+    batch_size: 1
+    niter:
+  device: auto
+  drop_border_cells: false
+outputs:
+  label_images: true
+  npz: false
+  qc:
+    elbow_plot: true
+    detection: true
+    reference_spot: true
+    cellpose: true
+    final: png
