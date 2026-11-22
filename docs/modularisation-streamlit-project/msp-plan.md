@@ -29,148 +29,118 @@ Done, signed off and merged into `main` on 22 Nov 2026. Results, deviations and 
 
 ## Phase 1: Package and unified pipeline
 
-Spec section 11, Phase 1. Pipeline: sections 5–8. Tests and edge cases: sections 12 and 13. Cellpose, QC images, `run_info.yaml`, `.npz` files and keep-awake belong to Phases 2 and 3.
+Done, signed off and merged into `main` on 22 Nov 2026. Results, deviations and the points carried forward are in `msp-devlog.md` (entries 1.0–1.15). The OMERO check on the lab server was left as a follow-up (see "Waiting on the user" below).
+
+## Phase 2: Cellpose 4 and comparisons
+
+Spec section 11, Phase 2. Segmentation: section 5.7. Run flow and workers: sections 7.1 and 7.2. Tests and edge cases: sections 12 and 13. The other QC images, `run_info.yaml`, `.npz` files and keep-awake belong to Phase 3.
 
 **Ground rules for this phase**
 
-- Each task adds its module and its tests (`tests/test_<module>.py`). Tests run with `conda run -n bigfish-msp python -m pytest`.
-- `image_utils.py` and `omero_tools.py` stay exactly as they are until Phase 8, and `__init__.py` holds only the version. The v1 scripts and notebooks on `main` import them in the main env (Python 3.9), so they must keep working after each merge. New code goes into the modules of spec section 4.1.
-- Comparisons with v1 use top-hat background and the reference settings (devlog 0.6 and 0.9).
-- The LoG filter is run as in v1. `workers: auto` uses the memory measured in Phase 0 (about 5 GB per worker for a 2048 × 2048 × 35 channel); the final figure comes from Phase 2.
+- As in Phase 1: each task adds its tests, run with `conda run -n bigfish-msp python -m pytest`; `image_utils.py`, `omero_tools.py` and the main env stay untouched.
+- Cellpose-SAM masks are not judged on the test image (brief R8). Tests check that the labels have the right form (2D, whole numbers, the image's size), not how good they are.
+- Tests that need the Cellpose model are marked `cellpose` and are skipped when the model file is not on the computer. Tests never download it. Everything else is tested with a stand-in model, so the main test run stays fast.
+- `cellpose` and `torch` are loaded only by the process that segments. Worker processes never load them.
+- Benchmarks run one at a time, with no other task running.
+- Executors do not connect to an OMERO server.
 
 | # | Task | Done by | Check | User |
 |---|---|---|---|---|
-| 1.0 | Shared test helpers; decisions recorded | Orchestrator | `pytest` passes | Answer the decisions below |
-| 1.1 | `psf.py`, `background.py`, `rolling_ball.py` | Opus 5.5, medium | Rolling ball matches the ImageJ fixture; top-hat and PSF match v1 | – |
-| 1.2 | `config.py` | Sonnet 5.5, high | Test kit config loads; wrong settings give plain messages | – |
-| 1.3 | `io.py`: local files | Opus 5.5, medium | Every layout reads correctly; file list as specified | – |
-| 1.4 | `detection.py` | Opus 5.5, medium | Detected spots on the crop identical to v1 | – |
-| 1.5 | `decomposition.py`, `subpixel.py`, `clusters.py` | Opus 5.5, medium | Spots and clusters on the crop identical to v1 | – |
-| 1.6 | `measurements.py` | Opus 5.5, medium | SNR matches the posthoc script in 3D | – |
-| 1.7 | `cells.py`; label files in `segmentation.py` | Opus 5.5, medium | Per-cell counts on the crop match the reference | – |
-| 1.8 | `outputs.py`: tables and basic run folder | Opus 5.5, medium | Columns and `-1` rules as in spec 8.2 | – |
-| 1.9 | One image through every step (`batch.py`) | Opus 5.5, medium | Tables for the crop agree with every v1 reference run | – |
-| 1.10 | Batch runner (`batch.py`) | Opus 5.5, medium | Cancelled run and stopped worker leave combined tables | – |
-| 1.11 | `cli.py`: `batch` and `check` | Sonnet 5.5, high | Both commands run on the test kit | – |
-| 1.12 | End-to-end tests | Sonnet 5.5, high | Cases of spec sections 12 and 13 for this phase pass | – |
-| 1.13 | OMERO input | Opus 5.5, medium, then the user | Tests without a server pass; session sharing works on the lab server | Run the check on the lab network |
-| 1.14 | Full-size image comparison | Orchestrator | Detection identical to v1; other counts within the v1 run-to-run range | – |
-| 1.15 | Phase review | Orchestrator, then the user | Phase 1 done-when met | Sign off; say when to merge |
+| 2.0 | Decisions recorded; test marker for Cellpose | Orchestrator | `pytest` passes | Answer the decisions below |
+| 2.1 | Pre-treatment of the segmentation channel (`segmentation.py`) | Opus 5.5, medium | Each step gives the expected image on generated data | – |
+| 2.2 | Device, model and segmentation (`segmentation.py`) | Opus 5.5, medium | Valid labels for the crop; no cells and errors handled | – |
+| 2.3 | Cellpose QC figure (`qc.py`) | Sonnet 5.5, high | Four panels and the title written as a PNG | – |
+| 2.4 | Segmentation in the batch runner (`batch.py`) | Opus 5.5, medium | Test kit run with Cellpose finishes; its `labels/` folder gives the same cell tables when reused | – |
+| 2.5 | End-to-end tests with Cellpose | Sonnet 5.5, high | Cases of spec sections 12 and 13 for this phase pass | – |
+| 2.6 | Rolling ball against top-hat | Opus 5.5, medium, then the orchestrator | Numbers and figures in the devlog | Review the comparison |
+| 2.7 | Benchmarks and the final `workers: auto` estimate | Opus 5.5, medium, then the orchestrator | Numbers in the devlog; estimate updated and tested | Agree the final figures |
+| 2.8 | Phase review | Orchestrator, then the user | Phase 2 done-when met | Sign off; say when to merge |
 
-**Order:** 1.1–1.3 together. Then 1.4 followed by 1.5, with 1.6–1.8 alongside. Then 1.9 → 1.10 → 1.11 → 1.12. Task 1.13 starts after 1.3 and finishes after 1.10, because the workers' part needs the runner. Task 1.14 follows 1.11.
+**Order:** 2.1, 2.2 and 2.6 start together (2.6 needs only the Phase 1 code). Then 2.3 → 2.4 → 2.5. Task 2.7 follows 2.4 and runs on its own.
+
+**Check-ins with the user:** the decisions below; the final `workers: auto` figures (2.7); the rolling ball comparison (2.6); the phase review (2.8).
 
 **Decisions needed before the tasks start**
 
-1. **OMERO server.** The archived app used host `10.34.168.89`, port 4064. Is this still the lab server, and may it be stored in the package (public repository)?
-2. **Label files next to images.** Proposed rule: a file whose name ends in `_seglabels` is never listed as an image.
-3. **Memory per worker.** Proposed: keep the LoG filter as in v1 and size `workers: auto` from the measured 5 GB, which allows two workers on a 16 GB laptop.
+1. **Label files given by the user.** Proposed: they are not copied into the run folder. `outputs.label_images` then applies to Cellpose labels only, and `run_config.yaml` and `run.log` name the label folder that was used.
+2. **When the chosen device does not work.** Proposed: with `device: auto`, if the test calculation fails on the GPU, the next device is tried (CUDA, then Apple GPU, then CPU) and a warning is logged. With a device named in the config (`cuda`, `mps`), the run stops before processing with a plain message.
+3. **Images for the rolling ball comparison.** Proposed: the full-size test image (exon channel 2 and intron channel 3) and the crop. Other kinds of image (e.g. HCR, cultured cells) can be added if you put them in `~/bigfish-testdata/`.
 
-### 1.0 Test helpers
+### 2.0 Decisions and test marker
 
-- `tests/conftest.py`: paths to the test kit and its v1 reference results; tests that need the full-size image are skipped when `BIGFISH_TEST_DATA` is not set.
 - The answers to the decisions above go into the devlog.
+- `pyproject.toml`: marker `cellpose`. `tests/conftest.py`: tests with this marker are skipped when `~/.cellpose/models/cpsam_v2` is missing.
 
-### 1.1 PSF and background
+### 2.1 Pre-treatment
 
-- `rolling_ball.py`: copy of `imagej_rolling_ball.py` with a header naming the source repository and commit (devlog 0.10), with its ImageJ reference tests and fixture (0.3 MB) copied into `tests/`.
-- `background.py`: `subtract_background(image, radius, light_bg=False, method="rolling_ball")`, applied plane by plane to 3D images and directly to 2D images; `tophat` as in v1.
-- `psf.py`: `calculate_psf` as in v1.
-- Checks: the ImageJ fixture tests pass; top-hat gives the same array as v1 `image_utils.subtract_background` on the crop; PSF values equal v1 for confocal, widefield and nipkow.
+- One function that turns the segmentation channel into the 2D image given to Cellpose, in the order of spec 5.7: Z projection (max or mean; a 2D image is used as it is) → clip (values above the clip value are set to it, as in the v1 tissue-culture script) → background subtraction (`background.subtract_background`; rolling ball at 200 px by default, or top-hat) → median filter → Gaussian filter.
+- Checks: each step alone and all steps in order on generated images; 2D and 3D input; with every step off the projection is returned unchanged; rolling ball at 200 px on the crop's DAPI projection equals a direct call of `subtract_background`.
 
-### 1.2 Config
+### 2.2 Device, model and segmentation
 
-- `pydantic` models for the layout in spec 6.2, with its defaults and the principles of 6.1: unknown settings rejected with a suggestion, `image.axes` and `image.voxel_size_nm` required, safe YAML loader, folders relative to the config file.
-- Any number of channels; channel indices must not repeat.
-- The `resolved` block (image list, calibrated thresholds) and the two ways of reusing a `run_config.yaml` (spec 6.3). Command-line values override the file.
-- Checks: the test kit config loads unchanged; a config saved and loaded again is the same; each kind of mistake gives the message the spec describes.
+- Device: `auto` tries CUDA, then the Apple GPU, then CPU, with the workbook's test calculation on the chosen device before the model loads (decision 2). The device used is reported, with a warning when it is the CPU.
+- Model: `CellposeModel(pretrained_model="cpsam_v2", use_bfloat16=False)` on that device, loaded once. An unknown model name, or a model that cannot be downloaded, gives a plain message.
+- Segmentation: `eval` with the config's settings and `do_3D=False`. Returns `masks` (2D, uint32), what the QC figure needs, and the time taken. No cells gives an all-zero label image and a warning.
+- Label files: written as `<image>_seglabels.tif` under a temporary name and then renamed, so that `read_label_file` accepts them.
+- The call details are taken from the installed Cellpose 4.2.1.1, not from Cellpose 3 habits.
+- Checks: with a stand-in model, the settings reach `eval`, and no cells and an error are handled; with the real model (marked `cellpose`), the crop's DAPI channel gives valid labels, and two runs on the same device give the same labels (recorded in the devlog if they do not); a process that only reads label files has not loaded `cellpose` or `torch`.
 
-### 1.3 Local image input
+### 2.3 Cellpose QC figure
 
-- File list: folder, filter, extension, top level only, sorted by name, label files left out (decision 2), stop when two inputs give the same output name.
-- Reading with `tifffile`: layouts `ZCYX`, `CZYX`, `ZYX`, `CYX`, `YX`; only the chosen channels are read, numbered by their position in the file; a time axis of length 1 is dropped; several time points or positions are rejected.
-- Voxel sizes from ImageJ or OME metadata, in nm; different X and Y sizes are reported; image size read from the file header without loading the pixels (used for the worker estimate).
-- Checks: generated files in every layout and in 8-bit, 16-bit and 32-bit float read correctly; names with spaces and accents work; the crop reads as `ZCYX`, 11 × 3 × 384 × 384, 200 nm and 65 nm.
+- `qc.py`: the workbook's `qc_figure`, taking its settings as arguments. Four panels (input, outlines, masks, flows); the title shows the image, projection, channel, pre-treatment, diameter, cell count and time.
+- Written as `qc/<image>_cellpose_qc.png` without needing a screen, and switched by `outputs.qc.cellpose`.
+- Checks: the file is written for a generated image with cells and with none; the title holds each item.
 
-### 1.4 Spot detection
+### 2.4 Segmentation in the batch runner
 
-- Spot radius from the PSF, LoG filter, local maxima and thresholding as in v1, for 2D and 3D images.
-- Threshold modes `manual` and `auto` with the lower limit; the elbow values are kept for the Phase 3 plot. No candidate spots gives zero spots, an empty threshold and a warning.
-- The median used by `calibrated` mode, with unusable images left out and listed. Bailout.
-- A generator of synthetic images with Gaussian spots at known positions, in `tests/`, shared by later tasks.
-- Checks: on the crop, manual threshold 18 gives the 473 spots of v1 and auto gives threshold 13.0 and the 610 spots of v1, position for position; synthetic spots are all found within 1 px; a blank image gives none.
+- Before the run: the segmentation channel is checked against the first image, the device is chosen and tested, and the model is loaded, so that a problem with any of them stops the run before processing. `bigfish-pypeline check` does not load the model.
+- Run flow of spec 7.1, step 5: for each image in order, the main process reads only the segmentation channel (local file or OMERO), pre-treats it, segments it, saves the labels and the QC figure, and hands the image to a worker when one is free.
+- A long segmentation (e.g. on CPU) does not hold up cancel, `progress.json` or the collection of finished images.
+- Labels go to `labels/`, or to a temporary folder in the run folder when `outputs.label_images` is off; a temporary label file is deleted as its image finishes, and the folder is removed at the end, also after a cancel.
+- If segmentation fails for one image, its spots are still written, cell-level results are skipped, and `segmentation_status` is `failed` with the reason. No cells: status `done`, `n_cells` 0, a warning.
+- `run.log` names the model and the device, gives the CPU warning, and gives the segmentation time of each image. `progress.json` shows which image is being segmented.
+- The thread settings made for the workers must not limit Cellpose on CPU to one thread. The number of threads it uses is set in the code; the final value comes from 2.7.
+- `workers: auto` takes a larger reserve when Cellpose is on. The figure is a first estimate until 2.7.
+- Checks, mostly with a stand-in model: the test kit run with one and two workers gives the same tables; cancel during a segmentation; a stopped worker with segmentation on; the temporary folder is gone afterwards; a second run with the first run's `labels/` as its label folder gives the same cell tables. With the real model: one test kit run from start to finish.
 
-### 1.5 Decomposition, subpixel fitting and clusters
+### 2.5 End-to-end tests
 
-- As in spec 5.6, including the cases where decomposition is skipped and the two reference spots.
-- The random seed is set before each reference spot from `run.seed`, the image name and the channel number, in a way that gives the same number in every process.
-- Checks: on the crop, the four v1 general runs (manual and auto, subpixel on and off) are reproduced exactly (692 spots and 6 clusters; 869 and 6); two runs with the same seed give the same reference spot on a synthetic image with more than 2,000 spots; images with no spots and with very few are handled.
+- `bigfish-pypeline batch` on the test kit with `source: cellpose` (marked `cellpose`).
+- Through the runner with a stand-in model, on generated images: no cells, a failing segmentation, different sizes in one batch, a 2D image, `outputs.label_images` off, a cancelled run, a repeated run.
+- No GPU: with `device: cpu` the run goes on with the warning about time (spec section 13).
 
-### 1.6 Spot measurements
+### 2.6 Rolling ball against top-hat
 
-- SNR from the posthoc script's `compute_snr_spots_individual`, extended to 2D; `log_intensity` from `rna_log` at the spot's own position.
-- Checks: SNR values equal the posthoc function on the crop; synthetic 2D and 3D spots give the expected values; an empty or flat ring gives an empty value.
+- Images of decision 3, with the v1 reference settings and a fixed seed; only the background method differs.
+- Numbers for each channel: the automatic threshold with each method; spots at the manual threshold and at each method's own automatic threshold; spots after decomposition and clusters; per-cell counts on the crop; how many spots both methods find (same position within 1 px) and how many only one finds; and, for a manual threshold used with top-hat, the rolling ball threshold that gives the same number of spots.
+- Differences after decomposition are read against the run-to-run range of the random reference spot (devlog 1.14).
+- Figures: the elbow curves of both methods on one plot; the spread of spot intensities; examples from the crop (a sparse region, a dense region, the edge of a nucleus) showing the raw image, each background result and the spots found with each. Image examples come from the crop only, because it is already public.
+- Figures are kept in `docs/modularisation-streamlit-project/figures/phase2/` and linked from the devlog. Scripts and raw numbers go to `~/bigfish-testdata/phase2/`.
+- The orchestrator checks the numbers on a sample and writes the devlog entry. The user reviews the comparison.
 
-### 1.7 Cell assignment and label files
+### 2.7 Benchmarks and the final workers estimate
 
-- Label files: read `<image>_seglabels.tif` from the label folder and accept only 2D whole-number labels of the image's Y × X size (spec 5.7). Cellpose is added to `segmentation.py` in Phase 2.
-- Assignment by looking up each spot's pixel position, and each cluster's centre, in the label image, including positions on the image edge; `touches_border`; `drop_border_cells`; the cell table of spec 8.2.
-- Checks: per-cell counts on the crop equal `per_cell_counts.csv` of the four subpixel-off reference runs; synthetic labels with adjacent cells, border cells and a cluster lying across a boundary; invalid label files are rejected.
+- Conditions and memory measure as in Phase 0 (devlog 0.10), on the full-size image.
+- Rolling ball through the package: each FISH channel at 5 px; the DAPI projection at 200 px.
+- Cellpose-SAM on the 2048 × 2048 DAPI projection: time and memory to load the model; time and peak memory per image on the Apple GPU and on CPU (one thread and several); memory over five images in a row. Masks are not judged.
+- One worker with every step switched on (decomposition, subpixel fitting, clusters, SNR, intensity, cell assignment), for one channel and for two channels in a row.
+- One whole run of `bigfish-pypeline batch` with Cellpose on: time, and peak memory of the main process and of the workers.
+- Result: the final memory per worker, the reserve with and without Cellpose, and the number of threads for Cellpose on CPU, proposed to the user. Once agreed, `choose_workers` and its tests are updated, and the difference from the 3–4 GB expected in spec 7.2 is recorded as a deviation.
+- The QC figures of Phase 3 are not part of these measurements; the estimate is checked again there.
 
-### 1.8 Tables and run folder
+### 2.8 Phase review
 
-- `spots`, `clusters`, `cells`, `images` and `calibration` tables with the columns and conventions of spec 8.2 (pixels and nm, Z columns only in 3D, `-1` for no cluster and no cell).
-- Run folder of spec 8.1 without QC images, `.npz` and `run_info.yaml`: folder name with a number added when it exists, `run_config.yaml` with every default filled in, per-image files written under temporary names and then renamed, combined tables.
-- Checks: column names and order; a 2D image has no Z columns; combining three per-image sets gives the expected rows; two runs with the same name get different folders.
-
-### 1.9 One image through every step
-
-- The function a worker runs for one image: read the FISH channels needed, run steps 1–8 and 10 for each channel, write that image's tables, return a summary row for each channel.
-- Error handling for each channel and for the whole image (spec 7.3), bailout, warnings, and the warning when metadata disagree with the config.
-- Checks: on the crop, the tables agree with all v1 reference runs and with the per-cell reference; in a generated three-channel image with one bad channel the other channels are kept; a 2D image runs.
-
-### 1.10 Batch runner
-
-- Run flow of spec 7.1 without Cellpose: checks before the run, run folder, pool of worker processes started with "spawn", an image handed over only when a worker is free, `run.log`, `progress.json`, combining at the end.
-- Calibrated thresholds: the first pass over the subset, `calibration.csv`, values added to `run_config.yaml`.
-- `workers: auto` (spec 7.2) from the Phase 0 measurement, with the number used and the reason logged.
-- Cancel by Ctrl+C and by a `cancel` file; restart with half the workers after a worker stops, with one retry (spec 7.3).
-- Repeating a run from its `run_config.yaml`.
-- Checks: test kit run with one and two workers gives the same tables; a cancelled run and a run with a deliberately stopped worker leave combined tables for the finished images; a repeated run gives the same tables.
-
-### 1.11 Command line
-
-- `bigfish-pypeline batch` with its options and `bigfish-pypeline check` (spec 4.2), declared in `pyproject.toml`. Mistakes in a config are shown as plain messages. The `app` command is added in Phase 5.
-- Checks: both commands run on the test kit from another folder; options override the file.
-
-### 1.12 End-to-end tests
-
-- `bigfish-pypeline batch` on the test kit, with and without label files, and on generated images: different sizes in one batch, a layout that differs from the config, a corrupt file, a blank image, a 2D image, three channels with manual thresholds, awkward file names, a missing label file, an output folder that cannot be written.
-- A cancelled run, a deliberately stopped worker, and a repeated run.
-
-### 1.13 OMERO input
-
-- In `io.py`: images listed from a dataset ID or a list of image IDs; output names `<image ID>_<image name>` with characters Windows does not allow replaced; voxel sizes from the server in nm (from the archived app); default host and port (decision 1).
-- `connect_to_omero` and `get_omero_image` are used as they are. A second helper lets workers join the session by its key and detach without closing it. One retry when the connection drops; a clean stop when the session has ended (spec 7.3).
-- Checks without a server: tests with a stand-in connection.
-- Check on the lab server, run by the user on the lab network with their own password, which is typed into the terminal and never passed to the orchestrator: the main process logs in, two workers join, each reads an image and detaches, and the main session still works afterwards. The user supplies an image or dataset ID to test with.
-
-### 1.14 Full-size image comparison
-
-- Local tests against `~/bigfish-testdata/reference_v1/full/`: detected spots identical to v1 (24,631 at threshold 18; 27,514 at the automatic threshold of 15.0); decomposed spots and clusters compared as counts, with the difference from v1 recorded next to v1's own run-to-run difference.
-- One full batch run through `bigfish-pypeline batch`, with its time and peak memory noted.
-- If a difference appears that v1's random reference spot does not explain, the v1 script is run in `bigfish-msp` to show whether it comes from the package versions or from the new code.
-
-### 1.15 Phase review
-
-- The orchestrator runs the whole test suite in a fresh shell, checks in the main env that the v1 imports still work, and writes the Phase 1 devlog entry with deviations and the manual checks for the user.
+- The orchestrator runs the whole test suite in a fresh shell, with and without the `cellpose` tests, checks in the main env that the v1 imports still work, and writes the Phase 2 devlog entry with deviations and the manual checks for the user.
 - The user reviews the devlog, signs off, and says when to merge.
 
-**Done when** (spec): on the crop and the full-size image, detected spots are identical to v1; decomposed spots and clusters are identical on images with up to 2,000 spots, and compared as counts above that; per-cell counts on the crop match `extract_cell` for cells not touching the border; a cancelled run and a run with a stopped worker leave combined tables; and any difference from v1 is explained in the devlog.
+**Done when** (spec): the package tests pass and the rolling ball comparison is reviewed by the user. In addition, the benchmarks are in the devlog and the final `workers: auto` figures are agreed.
 
-## Open points
+### Waiting on the user
 
-- **OMERO host and port** stored in the package: decision 1 of Phase 1.
-- **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
+Neither of these holds up Phase 2.
+
+- **Cellpose 4 mask review** (spec, comparison 2): needs an image that suits Cellpose-SAM (e.g. cultured cells). When it arrives, the masks and QC figures are made with the code of 2.2 and 2.3 and shown to the user. Must be done before Phase 8.
+- **OMERO check on the lab server** (left over from Phase 1): `python tests/manual/omero_session_check.py --image-id <ID>` in the `bigfish-msp` env, on the lab network. After it, a small real OMERO batch of two images, with Cellpose on once 2.4 is done.
 
 ## Later phases
 
@@ -178,7 +148,6 @@ Planned in detail when the previous phase is merged. Usual split:
 
 | Phase | Mostly done by |
 |---|---|
-| 2 Cellpose 4 and comparisons | Opus 5.5, medium |
 | 3 Outputs, logs and QC | Opus 5.5, medium for the run record; Sonnet 5.5, high for QC figures |
 | 4 Optimise notebook | Sonnet 5.5, high |
 | 5 Streamlit app | Opus 5.5, medium |
