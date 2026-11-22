@@ -446,3 +446,15 @@ Set up for the phase:
 - `image_utils.py` and `omero_tools.py` stay unchanged until Phase 8, because the v1 scripts and notebooks on `main` import them in the main env.
 - `tests/conftest.py` gives the tests the paths to the test kit, its v1 reference results and the full-size image.
 - Tests that need the full-size image carry the mark `full_image`. They are skipped when `BIGFISH_TEST_DATA` is not set, and can be left out with `python -m pytest -m "not full_image"`.
+
+### 1.1 PSF and background (22 Nov 2026)
+
+- `psf.py`: `calculate_psf`, with the same values as v1 for confocal, widefield and nipkow.
+- `rolling_ball.py`: `imagej_rolling_ball.py` copied unchanged from JeffLeeLab/Image-analysis (commit `24bbbd4`), with its tests and the ImageJ fixture (`tests/data/rolling_ball/`, 0.3 MB).
+- `background.py`: `subtract_background(image, radius, light_bg=False, method="rolling_ball")` for 2D images and 3D stacks, one plane at a time.
+- Checks: top-hat at 5 px on channel 2 of the crop is identical to v1; rolling ball through `subtract_background` agrees with the ImageJ fixture; 74 tests pass.
+
+Choices the spec does not settle:
+
+- Data type of the result. Top-hat returns the type of the image, as in v1. Rolling ball follows ImageJ: 8-bit and 16-bit images keep their type, with values below the background set to 0; other types come back as 64-bit float.
+- `light_bg=True` gives a different kind of result for the two methods: rolling ball keeps dark objects on a white background, as ImageJ does; top-hat turns them bright on a dark background, as v1 does. The pipeline never sets `light_bg`, because fluorescence images have a dark background.
