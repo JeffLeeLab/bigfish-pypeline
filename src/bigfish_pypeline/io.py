@@ -433,8 +433,82 @@ def check_voxel_sizes(info, voxel_size_z, voxel_size_yx):
 
 logger = logging.getLogger(__name__)
 
-# omero-py writes the session key in its INFO and DEBUG messages, so these are not passed on to any log.
-logging.getLogger("omero").setLevel(logging.WARNING)
+
+def silence_omero_logging():
+    """Stop every message omero-py logs (loggers named `omero` and `omero.*`) from going anywhere.
+
+    omero-py's messages, warnings and tracebacks can hold the session key, even before
+    this package knows the key. A lost connection is reported by this package itself in
+    plain words, so nothing of omero-py's own is needed. Other loggers are not changed.
+    """
+    omero_logger = logging.getLogger("omero")
+    omero_logger.setLevel(logging.CRITICAL + 1)
+    omero_logger.propagate = False
+    if not any(isinstance(handler, logging.NullHandler) for handler in omero_logger.handlers):
+        omero_logger.addHandler(logging.NullHandler())
+
+
+silence_omero_logging()
+
+
+class _PlainWarnings(logging.Handler):
+    """Shows a warning or error on the screen only when Python would show it anyway.
+
+    Python prints a warning that no handler takes as its bare text (`logging.lastResort`).
+    Once the root logger has a handler, `logging.basicConfig()` does nothing. This handler
+    gives the root logger a handler while showing exactly what Python would have shown
+    without one.
+    """
+
+    def __init__(self):
+        super().__init__(logging.WARNING)
+
+    def emit(self, record):
+        current = logging.getLogger(record.name)
+        while current is not None:
+            if any(handler is not self for handler in current.handlers):
+                return
+            if not current.propagate:
+                break
+            current = current.parent
+        if logging.lastResort is not None:
+            logging.lastResort.handle(record)
+
+
+def start_plain_logging():
+    """Stop omero-py from setting up logging for the whole program.
+
+    Each time omero-py makes a connection it calls `logging.basicConfig()`, after
+    which the warnings of every other package (Cellpose, for example) are printed as
+    `WARNING:name:...`. When the root logger has no handler, this gives it one that
+    shows only what Python shows without one, so `basicConfig()` does nothing.
+
+    Returns the handler added, or None when the root logger had a handler already.
+    """
+    silence_omero_logging()
+    root = logging.getLogger()
+    if root.handlers:
+        return None
+    handler = _PlainWarnings()
+    root.addHandler(handler)
+    return handler
+
+
+def stop_plain_logging(handler):
+    """Take away a handler added by `start_plain_logging` (None: nothing to do)."""
+    if handler is not None:
+        logging.getLogger().removeHandler(handler)
+
+
+@contextmanager
+def plain_logging():
+    """`start_plain_logging` for the time of a `with` block; the root logger is left as it was."""
+    handler = start_plain_logging()
+    try:
+        yield
+    finally:
+        stop_plain_logging(handler)
+
 
 # Characters that Windows does not allow in file names.
 WINDOWS_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -467,6 +541,26 @@ OMERO_PIXEL_TYPES = {
 
 class OmeroSessionEnded(Exception):
     """The OMERO session has ended (for example it timed out or was closed), so no more images can be read."""
+
+
+class OmeroConnectionLost(ImageReadError):
+    """The connection to OMERO dropped while an image was read.
+
+    `reason` holds the short reason from omero-py, with any session key removed.
+    """
+
+
+def _connection_lost(image_id, error, key):
+    """OmeroConnectionLost for an omero-py error met while image `image_id` was read."""
+    reason = _omero_reason(error, key)
+    lost = OmeroConnectionLost(f"OMERO image {image_id}: lost the connection to OMERO ({reason})")
+    lost.reason = reason
+    return lost
+
+
+def _lost_reason(error):
+    """The short reason held by an OmeroConnectionLost, or its whole message."""
+    return getattr(error, "reason", None) or str(error)
 
 
 @dataclass
@@ -731,9 +825,7 @@ def get_omero_image_info(conn, image_id):
     try:
         return _image_info(conn, image_id)
     except _omero_errors() as error:
-        raise ImageReadError(
-            f"OMERO image {image_id}: lost the connection to OMERO ({_omero_reason(error, key)})"
-        ) from None
+        raise _connection_lost(image_id, error, key) from None
 
 
 # Reading
@@ -789,9 +881,7 @@ def read_omero_channels(conn, image_id, layout, channels):
     try:
         return _read_omero_channels(conn, image_id, layout, channels)
     except _omero_errors() as error:
-        raise ImageReadError(
-            f"OMERO image {image_id}: lost the connection to OMERO ({_omero_reason(error, key)})"
-        ) from None
+        raise _connection_lost(image_id, error, key) from None
 
 
 def read_omero_channel(conn, image_id, layout, channel):
@@ -799,35 +889,85 @@ def read_omero_channel(conn, image_id, layout, channel):
     return read_omero_channels(conn, image_id, layout, [channel])[int(channel)]
 
 
-def read_omero_channels_with_retry(conn, image_id, layout, channels, host, port, key):
+class OmeroImageReader:
+    """Reads one OMERO image, rejoining the session once if the connection drops.
+
+    Every read made through one reader shares a single second try: once the session
+    has been rejoined for this image, a further drop makes the image fail.
+
+    conn: the connection to start with. After each read, `conn` is the connection to
+        go on using: a new one once the session has been rejoined, or None when
+        rejoining failed. The old connection has been let go in both cases.
+    notes: a list to which a plain sentence is added when the session is rejoined.
+        Without a list, the sentence goes to this module's logger.
+
+    Reads raise ImageReadError when the image cannot be read, and OmeroSessionEnded
+    when the session has ended and cannot be rejoined.
+    """
+
+    def __init__(self, conn, image_id, host, port, key, notes=None):
+        self.conn = conn
+        self.image_id = _id_number(image_id)
+        self.host = host
+        self.port = port
+        self.key = key
+        self.notes = notes
+        self.rejoined = False
+        self.label = f"OMERO image {self.image_id}"
+
+    def info(self):
+        """The image information, as from `get_omero_image_info`."""
+        return self._read(lambda conn: get_omero_image_info(conn, self.image_id))
+
+    def channels(self, layout, channels):
+        """Channels of the image, as from `read_omero_channels`."""
+        return self._read(lambda conn: read_omero_channels(conn, self.image_id, layout, channels))
+
+    def _read(self, read):
+        if self.conn is None:
+            raise ImageReadError(f"{self.label}: no connection to OMERO (rejoining the session failed)")
+        try:
+            return read(self.conn)
+        except OmeroConnectionLost as error:
+            reason = _hide_key(_lost_reason(error), self.key)
+            if self.rejoined:
+                raise ImageReadError(f"{self.label}: lost the connection to OMERO twice ({reason})") from None
+        self._rejoin(reason)
+        try:
+            return read(self.conn)
+        except OmeroConnectionLost as error:
+            raise ImageReadError(
+                f"{self.label}: lost the connection to OMERO twice ({_hide_key(_lost_reason(error), self.key)})"
+            ) from None
+
+    def _rejoin(self, reason):
+        note = f"{self.label}: lost the connection to OMERO ({reason}); rejoining the session and trying again"
+        if self.notes is None:
+            logger.warning(note)
+        else:
+            self.notes.append(note)
+        self.rejoined = True
+        detach_session(self.conn)
+        self.conn = None
+        try:
+            self.conn = join_session(self.host, self.port, self.key)
+        except ConnectionError as error:
+            raise ImageReadError(
+                f"{self.label}: lost the connection to OMERO and could not reconnect ({_hide_key(error, self.key)})"
+            ) from None
+
+
+def read_omero_channels_with_retry(conn, image_id, layout, channels, host, port, key, notes=None):
     """Read channels of an OMERO image, rejoining the session once if the connection drops.
 
     Returns (arrays, conn): `arrays` as from `read_omero_channels`, and the connection to
     use from now on, which is a new one when the session was rejoined.
     Raises ImageReadError when the image cannot be read, and OmeroSessionEnded when the
-    session has ended and cannot be rejoined.
+    session has ended and cannot be rejoined. See OmeroImageReader for `notes`.
     """
     _check_layout(layout)
-    image_id = _id_number(image_id)
-    channels = [int(c) for c in channels]
-    label = f"OMERO image {image_id}"
-    try:
-        return _read_omero_channels(conn, image_id, layout, channels), conn
-    except _omero_errors() as error:
-        logger.warning(f"{label}: lost the connection to OMERO ({_omero_reason(error, key)}); rejoining the session")
-
-    detach_session(conn)
-    try:
-        conn = join_session(host, port, key)
-    except ConnectionError as error:
-        raise ImageReadError(f"{label}: lost the connection to OMERO and could not reconnect ({error})") from None
-
-    try:
-        return _read_omero_channels(conn, image_id, layout, channels), conn
-    except _omero_errors() as error:
-        raise ImageReadError(
-            f"{label}: lost the connection to OMERO twice ({_omero_reason(error, key)})"
-        ) from None
+    reader = OmeroImageReader(conn, image_id, host, port, key, notes)
+    return reader.channels(layout, [int(c) for c in channels]), reader.conn
 
 
 # Session sharing

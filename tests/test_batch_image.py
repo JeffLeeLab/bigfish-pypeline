@@ -615,21 +615,48 @@ def test_calibration_blank_and_unreadable(tmp_path):
 
 
 class FakeConn:
-    def __init__(self):
+    """Stand-in connection; `number` counts the joins in this test."""
+
+    def __init__(self, number):
+        self.number = number
         self.detached = False
+
+
+def lost_connection(image_id):
+    """The error io raises when the connection drops while an OMERO image is read."""
+    error = io.OmeroConnectionLost(
+        f"OMERO image {image_id}: lost the connection to OMERO (ConnectionLostException: session {KEY})"
+    )
+    error.reason = f"ConnectionLostException: session {KEY}"
+    return error
 
 
 @pytest.fixture
 def fake_omero(monkeypatch):
-    """io's OMERO functions replaced by stand-ins serving one generated image."""
+    """io's OMERO functions replaced by stand-ins serving one generated image.
+
+    `calls["drops"]` sets how often the connection drops: {"info": n, "channels": n}
+    makes the next n reads of that kind fail. `calls["ended"]` makes rejoining fail
+    because the session has ended. `calls["read"]` records each channel read with the
+    number of the connection used.
+    """
     image = make_image((8, 64, 64), n_spots=8, seed=7)[0]
-    calls = {"join": 0, "read": [], "detach": 0}
+    calls = {"join": 0, "read": [], "info": [], "detach": [], "drops": {}, "ended": False}
+
+    def drop(kind, image_id):
+        if calls["drops"].get(kind, 0) > 0:
+            calls["drops"][kind] -= 1
+            raise lost_connection(image_id)
 
     def join_session(host, port, key):
+        if calls["ended"]:
+            raise io.OmeroSessionEnded("The OMERO session has ended. Log in again and start a new run.")
         calls["join"] += 1
-        return FakeConn()
+        return FakeConn(calls["join"])
 
     def get_omero_image_info(conn, image_id):
+        calls["info"].append((image_id, conn.number))
+        drop("info", image_id)
         return io.OmeroImageInfo(
             image_id=image_id, name="my image.tif", size_z=8, size_c=2, size_t=1,
             size_y=64, size_x=64, pixel_type="uint16", dtype=np.dtype("uint16"),
@@ -637,17 +664,20 @@ def fake_omero(monkeypatch):
             channel_names=["a", "b"],
         )
 
-    def read_omero_channels_with_retry(conn, image_id, layout, channels, host, port, key):
-        calls["read"].append((image_id, tuple(channels), host, port, key))
-        return {channel: image for channel in channels}, conn
+    def read_omero_channels(conn, image_id, layout, channels):
+        calls["read"].append((image_id, tuple(channels), conn.number))
+        drop("channels", image_id)
+        return {channel: image for channel in channels}
 
     def detach_session(conn):
-        calls["detach"] += 1
+        conn.detached = True
+        calls["detach"].append(conn.number)
 
     monkeypatch.setattr(io, "join_session", join_session)
     monkeypatch.setattr(io, "get_omero_image_info", get_omero_image_info)
-    monkeypatch.setattr(io, "read_omero_channels_with_retry", read_omero_channels_with_retry)
+    monkeypatch.setattr(io, "read_omero_channels", read_omero_channels)
     monkeypatch.setattr(io, "detach_session", detach_session)
+    batch.close_omero_connection()
     yield calls
     batch.close_omero_connection()
 
@@ -682,16 +712,16 @@ def test_omero_image(tmp_path, fake_omero):
     assert files[0] == "123_my image_clusters.csv"
     assert len(files) == 6
     assert fake_omero["join"] == 1
-    assert fake_omero["read"][0] == (123, (1,), "omero.example", 4064, KEY)
+    assert fake_omero["read"] == [(123, (1,), 1), (124, (1,), 1)]
     batch.close_omero_connection()
-    assert fake_omero["detach"] == 1
+    assert fake_omero["detach"] == [1]
 
 
 def test_omero_errors_hide_the_session_key(tmp_path, fake_omero, monkeypatch):
-    def broken(conn, image_id, layout, channels, host, port, key):
-        raise RuntimeError(f"server said no to session {key}")
+    def broken(conn, image_id, layout, channels):
+        raise RuntimeError(f"server said no to session {KEY}")
 
-    monkeypatch.setattr(io, "read_omero_channels_with_retry", broken)
+    monkeypatch.setattr(io, "read_omero_channels", broken)
     summary = batch.process_image(
         omero_config(), "123_x", 123, tmp_path / "run",
         omero_host="omero.example", omero_port=4064, omero_key=KEY,
@@ -705,12 +735,145 @@ def test_omero_errors_hide_the_session_key(tmp_path, fake_omero, monkeypatch):
 
 @pytest.mark.parametrize("error", [io.OmeroSessionEnded("ended"), MemoryError(), KeyboardInterrupt()])
 def test_run_stopping_errors_pass_through(tmp_path, fake_omero, monkeypatch, error):
-    def stop(conn, image_id, layout, channels, host, port, key):
+    def stop(conn, image_id, layout, channels):
         raise error
 
-    monkeypatch.setattr(io, "read_omero_channels_with_retry", stop)
+    monkeypatch.setattr(io, "read_omero_channels", stop)
     with pytest.raises(type(error)):
         batch.process_image(
             omero_config(), "123_x", 123, tmp_path / "run",
             omero_host="omero.example", omero_port=4064, omero_key=KEY,
         )
+
+
+def omero_image(config, image_id, run_folder):
+    return batch.process_image(
+        config, f"{image_id}_x", image_id, run_folder,
+        omero_host="omero.example", omero_port=4064, omero_key=KEY,
+    )
+
+
+def assert_no_key_in_files(folder):
+    for path in folder.rglob("*"):
+        if path.is_file():
+            assert KEY not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_omero_drop_while_reading_information(tmp_path, fake_omero):
+    fake_omero["drops"] = {"info": 1}
+    summary = omero_image(omero_config(), 123, tmp_path / "run")
+    assert row_of(summary, 1)["status"] == "done", row_of(summary, 1)["reason"]
+    # joined once for the first image, then rejoined once after the drop
+    assert fake_omero["join"] == 2
+    assert fake_omero["detach"] == [1]
+    assert fake_omero["info"] == [(123, 1), (123, 2)]
+    assert fake_omero["read"] == [(123, (1,), 2)]
+    notes = [line for line in summary["log_lines"] if "rejoining the session" in line]
+    assert notes == [
+        "123_x: OMERO image 123: lost the connection to OMERO "
+        "(ConnectionLostException: session [hidden]); rejoining the session and trying again"
+    ]
+
+    # the next image goes on with the new connection, without joining again
+    summary = omero_image(omero_config(), 124, tmp_path / "run")
+    assert row_of(summary, 1)["status"] == "done"
+    assert fake_omero["join"] == 2
+    assert fake_omero["info"][-1] == (124, 2)
+    assert fake_omero["read"][-1] == (124, (1,), 2)
+    assert_no_key_in_files(tmp_path / "run")
+
+
+def test_omero_drop_twice_fails_the_image(tmp_path, fake_omero):
+    fake_omero["drops"] = {"info": 2}
+    summary = omero_image(omero_config(), 123, tmp_path / "run")
+    row = row_of(summary, 1)
+    assert row["status"] == "failed"
+    assert row["reason"] == (
+        "OMERO image 123: lost the connection to OMERO twice (ConnectionLostException: session [hidden])"
+    )
+    assert fake_omero["join"] == 2
+    assert fake_omero["read"] == []
+    assert not any(KEY in line for line in summary["log_lines"])
+    assert_no_key_in_files(tmp_path / "run")
+
+    # the next image is read with the rejoined connection
+    summary = omero_image(omero_config(), 124, tmp_path / "run")
+    assert row_of(summary, 1)["status"] == "done"
+    assert fake_omero["join"] == 2
+
+
+def test_omero_one_rejoin_for_the_whole_image(tmp_path, fake_omero):
+    fake_omero["drops"] = {"info": 1, "channels": 1}
+    summary = omero_image(omero_config(), 123, tmp_path / "run")
+    row = row_of(summary, 1)
+    assert row["status"] == "failed"
+    assert "lost the connection to OMERO twice" in row["reason"]
+    assert fake_omero["join"] == 2
+
+
+def test_omero_drop_while_reading_a_channel(tmp_path, fake_omero):
+    fake_omero["drops"] = {"channels": 1}
+    summary = omero_image(omero_config(), 123, tmp_path / "run")
+    assert row_of(summary, 1)["status"] == "done"
+    assert fake_omero["read"] == [(123, (1,), 1), (123, (1,), 2)]
+    assert any("rejoining the session" in line for line in summary["log_lines"])
+
+
+def test_omero_drop_and_session_ended(tmp_path, fake_omero):
+    fake_omero["drops"] = {"info": 1}
+    omero_image(omero_config(), 122, tmp_path / "run")  # joins the session first
+    fake_omero["drops"] = {"info": 1}
+    fake_omero["ended"] = True
+    with pytest.raises(io.OmeroSessionEnded, match="Log in again"):
+        omero_image(omero_config(), 123, tmp_path / "run")
+
+
+def test_omero_drop_and_server_unreachable(tmp_path, fake_omero, monkeypatch):
+    omero_image(omero_config(), 122, tmp_path / "run")
+    join = io.join_session
+
+    def no_server(host, port, key):
+        raise ConnectionError("cannot reach the OMERO server at omero.example:4064")
+
+    monkeypatch.setattr(io, "join_session", no_server)
+    fake_omero["drops"] = {"info": 1}
+    summary = omero_image(omero_config(), 123, tmp_path / "run")
+    row = row_of(summary, 1)
+    assert row["status"] == "failed"
+    assert "could not reconnect" in row["reason"]
+    assert fake_omero["detach"] == [1]
+
+    # the next image joins the session again
+    monkeypatch.setattr(io, "join_session", join)
+    summary = omero_image(omero_config(), 124, tmp_path / "run")
+    assert row_of(summary, 1)["status"] == "done"
+    assert fake_omero["join"] == 2
+    assert fake_omero["info"][-1] == (124, 2)
+
+
+def test_omero_calibration_drop(tmp_path, fake_omero):
+    config = omero_config()
+    arguments = dict(omero_host="omero.example", omero_port=4064, omero_key=KEY)
+
+    fake_omero["drops"] = {"info": 1}
+    result = batch.calibration_threshold(config, "123_x", 123, 1, **arguments)
+    assert result["threshold"] is not None, result["reason"]
+    assert fake_omero["join"] == 2
+    assert result["log_lines"] == [
+        "123_x: OMERO image 123: lost the connection to OMERO "
+        "(ConnectionLostException: session [hidden]); rejoining the session and trying again"
+    ]
+
+    fake_omero["drops"] = {"channels": 2}
+    result = batch.calibration_threshold(config, "124_x", 124, 1, **arguments)
+    assert result["threshold"] is None
+    assert result["reason"] == (
+        "OMERO image 124: lost the connection to OMERO twice (ConnectionLostException: session [hidden])"
+    )
+    assert fake_omero["join"] == 3
+    assert not any(KEY in line for line in result["log_lines"])
+
+    fake_omero["drops"] = {"info": 1}
+    fake_omero["ended"] = True
+    with pytest.raises(io.OmeroSessionEnded):
+        batch.calibration_threshold(config, "125_x", 125, 1, **arguments)

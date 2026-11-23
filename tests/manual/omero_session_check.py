@@ -57,6 +57,7 @@ def hide(text, key):
 
 def worker(number, host, port, key, image_id, results):
     """Join the session, read the image information and channel 0, then leave the session."""
+    io.start_plain_logging()
     name = f"Helper {number}"
     try:
         conn = io.join_session(host, port, key)
@@ -114,6 +115,8 @@ def main():
     parser.add_argument("--host", default=OMERO_HOST, help=f"OMERO server (default {OMERO_HOST})")
     parser.add_argument("--port", type=int, default=OMERO_PORT, help=f"OMERO port (default {OMERO_PORT})")
     args = parser.parse_args()
+    # omero-py's own messages can hold the session key: they are not printed
+    io.start_plain_logging()
 
     from bigfish_pypeline.omero_tools import connect_to_omero
 

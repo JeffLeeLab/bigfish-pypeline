@@ -4,7 +4,10 @@ import json
 import os
 import shutil
 import signal
+import subprocess
 import sys
+import textwrap
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -12,7 +15,7 @@ import pandas as pd
 import pytest
 import tifffile
 
-from batch_helpers import fake_process_image
+from batch_helpers import fake_process_image, omero_process_image
 from bigfish_pypeline import batch, io
 from bigfish_pypeline.config import load_config, parse_config
 from conftest import CROP_NAME
@@ -627,3 +630,95 @@ def test_omero_session_ended(tmp_path, omero_info):
 def test_omero_needs_dataset_or_images(tmp_path):
     with pytest.raises(batch.BatchError, match="dataset ID or image IDs"):
         run_fake(omero_config(tmp_path / "out"), omero_conn=FakeConn([]))
+
+
+def dropped_connection_images():
+    return [(1, "a drop_once.tif"), (2, "b drop_twice.tif"), (3, "c.tif")]
+
+
+def test_omero_dropped_connection_in_a_worker(tmp_path, omero_info):
+    conn = FakeConn(dropped_connection_images())
+    config = with_changes(omero_config(tmp_path / "out", image_ids=[1, 2, 3]),
+                          lambda data: data["run"].update(workers=1))
+    result = batch.run_batch(config, omero_conn=conn, image_function=omero_process_image)
+    assert result.status == "finished", result.message
+    images = read_table(result.run_folder, "images")
+    status = images.groupby("image")["status"].agg(set).to_dict()
+    assert status == {"1_a drop_once": {"done"}, "2_b drop_twice": {"failed"}, "3_c": {"done"}}
+    reasons = set(images.loc[images["image"] == "2_b drop_twice", "reason"])
+    assert reasons == {
+        "OMERO image 2: lost the connection to OMERO twice "
+        "(ConnectionLostException: Ice.ConnectionLostException: session [hidden])"
+    }
+
+    text = log_text(result.run_folder)
+    assert ("1_a drop_once: OMERO image 1: lost the connection to OMERO (ConnectionLostException: "
+            "Ice.ConnectionLostException: session [hidden]); rejoining the session and trying again") in text
+    # image 1 joins, drops and rejoins (2 joins); image 2 rejoins once (3 joins);
+    # image 3 goes on with the third connection without joining again
+    assert "1_a drop_once: connection 2 after 2 join(s)" in text
+    assert "2_b drop_twice: connection 3 after 3 join(s)" in text
+    assert "3_c: connection 3 after 3 join(s)" in text
+    for path in result.run_folder.rglob("*"):
+        if path.is_file():
+            assert KEY not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_omero_messages_not_in_the_terminal(tmp_path):
+    """omero-py's messages (with the session key) and the warnings of other packages
+    are not printed, in the main process or in the workers; the run's own lines are."""
+    script = tmp_path / "script.py"
+    script.write_text(textwrap.dedent("""
+        import logging
+
+        import numpy as np
+
+        from batch_helpers import log_like_omero, omero_process_image
+        from bigfish_pypeline import batch, io
+        from test_batch_run import KEY, FakeConn, omero_config, with_changes
+
+
+        class LoggingConn(FakeConn):
+            def getObject(self, kind, object_id):
+                log_like_omero(KEY)
+                return super().getObject(kind, object_id)
+
+
+        def get_omero_image_info(conn, image_id):
+            log_like_omero(KEY)
+            return io.OmeroImageInfo(
+                image_id=image_id, name="x", size_z=2, size_c=2, size_t=1, size_y=16, size_x=16,
+                pixel_type="uint16", dtype=np.dtype("uint16"), voxel_size_z=200.0,
+                voxel_size_y=65.0, voxel_size_x=65.0, channel_names=["a", "b"],
+            )
+
+
+        if __name__ == "__main__":
+            io.get_omero_image_info = get_omero_image_info
+            root = logging.getLogger()
+            conn = LoggingConn([(1, "a drop_once.tif"), (2, "b drop_twice.tif"), (3, "c.tif")])
+            config = with_changes(omero_config("out", image_ids=[1, 2, 3]),
+                                  lambda data: data["run"].update(workers=1))
+            plan = batch.plan_run(config, conn)
+            plan.close()
+            assert root.handlers == [], root.handlers
+            result = batch.run_batch(config, omero_conn=conn, image_function=omero_process_image, show=print)
+            assert result.status == "finished", result.message
+            assert root.handlers == [], root.handlers
+    """), encoding="utf-8")
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(Path(__file__).parent)] + ([environment["PYTHONPATH"]] if environment.get("PYTHONPATH") else [])
+    )
+    done = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                          timeout=300, env=environment, cwd=tmp_path)
+    assert done.returncode == 0, done.stdout + done.stderr
+    terminal = done.stdout + done.stderr
+    assert KEY not in terminal
+    assert "Traceback" not in terminal
+    assert "WARNING:" not in terminal and "ERROR:" not in terminal
+    assert "CPDINO" not in terminal
+    assert "killSession" not in terminal
+    # the run's own message about the dropped connection is shown, in plain words
+    assert "1_a drop_once: OMERO image 1: lost the connection to OMERO" in done.stdout
+    assert "rejoining the session and trying again" in done.stdout

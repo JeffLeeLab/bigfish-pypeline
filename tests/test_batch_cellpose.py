@@ -615,48 +615,112 @@ def test_workers_auto_uses_the_cellpose_reserve_in_the_log(tmp_path, monkeypatch
 # ---------------------------------------------------------------------------
 
 
-def test_omero_segmentation_channel_read_by_the_main_process(tmp_path, omero_info, monkeypatch):  # noqa: F811
-    conn = FakeConn([(1, "a.tif"), (2, "b.tif")])
-    rejoined = FakeConn([])
-    reads = []
-    detached = []
+def lost_connection(image_id):
+    """The error io raises when the connection drops while an OMERO image is read."""
+    reason = f"ConnectionLostException: session {KEY}"
+    error = io.OmeroConnectionLost(f"OMERO image {image_id}: lost the connection to OMERO ({reason})")
+    error.reason = reason
+    return error
 
-    def read_with_retry(read_conn, image_id, layout, channels, host, port, key):
-        reads.append((read_conn, image_id, list(channels), host, key))
-        # the connection drops while image 2 is read, and the session is rejoined
-        new_conn = rejoined if image_id == 2 else read_conn
-        return {channels[0]: np.ones((2, 16, 16), dtype=np.uint16)}, new_conn
 
-    monkeypatch.setattr(io, "read_omero_channels_with_retry", read_with_retry)
+def segmentation_reads(monkeypatch, drops=(), ended_after=None, output=None):
+    """Stand-ins for reading the segmentation channel in the main process.
+
+    drops: image IDs whose first read finds the connection dropped.
+    ended_after: an image ID; reading it waits for the image before it to finish,
+        then finds that the session has ended.
+    Returns (reads, joined, detached): the (connection, image ID) of each read, the
+    connections made by rejoining, and the connections let go.
+    """
+    reads, joined, detached = [], [], []
+    dropped = set()
+
+    def read_omero_channels(conn, image_id, layout, channels):
+        reads.append((conn, image_id))
+        if image_id == ended_after:
+            deadline = time.monotonic() + 60
+            while not list(output.glob(f"*/per_image/{image_id - 1}_*_images.csv")) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            raise io.OmeroSessionEnded("The OMERO session has ended.")
+        if image_id in drops and image_id not in dropped:
+            dropped.add(image_id)
+            raise lost_connection(image_id)
+        return {channels[0]: np.ones((2, 16, 16), dtype=np.uint16)}
+
+    def join_session(host, port, key):
+        joined.append(FakeConn([]))
+        return joined[-1]
+
+    monkeypatch.setattr(io, "read_omero_channels", read_omero_channels)
+    monkeypatch.setattr(io, "join_session", join_session)
     monkeypatch.setattr(io, "detach_session", detached.append)
-    config = with_cellpose(omero_config(tmp_path / "out", image_ids=[1, 2]))
+    return reads, joined, detached
+
+
+def test_omero_segmentation_channel_read_by_the_main_process(tmp_path, omero_info, monkeypatch):  # noqa: F811
+    conn = FakeConn([(1, "a.tif"), (2, "b.tif"), (3, "c.tif")])
+    reads, joined, detached = segmentation_reads(monkeypatch, drops=[2])
+    config = with_cellpose(omero_config(tmp_path / "out", image_ids=[1, 2, 3]))
     result = run_cellpose(config, StandInModel(n_cells=2), omero_conn=conn, image_function=fake_process_image)
     assert result.status == "finished", result.message
-    assert reads == [(conn, 1, [0], "omero.example", KEY), (conn, 2, [0], "omero.example", KEY)]
-    assert detached == [rejoined]
-    assert not conn.closed
+    # the connection drops while image 2 is read: the session is rejoined once,
+    # and image 3 is read with the new connection
+    [rejoined] = joined
+    assert reads == [(conn, 1), (conn, 2), (rejoined, 2), (rejoined, 3)]
+    assert detached == [conn, rejoined]
+    assert not conn.closed and not rejoined.closed
     images = read_table(result.run_folder, "images")
     assert (images["segmentation_status"] == "done").all()
-    assert label_files(result.run_folder / LABELS) == ["1_a_seglabels.tif", "2_b_seglabels.tif"]
+    assert label_files(result.run_folder / LABELS) == ["1_a_seglabels.tif", "2_b_seglabels.tif", "3_c_seglabels.tif"]
+    assert ("2_b: OMERO image 2: lost the connection to OMERO (ConnectionLostException: session [hidden]); "
+            "rejoining the session and trying again") in log_text(result.run_folder)
     for path in result.run_folder.rglob("*"):
         if path.is_file() and path.suffix in (".csv", ".log", ".json", ".yaml"):
             assert KEY not in path.read_text(encoding="utf-8"), path.name
 
 
+def test_omero_session_of_the_run_ended_after_a_rejoin(tmp_path, omero_info, monkeypatch):  # noqa: F811
+    conn = FakeConn([(1, "a.tif"), (2, "b.tif")])
+    monkeypatch.setattr(batch, "_log_in_to_omero", lambda config: conn)
+    _, joined, detached = segmentation_reads(monkeypatch, drops=[1])
+    config = with_cellpose(omero_config(tmp_path / "out", image_ids=[1, 2]))
+    result = run_cellpose(config, StandInModel(n_cells=2), image_function=fake_process_image)
+    assert result.status == "finished", result.message
+    [rejoined] = joined
+    # the run logged in, so it ends the session, through the connection it rejoined with
+    assert detached == [conn]
+    assert rejoined.closed
+
+
+def test_omero_segmentation_read_twice_lost(tmp_path, omero_info, monkeypatch):  # noqa: F811
+    conn = FakeConn([(1, "a.tif"), (2, "b.tif")])
+    _, joined, _ = segmentation_reads(monkeypatch, drops=[1])
+    first_read = io.read_omero_channels
+
+    def read_omero_channels(read_conn, image_id, layout, channels):
+        # the rejoined connection drops too while image 1 is read
+        if read_conn is not conn and image_id == 1:
+            raise lost_connection(image_id)
+        return first_read(read_conn, image_id, layout, channels)
+
+    monkeypatch.setattr(io, "read_omero_channels", read_omero_channels)
+    config = with_cellpose(omero_config(tmp_path / "out", image_ids=[1, 2]))
+    result = run_cellpose(config, StandInModel(n_cells=2), omero_conn=conn, image_function=fake_process_image)
+    assert result.status == "finished", result.message
+    images = read_table(result.run_folder, "images")
+    status = images.groupby("image")["segmentation_status"].agg(set).to_dict()
+    assert status == {"1_a": {"failed"}, "2_b": {"done"}}
+    assert len(joined) == 1
+    text = log_text(result.run_folder)
+    assert ("1_a: segmentation failed: OMERO image 1: lost the connection to OMERO twice "
+            "(ConnectionLostException: session [hidden])") in text
+    assert KEY not in text
+
+
 def test_omero_session_ended_during_segmentation(tmp_path, omero_info, monkeypatch):  # noqa: F811
     conn = FakeConn([(1, "a.tif"), (2, "b.tif"), (3, "c.tif")])
     output = tmp_path / "out"
-
-    def read_with_retry(read_conn, image_id, layout, channels, host, port, key):
-        if image_id == 2:
-            # wait for image 1 to finish, then find that the session has ended
-            deadline = time.monotonic() + 60
-            while not list(output.glob("*/per_image/1_a.tif_images.csv")) and time.monotonic() < deadline:
-                time.sleep(0.05)
-            raise io.OmeroSessionEnded("The OMERO session has ended.")
-        return {channels[0]: np.ones((2, 16, 16), dtype=np.uint16)}, read_conn
-
-    monkeypatch.setattr(io, "read_omero_channels_with_retry", read_with_retry)
+    segmentation_reads(monkeypatch, ended_after=2, output=output)
     config = with_changes(with_cellpose(omero_config(output, image_ids=[1, 2, 3])),
                           lambda data: data["run"].update(workers=1))
     result = run_cellpose(config, StandInModel(n_cells=2), omero_conn=conn, image_function=fake_process_image)
@@ -665,6 +729,21 @@ def test_omero_session_ended_during_segmentation(tmp_path, omero_info, monkeypat
     assert list(dict.fromkeys(read_table(result.run_folder, "images")["image"])) == ["1_a"]
     assert label_files(result.run_folder / LABELS) == ["1_a_seglabels.tif"]
     assert "3_c: segmenting" not in log_text(result.run_folder)
+
+
+def test_omero_session_ended_when_rejoining_for_segmentation(tmp_path, omero_info, monkeypatch):  # noqa: F811
+    conn = FakeConn([(1, "a.tif"), (2, "b.tif")])
+    segmentation_reads(monkeypatch, drops=[1])
+
+    def ended(host, port, key):
+        raise io.OmeroSessionEnded("The OMERO session has ended.")
+
+    monkeypatch.setattr(io, "join_session", ended)
+    config = with_cellpose(omero_config(tmp_path / "out", image_ids=[1, 2]))
+    result = run_cellpose(config, StandInModel(n_cells=2), omero_conn=conn, image_function=fake_process_image)
+    assert result.status == "stopped"
+    assert "Log in again" in result.message
+    assert not (result.run_folder / "per_image" / "1_a_images.csv").exists()
 
 
 # ---------------------------------------------------------------------------

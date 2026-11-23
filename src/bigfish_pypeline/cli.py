@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from bigfish_pypeline import __version__, outputs
+from bigfish_pypeline import __version__, io, outputs
 from bigfish_pypeline.batch import BatchError, plan_run, run_batch
 from bigfish_pypeline.config import ConfigError, apply_overrides, load_config
 
@@ -285,7 +285,9 @@ def main(argv=None):
         parser.print_help()
         return EXIT_OK
     try:
-        return COMMANDS[arguments.command](arguments)
+        # omero-py may neither print its own messages nor set up logging for the program
+        with io.plain_logging():
+            return COMMANDS[arguments.command](arguments)
     except (ConfigError, BatchError) as error:
         _complain(error)
         return EXIT_PROBLEM

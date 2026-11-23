@@ -1,8 +1,11 @@
 """Tests for OMERO image input, using stand-in connection objects instead of a server."""
 
+import os
 import subprocess
 import sys
+import textwrap
 import traceback
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -132,19 +135,23 @@ class FakeConn:
     """A connection serving the given images and datasets.
 
     `failures` is a list of errors raised, one per read, before reads work.
+    `info_failures` is the same for looking up an image (as when its information is read).
     """
 
-    def __init__(self, images=(), datasets=None, failures=None, key=KEY):
+    def __init__(self, images=(), datasets=None, failures=None, key=KEY, info_failures=None):
         self.images = {image.image_id: image for image in images}
         for image in images:
             image.conn = self
         self.datasets = datasets or {}
         self.failures = list(failures or [])
+        self.info_failures = list(info_failures or [])
         self.c = FakeClient(key)
         self.closed = []
 
     def getObject(self, kind, object_id):
         object_id = int(object_id)
+        if kind == "Image" and self.info_failures:
+            raise self.info_failures.pop(0)
         if kind == "Image":
             image = self.images.get(object_id)
             if image is not None:
@@ -482,6 +489,99 @@ def test_retry_log_hides_key(monkeypatch, caplog):
     assert KEY not in caplog.text
 
 
+def test_info_connection_lost_is_an_image_read_error():
+    error = Ice.ObjectNotExistException(id=Ice.Identity(name="x", category=KEY))
+    conn = FakeConn([FakeImage(1, "a", make_data())], info_failures=[error])
+    with pytest.raises(io.OmeroConnectionLost, match="OMERO image 1: lost the connection to OMERO") as caught:
+        io.get_omero_image_info(conn, 1)
+    assert isinstance(caught.value, io.ImageReadError)
+    assert KEY not in caught.value.reason
+    assert_key_hidden(caught.value)
+
+
+def test_reader_rejoins_when_reading_the_information(monkeypatch):
+    data = make_data()
+    first = FakeConn([FakeImage(1, "a", data)], info_failures=[lost()])
+    second = FakeConn([FakeImage(1, "a", data)])
+    joins = []
+
+    def fake_join(host, port, key):
+        joins.append(key)
+        return second
+
+    monkeypatch.setattr(io, "join_session", fake_join)
+    notes = []
+    reader = io.OmeroImageReader(first, 1, HOST, PORT, KEY, notes=notes)
+    assert reader.info().size_c == 2
+    assert reader.conn is second and first.closed == [False]
+    assert len(notes) == 1
+    assert notes[0].startswith("OMERO image 1: lost the connection to OMERO (ConnectionLostException")
+    assert notes[0].endswith("; rejoining the session and trying again")
+    # the channels are read with the new connection, without joining again
+    arrays = reader.channels("ZCYX", [1])
+    np.testing.assert_array_equal(arrays[1], data[0, :, 1])
+    assert joins == [KEY]
+
+
+def test_reader_rejoins_once_for_the_whole_image(monkeypatch):
+    data = make_data()
+    first = FakeConn([FakeImage(1, "a", data)], info_failures=[lost()])
+    second = FakeConn([FakeImage(1, "a", data)], failures=[lost()])
+    joins = []
+
+    def fake_join(host, port, key):
+        joins.append(key)
+        return second
+
+    monkeypatch.setattr(io, "join_session", fake_join)
+    reader = io.OmeroImageReader(first, 1, HOST, PORT, KEY, notes=[])
+    reader.info()
+    with pytest.raises(io.ImageReadError, match="lost the connection to OMERO twice") as caught:
+        reader.channels("ZCYX", [0])
+    assert not isinstance(caught.value, io.OmeroConnectionLost)
+    assert joins == [KEY]
+    assert reader.conn is second
+
+
+def test_reader_information_lost_twice(monkeypatch):
+    first = FakeConn([FakeImage(1, "a", make_data())], info_failures=[lost()])
+    second = FakeConn([FakeImage(1, "a", make_data())], info_failures=[lost()])
+    monkeypatch.setattr(io, "join_session", lambda host, port, key: second)
+    reader = io.OmeroImageReader(first, 1, HOST, PORT, KEY, notes=[])
+    with pytest.raises(io.ImageReadError, match="^OMERO image 1: lost the connection to OMERO twice"):
+        reader.info()
+
+
+def test_reader_session_ended(monkeypatch):
+    first = FakeConn([FakeImage(1, "a", make_data())], info_failures=[lost()])
+
+    def ended(host, port, key):
+        raise io.OmeroSessionEnded("The OMERO session has ended. Log in again and start a new run.")
+
+    monkeypatch.setattr(io, "join_session", ended)
+    reader = io.OmeroImageReader(first, 1, HOST, PORT, KEY, notes=[])
+    with pytest.raises(io.OmeroSessionEnded):
+        reader.info()
+    assert first.closed == [False]
+    assert reader.conn is None
+
+
+def test_reader_cannot_reconnect(monkeypatch):
+    first = FakeConn([FakeImage(1, "a", make_data())], info_failures=[lost()])
+
+    def no_server(host, port, key):
+        raise ConnectionError(f"cannot reach the OMERO server ({KEY})")
+
+    monkeypatch.setattr(io, "join_session", no_server)
+    reader = io.OmeroImageReader(first, 1, HOST, PORT, KEY, notes=[])
+    with pytest.raises(io.ImageReadError, match="could not reconnect") as caught:
+        reader.info()
+    assert_key_hidden(caught.value)
+    assert reader.conn is None
+    with pytest.raises(io.ImageReadError, match="no connection to OMERO"):
+        reader.channels("ZCYX", [0])
+
+
 # Session sharing
 
 
@@ -587,3 +687,94 @@ def test_io_import_does_not_load_omero():
     code = "import sys, bigfish_pypeline.io; print(any(m.split('.')[0] in ('omero', 'Ice', 'Glacier2') for m in sys.modules))"
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert result.stdout.strip() == "False"
+
+
+def run_fresh(code):
+    """Run Python code in a fresh process, with the tests folder on the path; returns (stdout, stderr)."""
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(Path(__file__).parent)] + ([environment["PYTHONPATH"]] if environment.get("PYTHONPATH") else [])
+    )
+    done = subprocess.run([sys.executable, "-c", textwrap.dedent(code)], capture_output=True, text=True,
+                          env=environment, timeout=120)
+    assert done.returncode == 0, done.stdout + done.stderr
+    return done.stdout, done.stderr
+
+
+@pytest.mark.parametrize("module", ["bigfish_pypeline.io", "bigfish_pypeline.batch"])
+def test_import_leaves_the_root_logger_alone(module):
+    stdout, _ = run_fresh(f"""
+        import logging
+        root = logging.getLogger()
+        before = (list(root.handlers), root.level)
+        import {module}
+        print((list(root.handlers), root.level) == before)
+    """)
+    assert stdout.strip() == "True"
+
+
+# Logging
+
+
+def test_omero_messages_silenced():
+    """Nothing omero-py logs reaches the screen, even with logging set up as omero-py
+    sets it up, and before the package knows any session key."""
+    stdout, stderr = run_fresh(f"""
+        import logging
+        import bigfish_pypeline.io
+        import Ice
+        import omero.gateway
+        from batch_helpers import log_like_omero
+
+        log_like_omero("{KEY}")
+
+        # omero-py's own wrapper logs a call that fails with a dropped connection
+        def find_by_query(*arguments):
+            raise Ice.ConnectionLostException()
+
+        wrapper = omero.gateway.OmeroGatewaySafeCallWrapper(None, "findByQuery", find_by_query)
+        try:
+            wrapper("select obj from Image obj", {{"omero.session.uuid": "{KEY}"}})
+        except Ice.ConnectionLostException:
+            pass
+        logging.getLogger("omero.gateway.utils").setLevel(logging.DEBUG)
+        logging.getLogger("omero.gateway.utils").error("lost session {KEY}")
+        logging.getLogger("some.package").warning("a warning of another package")
+    """)
+    terminal = stdout + stderr
+    assert KEY not in terminal
+    assert "omero" not in terminal
+    assert "Traceback" not in terminal
+    # logging.basicConfig() is in effect here, as omero-py set it up
+    assert "WARNING:some.package:a warning of another package" in stderr
+
+
+def test_plain_logging():
+    stdout, stderr = run_fresh(f"""
+        import logging
+        from bigfish_pypeline import io
+        from batch_helpers import log_like_omero
+
+        root = logging.getLogger()
+        with io.plain_logging():
+            log_like_omero("{KEY}")
+            assert len(root.handlers) == 1, root.handlers
+            logging.getLogger("some.package").warning("a warning of another package")
+            logging.getLogger("some.package").error("an error of another package")
+            logging.getLogger("some.package").info("not shown")
+        assert root.handlers == [], root.handlers
+
+        # a handler set up by the program is kept, and nothing is added
+        handler = logging.StreamHandler()
+        root.addHandler(handler)
+        with io.plain_logging():
+            assert root.handlers == [handler]
+        assert root.handlers == [handler]
+    """)
+    terminal = stdout + stderr
+    assert KEY not in terminal
+    assert "CPDINO" not in terminal
+    assert "killSession" not in terminal
+    assert "WARNING:" not in terminal
+    # warnings that no handler takes are shown as Python shows them without any set-up
+    assert stderr.splitlines() == ["a warning of another package", "an error of another package"]

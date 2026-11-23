@@ -116,6 +116,13 @@ def _omero_connection(host, port, key):
     return _omero["conn"]
 
 
+def _keep_omero_connection(conn):
+    """Keep `conn` for later images in this process; None means join again next time."""
+    _omero["conn"] = conn
+    if conn is None:
+        _omero["session"] = None
+
+
 def _channel_text(n_channels):
     if n_channels == 1:
         return "1 channel (channel 0)"
@@ -143,7 +150,8 @@ def _check_omero_image(info, layout, channels):
     _check_channels(label, channels, info.size_c)
 
 
-def _open_image(config, image_source, channels, omero_host=None, omero_port=None, omero_key=None):
+def _open_image(config, image_source, channels, omero_host=None, omero_port=None, omero_key=None,
+                notes=None):
     """
     Check that an image can be read with the config's layout and that it holds
     the channels asked for.
@@ -151,20 +159,29 @@ def _open_image(config, image_source, channels, omero_host=None, omero_port=None
     Returns (info, read_channel): the image information from the file header
     or the server, and a function that reads one channel as an array.
     Raises ImageReadError when the image cannot be used.
+
+    For OMERO, the image information and every channel are read through one
+    io.OmeroImageReader: if the connection drops, the session is rejoined once
+    for the whole image, and a sentence saying so is added to `notes` (a list).
+    The connection in use afterwards is kept for later images.
     """
     layout = config.image.axes
     if config.run.input.source == "omero":
-        conn = _omero_connection(omero_host, omero_port, omero_key)
-        image_id = int(image_source)
-        info = io.get_omero_image_info(conn, image_id)
+        reader = io.OmeroImageReader(
+            _omero_connection(omero_host, omero_port, omero_key), int(image_source),
+            omero_host, omero_port, omero_key, notes=notes,
+        )
+        try:
+            info = reader.info()
+        finally:
+            _keep_omero_connection(reader.conn)
         _check_omero_image(info, layout, channels)
 
         def read_channel(channel):
-            arrays, conn = io.read_omero_channels_with_retry(
-                _omero["conn"], image_id, layout, [channel], omero_host, omero_port, omero_key
-            )
-            _omero["conn"] = conn
-            return arrays[channel]
+            try:
+                return reader.channels(layout, [channel])[channel]
+            finally:
+                _keep_omero_connection(reader.conn)
 
         return info, read_channel
 
@@ -433,6 +450,13 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
     def hide(text):
         return _hide_session_key(text, omero_key) if config.run.input.source == "omero" else text
 
+    # sentences about a dropped OMERO connection, moved to the log as they come
+    notes = []
+
+    def add_notes():
+        log_lines.extend(f"{image_name}: {hide(note)}" for note in notes)
+        notes.clear()
+
     segmentation_source = config.segmentation.source if label_folder is not None else ""
     # Warnings for the `warnings` column only (the main process has logged them).
     noted = [hide(warning) for warning in segmentation_warnings]
@@ -443,12 +467,13 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
     try:
         info, read_channel = _open_image(
             config, image_source, [channel.index for channel in channels],
-            omero_host, omero_port, omero_key,
+            omero_host, omero_port, omero_key, notes=notes,
         )
     except PASS_THROUGH:
         raise
     except Exception as error:
         reason = hide(_one_line(error))
+        add_notes()
         log_lines.append(f"{image_name}: image failed: {reason}")
         log_lines.append(hide(traceback.format_exc().rstrip()))
         runtime = time.perf_counter() - image_start
@@ -467,6 +492,7 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
         outputs.write_image_tables(run_folder, image_name, outputs.make_images_table(rows))
         return {"image": image_name, "rows": rows, "log_lines": log_lines}
 
+    add_notes()
     image_warnings = []
     voxel_size = get_voxel_size(config)
     voxel_warning = io.check_voxel_sizes(
@@ -506,6 +532,7 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
             raise
         except Exception as error:
             reason = hide(_one_line(error))
+            add_notes()
             log_lines.append(f"{label}: failed: {reason}")
             log_lines.append(hide(traceback.format_exc().rstrip()))
             rows.append(outputs.image_row(
@@ -521,6 +548,7 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
             ))
             continue
 
+        add_notes()
         for warning in result["warnings"]:
             log_lines.append(f"{label}: warning: {hide(warning)}")
         if result["status"] == "skipped":
@@ -594,10 +622,12 @@ def calibration_threshold(config, image_name, image_source, channel_index,
     def hide(text):
         return _hide_session_key(text, omero_key) if config.run.input.source == "omero" else text
 
+    # sentences about a dropped OMERO connection
+    notes = []
     try:
         channel = _channel_settings(config, channel_index)
         _, read_channel = _open_image(
-            config, image_source, [channel_index], omero_host, omero_port, omero_key
+            config, image_source, [channel_index], omero_host, omero_port, omero_key, notes=notes,
         )
         voxel_size = get_voxel_size(config)
         microscope = config.microscope
@@ -619,12 +649,13 @@ def calibration_threshold(config, image_name, image_source, channel_index,
         raise
     except Exception as error:
         result["reason"] = hide(_one_line(error))
-        result["log_lines"] = [
+        result["log_lines"] = [f"{image_name}: {hide(note)}" for note in notes] + [
             f"{image_name}, channel {channel_index}: no calibration value: {result['reason']}",
             hide(traceback.format_exc().rstrip()),
         ]
         return result
 
+    result["log_lines"] = [f"{image_name}: {hide(note)}" for note in notes]
     if detected["threshold"] is None:
         result["reason"] = NO_AUTO_THRESHOLD_REASON
     else:
@@ -814,8 +845,10 @@ def _voxels_per_channel(shape, axes):
 
 def _start_worker():
     """Run in each worker process as it starts: Ctrl+C is left to the main
-    process, and the OMERO session is left when the process ends."""
+    process, the OMERO session is left when the process ends, and omero-py
+    can neither print its own messages nor set up logging for the process."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    io.start_plain_logging()
     atexit.register(close_omero_connection)
 
 
@@ -1194,10 +1227,10 @@ class _Segmenter:
         """Read, pre-treat and segment one image, then write its label file and QC figure."""
         image = task.image
         outcome = {"error": None, "details": None, "session_ended": None, "warnings": [],
-                   "n_cells": None, "seconds": None, "total_seconds": None}
+                   "notes": [], "n_cells": None, "seconds": None, "total_seconds": None}
         started = time.perf_counter()
         try:
-            channel = self.run.read_segmentation_channel(image)
+            channel = self.run.read_segmentation_channel(image, notes=outcome["notes"])
             prepared = segmentation.pretreat_channel(channel, **self.pretreatment)
             del channel
             result = segmentation.segment_cells(self.setup.model, prepared, **self.eval_settings)
@@ -1398,17 +1431,22 @@ class _Run:
         except FileNotFoundError:
             pass
 
-    def read_segmentation_channel(self, image):
+    def read_segmentation_channel(self, image, notes=None):
         """Read only the segmentation channel of an image (local file, or OMERO
-        through the main process's connection, rejoining the session once if it drops)."""
+        through the main process's connection, rejoining the session once if it
+        drops; a sentence saying so is added to `notes`, a list)."""
         channel = self.config.segmentation.channel
         layout = self.config.image.axes
         if self.config.run.input.source == "omero":
-            arrays, self.omero_conn = io.read_omero_channels_with_retry(
-                self.omero_conn, image.source, layout, [channel],
-                self.omero["host"], self.omero["port"], self.omero["key"],
-            )
-            return arrays[channel]
+            host, port, key = self.omero["host"], self.omero["port"], self.omero["key"]
+            if self.omero_conn is None:
+                # rejoining failed for an earlier image
+                self.omero_conn = io.join_session(host, port, key)
+            reader = io.OmeroImageReader(self.omero_conn, image.source, host, port, key, notes=notes)
+            try:
+                return reader.channels(layout, [channel])[channel]
+            finally:
+                self.omero_conn = reader.conn
         return io.read_channel(image.source, layout, channel)
 
     def write_failed_image(self, image, reason, runtime=None):
@@ -1713,6 +1751,8 @@ class _Run:
     def record_segmentation(self, task, outcome):
         """Log how an image's segmentation went, and pass it on to the image's worker."""
         name = task.image.name
+        for note in outcome["notes"]:
+            self.log(f"{name}: {note}")
         if outcome["error"] is not None:
             reason = self.hide(outcome["error"])
             self.log(f"{name}: segmentation failed: {reason}")
@@ -1885,7 +1925,15 @@ def plan_run(config, omero_conn=None):
     for) unless `omero_conn` is given; call `close` on the result when done.
 
     Raises BatchError with a plain message for any problem.
+
+    While the checks run, omero-py cannot set up logging for the whole program
+    (see io.start_plain_logging).
     """
+    with io.plain_logging():
+        return _plan_run(config, omero_conn)
+
+
+def _plan_run(config, omero_conn):
     source = config.run.input.source
 
     # checks that need only the config
@@ -1954,7 +2002,17 @@ def run_batch(config, config_file=None, omero_conn=None, show=None,
 
     Returns a BatchResult with the run folder, the final status
     ("finished", "cancelled" or "stopped") and a plain message.
+
+    While the run is in progress, omero-py cannot set up logging for the whole
+    program (see io.start_plain_logging).
     """
+    with io.plain_logging():
+        return _run_batch(config, config_file, omero_conn, show, image_function,
+                          calibration_function, device_chooser, model_loader)
+
+
+def _run_batch(config, config_file, omero_conn, show, image_function, calibration_function,
+               device_chooser, model_loader):
     image_function = image_function or process_image
     calibration_function = calibration_function or calibration_threshold
 
@@ -1985,8 +2043,16 @@ def run_batch(config, config_file=None, omero_conn=None, show=None,
         return _run(run, config_file, plan.workers_reason, plan.workers_warning)
     finally:
         if run is not None and run.omero_conn is not plan.omero_conn:
-            # a connection made when the session was rejoined after a drop
-            io.detach_session(run.omero_conn)
+            # The main process rejoined the session after a drop. Its login
+            # connection has been let go, so a session this run logged in to
+            # is ended through the new connection.
+            if plan.owned_conn is not None and run.omero_conn is not None:
+                try:
+                    run.omero_conn.close()
+                except Exception:
+                    pass
+            else:
+                io.detach_session(run.omero_conn)
         if cellpose is not None:
             cellpose.release()
         plan.close()
