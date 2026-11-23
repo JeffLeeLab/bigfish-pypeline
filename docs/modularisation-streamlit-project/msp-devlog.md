@@ -984,7 +984,7 @@ Figures: [clusters for the four combinations](figures/phase2/clusters-detection-
 
 Checked by the orchestrator with a separate script: pairing the cluster tables of the two batch runs gives 197 shared, 2 top-hat only and 76 rolling ball only, with medians of 15 and 18 spots; `detect_clusters` on the runs' spot tables gives 307, 241 and 199 clusters for top-hat at 10, 11 and 12, and 273, 229 and 182 for rolling ball at 12, 13 and 14; top-hat spots decomposed on the rolling ball image give 38,115 spots and 268 clusters, and the reverse 35,489 and 194.
 
-Waiting on the user: review of this comparison.
+**Decision by the user (23 Nov 2026):** the comparison is reviewed and rolling ball stays the default background method for FISH channels. For the documentation (Phase 6): a manual threshold and a `min_spots` value chosen with top-hat do not carry over unchanged to rolling ball (here 18 became 17, and 12 spots became 13 to 14).
 
 ### 2.3 Cellpose QC figure (23 Nov 2026)
 
