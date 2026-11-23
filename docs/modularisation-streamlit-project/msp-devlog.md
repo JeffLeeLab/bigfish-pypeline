@@ -1205,3 +1205,15 @@ Checked by the orchestrator against the logs: the worker's peak and bytes per vo
 2. Memory kept free: 2 GB, and 3 GB more with Cellpose, unchanged.
 3. Cellpose on the CPU: 4 threads, unchanged. With `workers: auto`, the workers give way: the number of cores counted for workers is the cores less the Cellpose threads, in place of the cores less one. Not measured with several workers.
 
+**Decisions by the user (23 Nov 2026): the three proposed figures are agreed.**
+
+- `BYTES_PER_VOXEL_PER_WORKER` is 38: 5.6 GB for a 2048 × 2048 × 35 channel and 4.8 GB for 30 planes. Spec 7.2 expected 3–4 GB for 30 planes; this replaces deviation 1 of the Phase 1 review (5 GB).
+- `MEMORY_RESERVE` stays 2 GB and `CELLPOSE_MEMORY_RESERVE` 3 GB.
+- `CELLPOSE_CPU_THREADS` stays 4. When Cellpose runs on the CPU, `workers: auto` counts the cores less the Cellpose threads for workers (6 of 10 cores), and at least one. The log line says "4 left for Cellpose on the CPU".
+- With `device: auto` the device is chosen after the workers are counted (the count is part of `check`, which does not load PyTorch). If the CPU is then chosen, the run lowers the number and adds to the `Workers:` line "lowered to N because Cellpose runs on the CPU with 4 thread(s)". `bigfish-pypeline check` shows the number before this; with `device: cpu` in the settings file it is right from the start.
+- A number of workers set in the config is not changed.
+- On a 16 GB laptop, one worker beside Cellpose now needs 10.6 GB available to run without the "little memory" warning, so the warning will be usual there. Both whole runs finished at 7.3 GB available without trouble.
+- Checks: 4 new tests, 775 pass without the full-size image.
+
+To be checked again in Phase 3, when the QC figures are added to the workers.
+

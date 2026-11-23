@@ -5,23 +5,22 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 ## State
 
 - **Phase 0 and Phase 1:** done, signed off, merged into `main` and pushed.
-- **Phase 2 (Cellpose 4 and comparisons):** under way on `msp`. Tasks 2.0 to 2.6 are done and committed (devlog 2.0–2.6). Tasks 2.7 and 2.8 have not started.
+- **Phase 2 (Cellpose 4 and comparisons):** under way on `msp`. Tasks 2.0 to 2.7 are done and committed (devlog 2.0–2.7). The user agreed the final `workers: auto` figures. Task 2.8 is left.
 - **OMERO on the lab server (23 Nov 2026):** the login-sharing check passed, and a real batch of two images with Cellpose ran over the VPN (devlog, "OMERO check on the lab server" and "Real OMERO batch with Cellpose"). Image 5806 agrees with the local runs. Image 5795 failed when the connection dropped, which showed three defects: no retry when the image information is read, the session key printed in the terminal by omero-py, and stray lines in the terminal.
 - **OMERO fix:** reviewed and committed (devlog, "OMERO fix: second try and a clean terminal"). Tested with stand-ins for the server only; the check on the real server is still to be run by the user.
-- 771 tests pass in `bigfish-msp` without the full-size image (about 5 min 40 s), six of them with the real Cellpose model.
+- 775 tests pass in `bigfish-msp` without the full-size image (about 5 min 40 s), six of them with the real Cellpose model.
 - Nothing of Phase 2 has been pushed.
 
 ## Next step
 
-1. Task 2.7 (benchmarks, Opus 5.5): the executor was started on the evening of 23 Nov 2026 and writes its scripts, logs and numbers to `~/bigfish-testdata/benchmarks/phase2/`; it changes nothing in the repository. If no devlog entry 2.7 exists, check what that folder holds before starting again. The orchestrator checks a sample of the numbers, writes the devlog entry and brings the proposed `workers: auto` figures to the user; once agreed, `choose_workers` and its tests are updated.
-2. Task 2.8 (phase review), then the user's sign-off.
+1. Task 2.8 (phase review): whole suite in a fresh shell with the full-size image and without the `cellpose` tests, the v1 imports in the main env, the Phase 2 review entry in the devlog, then the user's sign-off.
 
 **No OMERO testing on 23 Nov 2026:** the user's VPN was unstable and stays off. Trying the OMERO fix on the real server (a batch that survives a dropped connection, and a terminal free of the session key) is left for a later day and goes into the manual checks of the phase review.
 
 ## How the work is run
 
 - The orchestrator briefs each executor (goal, spec sections, files, check), reviews every change, runs the checks itself, commits to `msp` after each task and writes the devlog. Models and effort are in the plan; no other executors are used.
-- The user is asked at each check-in in the plan and whenever something is unclear. Phase 2 check-ins: the final `workers: auto` figures (2.7), the rolling ball comparison (2.6), the phase review (2.8).
+- The user is asked at each check-in in the plan and whenever something is unclear. Phase 2 check-in left: the phase review (2.8).
 - Nothing is pushed, tagged or merged without asking.
 - Cellpose mask quality on the test image is not brought to the user (brief R8).
 
@@ -63,4 +62,4 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 - Cellpose removes masks larger than a fraction of the image. The user asked for a setting: `segmentation.cellpose.max_size_fraction`, default 0.4 (devlog, "Mask size limit for Cellpose"). It is not in the spec; the notebook (Phase 4) and the app (Phase 5) should offer it with the other Cellpose settings.
 - Cellpose 4.2.1.1 loads `cpsam_v2` without an error when given an unknown model name; the package checks the name itself (devlog 2.2).
 - Once the main process has rejoined an OMERO session after a drop, nothing keeps the session alive except the reads of the run (devlog, OMERO fix). Keep-alive in the batch process is a Phase 5 point.
-- `workers: auto` uses 35 bytes per voxel of one channel, with a 2 GB reserve. With little free memory it runs one worker with a warning. The final figures come from task 2.7.
+- `workers: auto` uses 38 bytes per voxel of one channel for each worker (5.6 GB for a full-size channel), with 2 GB kept free and 3 GB more with Cellpose. With Cellpose on the CPU it leaves 4 cores to Cellpose. With little free memory it runs one worker with a warning. Final figures, agreed by the user (devlog 2.7); checked again in Phase 3 with the QC figures.
