@@ -1061,3 +1061,20 @@ Next: a small real OMERO batch with Cellpose on. A config for image 5806 is in `
 - Other endings, such as `.czi`, are kept, because cutting at any dot would damage names like `cell 1.5 uM`.
 - Label files for OMERO images are therefore named `<image ID>_<image name without .tif>_seglabels.tif`.
 - Checks: the expected names in the OMERO tests were updated, with new cases for `.tiff`, `.TIF`, `.ome.tif`, a name with a dot and no extension, and `.czi`; 730 tests pass without the full-size image.
+
+### Real OMERO batch with Cellpose (23 Nov 2026)
+
+The user ran `bigfish-pypeline batch` on OMERO images 5806 and 5795 over the VPN, with Cellpose on the Apple GPU, rolling ball at 5 px, manual threshold 18 and one worker (config `~/bigfish-testdata/phase2/omero/omero_batch.yaml`, run folder `~/bigfish-testdata/phase2/omero/runs/2026-11-23_1751_omero_batch`). The VPN was unstable, and OMERO testing stops here at the user's request.
+
+- **Image 5806 finished and agrees with the local runs:** 23,680 spots detected on the exon channel, exactly as the local rolling ball run; 36,570 spots after decomposition and 258 clusters, inside the ranges of the local runs (36,505 to 37,126 and 258 to 273; the seed depends on the output name, which differs from the local one). Tables, label file and QC figure were written under the new output name without `.tiff`.
+- **The whole path worked on a real server:** login, the model loaded before the run folder was made, the main process reading the segmentation channel, a worker joining the login and reading the FISH channel, and segmentation of the second image overlapping with detection of the first.
+- **Times:** reading one channel took 23 to 45 s; Cellpose-SAM on a 2048 × 2048 projection took 48.5 and 49.6 s on the Apple GPU, with 5.3 GB of memory free. The run took 3 min 42 s.
+- **Image 5795 failed when the connection dropped:** it was segmented, then its worker lost the connection ("lost the connection to OMERO (ConnectionLostException: Ice.ConnectionLostException:)"). The run went on and ended normally, with the failure in `images.csv` and `run.log`. This answers the last open point of 1.13 for a dropped connection: it raises `Ice.ConnectionLostException`, which the code recognises. An ended session was not seen.
+
+Defects found, fixed in the next entry:
+
+1. **No second try.** The connection was lost while the worker read the image information (`get_omero_image_info`), which is not retried; only the reading of channels rejoins the session and tries again. Spec 7.3 asks for one retry after rejoining for a dropped connection.
+2. **The session key was printed in the terminal.** omero-py logged the lost connection as a warning with its own traceback, and that text holds the session key. `run.log` and the tables do not contain it (checked). Devlog 1.13 switched off omero-py's INFO and DEBUG messages; its warnings and errors need the same care. The session of this run is closed.
+3. **Other lines in the terminal that are not the runner's:** "WARNING:cellpose.vit:Could not import CPDINO ..." when the model loads, and "WARNING:omero.client:Cannot get session service for killSession ..." at the end.
+
+Left as they are: the "Fetching ..." lines printed by `omero_tools.py` (unchanged until Phase 8), and big-fish's `FutureWarning` (there since Phase 1).
