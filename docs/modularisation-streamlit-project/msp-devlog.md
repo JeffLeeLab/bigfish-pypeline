@@ -1078,3 +1078,25 @@ Defects found, fixed in the next entry:
 3. **Other lines in the terminal that are not the runner's:** "WARNING:cellpose.vit:Could not import CPDINO ..." when the model loads, and "WARNING:omero.client:Cannot get session service for killSession ..." at the end.
 
 Left as they are: the "Fetching ..." lines printed by `omero_tools.py` (unchanged until Phase 8), and big-fish's `FutureWarning` (there since Phase 1).
+
+### OMERO fix: second try and a clean terminal (23 Nov 2026)
+
+The three defects of the real OMERO batch are fixed. Tested with stand-ins for the server only: the VPN stays off today, so the check on the real server is a manual check of the phase review.
+
+1. **Second try.** One reader (`OmeroImageReader` in `io.py`) now reads the image information and every channel of an image. If the connection drops during any of these reads, the session is rejoined once and the read is tried again; a second drop for the same image marks it failed ("lost the connection to OMERO twice"). The workers, the calibration pass and the main process's reading of the segmentation channel all use it. `run.log` and the terminal get a plain line: "OMERO image 5795: lost the connection to OMERO (...); rejoining the session and trying again".
+2. **Session key.** Nothing omero-py logs is shown or written any more, at any level (before: INFO and DEBUG only). A lost connection is reported by the runner itself, with the key removed.
+3. **Other lines.** omero-py calls `logging.basicConfig()` each time it makes a connection, which changes how the warnings of every other package are shown; this is where "WARNING:cellpose.vit:..." came from. During `check`, `batch` and in each worker, the runner now prevents this and leaves the program's logging as it found it afterwards. The "killSession" line is one of omero-py's own messages and is gone with point 2.
+
+- After a failed rejoin (server not reachable), the image fails and the next image tries to join again. An ended session still stops the run with the message to log in again.
+- If the main process rejoined the session during a run it logged in to, it ends the session at the end through the new connection.
+- Checks: 22 new tests, 752 pass without the full-size image. They cover a drop while the information is read and while a channel is read, in a worker, in calibration and in the main process; two drops for one image; an ended session; a server that cannot be reached; and the terminal output of a run in a fresh process, with omero-py's messages (session key included) logged as omero-py logs them.
+- Checked by the orchestrator with the real command on the test kit with Cellpose (local files): the terminal shows the runner's lines only, apart from big-fish's `FutureWarning`; 692 spots, 6 clusters and 43 cells, as in 2.4.
+
+Choices the spec does not settle:
+
+- One second try per image and per process: the main process (segmentation channel) and the worker each have their own for the same image.
+- omero-py's warnings and errors are dropped rather than rewritten, because their text cannot be trusted to leave out the key.
+
+Known limit, carried to Phase 5 with the keep-alive point of 1.13: once the main process has rejoined the session, its keep-alive (every 60 s, from `connect_to_omero`) no longer reaches the server, so the session stays alive only through the reads of the run. A pause of more than the server's idle time (10 minutes by default) with no read would end the session. This was already so before the fix.
+
+Manual checks on the real server, for the phase review: the batch of images 5806 and 5795 finishes; a dropped connection gives the "rejoining" line and the image finishes; no session key and no `WARNING:` lines in the terminal.
