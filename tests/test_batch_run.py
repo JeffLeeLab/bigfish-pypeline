@@ -599,14 +599,14 @@ def test_omero_dataset(tmp_path, omero_info):
     assert result.status == "finished"
     assert not conn.closed
     images = read_table(result.run_folder, "images")
-    assert list(dict.fromkeys(images["image"])) == ["123_a_1.tif", "124_b.tif", "125_c key_in_error.tif"]
-    failed = images[images["image"] == "125_c key_in_error.tif"]
+    assert list(dict.fromkeys(images["image"])) == ["123_a_1", "124_b", "125_c key_in_error"]
+    failed = images[images["image"] == "125_c key_in_error"]
     assert (failed["status"] == "failed").all()
     assert "[hidden]" in failed["reason"].iloc[0]
     assert "read with session [hidden] from omero.example" in log_text(result.run_folder)
 
     run_config = load_config(result.run_folder / "run_config.yaml")
-    assert run_config.resolved.images == ["123_a_1.tif", "124_b.tif", "125_c key_in_error.tif"]
+    assert run_config.resolved.images == ["123_a_1", "124_b", "125_c key_in_error"]
     for path in result.run_folder.rglob("*"):
         if path.is_file():
             assert KEY not in path.read_text(encoding="utf-8"), path.name
@@ -620,8 +620,8 @@ def test_omero_session_ended(tmp_path, omero_info):
     result = run_fake(config, omero_conn=conn)
     assert result.status == "stopped"
     assert "Log in again" in result.message
-    assert list(dict.fromkeys(read_table(result.run_folder, "images")["image"])) == ["1_a.tif"]
-    assert "3_c.tif: started" not in log_text(result.run_folder)
+    assert list(dict.fromkeys(read_table(result.run_folder, "images")["image"])) == ["1_a"]
+    assert "3_c: started" not in log_text(result.run_folder)
 
 
 def test_omero_needs_dataset_or_images(tmp_path):

@@ -637,7 +637,7 @@ def test_omero_segmentation_channel_read_by_the_main_process(tmp_path, omero_inf
     assert not conn.closed
     images = read_table(result.run_folder, "images")
     assert (images["segmentation_status"] == "done").all()
-    assert label_files(result.run_folder / LABELS) == ["1_a.tif_seglabels.tif", "2_b.tif_seglabels.tif"]
+    assert label_files(result.run_folder / LABELS) == ["1_a_seglabels.tif", "2_b_seglabels.tif"]
     for path in result.run_folder.rglob("*"):
         if path.is_file() and path.suffix in (".csv", ".log", ".json", ".yaml"):
             assert KEY not in path.read_text(encoding="utf-8"), path.name
@@ -662,9 +662,9 @@ def test_omero_session_ended_during_segmentation(tmp_path, omero_info, monkeypat
     result = run_cellpose(config, StandInModel(n_cells=2), omero_conn=conn, image_function=fake_process_image)
     assert result.status == "stopped"
     assert "Log in again" in result.message
-    assert list(dict.fromkeys(read_table(result.run_folder, "images")["image"])) == ["1_a.tif"]
-    assert label_files(result.run_folder / LABELS) == ["1_a.tif_seglabels.tif"]
-    assert "3_c.tif: segmenting" not in log_text(result.run_folder)
+    assert list(dict.fromkeys(read_table(result.run_folder, "images")["image"])) == ["1_a"]
+    assert label_files(result.run_folder / LABELS) == ["1_a_seglabels.tif"]
+    assert "3_c: segmenting" not in log_text(result.run_folder)
 
 
 # ---------------------------------------------------------------------------

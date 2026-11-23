@@ -679,7 +679,7 @@ def test_omero_image(tmp_path, fake_omero):
         assert set(tables) == {"spots", "clusters", "images"}
         assert (tables["spots"]["image"] == name).all()
     files = sorted(path.name for path in (tmp_path / "run" / "per_image").iterdir())
-    assert files[0] == "123_my image.tif_clusters.csv"
+    assert files[0] == "123_my image_clusters.csv"
     assert len(files) == 6
     assert fake_omero["join"] == 1
     assert fake_omero["read"][0] == (123, (1,), "omero.example", 4064, KEY)

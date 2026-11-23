@@ -591,7 +591,17 @@ def _id_number(value, kind="image"):
 
 
 def omero_output_name(image_id, image_name):
-    """Output name of an OMERO image: `<image ID>_<image name>`, with characters Windows does not allow replaced by `_`."""
+    """
+    Output name of an OMERO image: `<image ID>_<image name>`.
+
+    A `.tif` or `.tiff` at the end of the image name is left out, as for
+    local files, and characters Windows does not allow are replaced by `_`.
+    """
+    image_name = str(image_name)
+    for extension in EXTENSIONS:
+        if image_name.lower().endswith(extension) and len(image_name) > len(extension):
+            image_name = image_name[: -len(extension)]
+            break
     name = _nfc(f"{int(image_id)}_{image_name}")
     return WINDOWS_FORBIDDEN.sub("_", name)
 

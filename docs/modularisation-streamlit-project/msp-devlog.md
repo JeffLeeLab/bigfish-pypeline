@@ -1054,3 +1054,10 @@ Seen in the output:
 - `get_omero_image` in `omero_tools.py` prints "Fetching ...", "Image fetched from OMERO in ... sec" and the image shape for every read. The file stays unchanged until Phase 8.
 
 Next: a small real OMERO batch with Cellpose on. A config for image 5806 is in `~/bigfish-testdata/phase2/omero/omero_batch.yaml` (rolling ball at 5 px, manual threshold 18, one worker); the user adds a second image ID and runs it.
+
+**Decision by the user (23 Nov 2026): the extension is dropped from OMERO output names.** `omero_output_name` leaves out a `.tif` or `.tiff` at the end of the image name (in any letter case), so image 5806 gives `5806_20240308_sypN_DAPI_Phal_jim-exon_jim-intron_100x_00001`. This is a deviation from spec 5.3 and 8.2, which give `<image ID>_<image name>`.
+
+- The rule is the one for local files: `image.ome.tif` gives `image.ome` locally and `12_image.ome` on OMERO.
+- Other endings, such as `.czi`, are kept, because cutting at any dot would damage names like `cell 1.5 uM`.
+- Label files for OMERO images are therefore named `<image ID>_<image name without .tif>_seglabels.tif`.
+- Checks: the expected names in the OMERO tests were updated, with new cases for `.tiff`, `.TIF`, `.ome.tif`, a name with a dot and no extension, and `.czi`; 730 tests pass without the full-size image.

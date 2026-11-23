@@ -6,7 +6,7 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 
 - **Phase 0 and Phase 1:** done, signed off, merged into `main` and pushed.
 - **Phase 2 (Cellpose 4 and comparisons):** under way on `msp`. Tasks 2.0, 2.1, 2.2, 2.3, 2.4 and 2.6 are done and committed (devlog 2.0–2.4 and 2.6). Tasks 2.5, 2.7 and 2.8 have not started.
-- 723 tests pass in `bigfish-msp` without the full-size image (about 4.5 minutes), three of them with the real Cellpose model.
+- 730 tests pass in `bigfish-msp` without the full-size image (about 5.5 minutes), three of them with the real Cellpose model.
 - The working tree is clean. Nothing of Phase 2 has been pushed.
 
 ## Next step
@@ -24,7 +24,6 @@ The work is paused at the user's request while they run the OMERO check over the
 
 - **Mask size limit:** Cellpose removes masks larger than 40% of the image and the config has no setting for it (devlog 2.2). The user was asked whether to add one.
 - **Small real OMERO batch** with Cellpose on: the config is `~/bigfish-testdata/phase2/omero/omero_batch.yaml` (image 5806, the full-size test image); the user adds a second image ID and runs `bigfish-pypeline batch` in their own terminal over the VPN. The OMERO check itself passed on 23 Nov 2026 (devlog).
-- **OMERO output names:** an image's name on OMERO ends in `.tiff` and the output name keeps it (`5806_..._00001.tiff_spots.csv`). The user was asked whether to drop the extension.
 - **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.
 

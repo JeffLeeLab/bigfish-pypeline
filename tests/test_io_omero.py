@@ -224,10 +224,17 @@ def test_list_connection_lost_hides_key():
 @pytest.mark.parametrize(
     "name, expected",
     [
-        ('a/b\\c:d*e?f"g<h>i|j.tif', "12_a_b_c_d_e_f_g_h_i_j.tif"),
-        ("cell 1 – day 2.tif", "12_cell 1 – day 2.tif"),
-        ("Zellkern_grün_é.tif", "12_Zellkern_grün_é.tif"),
+        ('a/b\\c:d*e?f"g<h>i|j.tif', "12_a_b_c_d_e_f_g_h_i_j"),
+        ("cell 1 – day 2.tif", "12_cell 1 – day 2"),
+        ("Zellkern_grün_é.tif", "12_Zellkern_grün_é"),
         ("tab\there", "12_tab_here"),
+        ("image.tiff", "12_image"),
+        ("image.TIF", "12_image"),
+        ("image.ome.tif", "12_image.ome"),
+        ("cell 1.5 uM", "12_cell 1.5 uM"),
+        ("image.czi", "12_image.czi"),
+        ("tif", "12_tif"),
+        (".tif", "12_.tif"),
     ],
 )
 def test_output_name(name, expected):
@@ -254,7 +261,7 @@ def test_image_info():
     assert info.nbytes == 3 * 2 * 8 * 10 * 2
     assert (info.voxel_size_z, info.voxel_size_y, info.voxel_size_x) == (200.0, 65.0, 65.0)
     assert info.channel_names == ["ch0", "ch1"]
-    assert info.output_name == "12_a_b.tif"
+    assert info.output_name == "12_a_b"
     assert info.n_timepoints == 1 and info.n_positions == 1
     assert not info.xy_sizes_differ
 
