@@ -81,6 +81,7 @@ _tidy = PlainSerializer(_whole_if_possible, return_type=Union[int, float])
 Number = Annotated[float, _tidy]
 PositiveNumber = Annotated[float, Gt(0), _tidy]
 NonNegativeNumber = Annotated[float, Ge(0), _tidy]
+Fraction = Annotated[float, Gt(0), Le(1), _tidy]
 NonNegativeInt = Annotated[int, Ge(0)]
 PositiveInt = Annotated[int, Ge(1)]
 Text = Annotated[str, BeforeValidator(_blank_to_text)]
@@ -268,6 +269,7 @@ class CellposeSettings(_Settings):
     flow_threshold: NonNegativeNumber = 0.4
     cellprob_threshold: Number = 0
     min_size: int = 15
+    max_size_fraction: Fraction = 0.4
     normalize: bool = True
     batch_size: PositiveInt = 1
     niter: OptionalPositiveInt = None
@@ -554,10 +556,12 @@ def _describe(annotation, metadata):
                 if hasattr(item, name):
                     bounds[name] = getattr(item, name)
         word = "whole number" if annotation is int else "number"
+        high = bounds.get("le")
+        if bounds.get("gt") == 0 and high is not None:
+            return f"a {word} above 0 and up to {high}"
         if bounds.get("gt") == 0:
             return f"a positive {word}"
         low = bounds.get("ge")
-        high = bounds.get("le")
         if low is not None and high is not None:
             return f"a {word} from {low} to {high}"
         if low is not None:

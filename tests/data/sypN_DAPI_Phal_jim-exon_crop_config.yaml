@@ -57,6 +57,7 @@ segmentation:
     flow_threshold: 0.4
     cellprob_threshold: 0
     min_size: 15
+    max_size_fraction: 0.4
     normalize: true
     batch_size: 1
     niter:

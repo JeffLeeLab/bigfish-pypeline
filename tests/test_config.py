@@ -85,6 +85,7 @@ EXPECTED_DEFAULTS = {
             "flow_threshold": 0.4,
             "cellprob_threshold": 0,
             "min_size": 15,
+            "max_size_fraction": 0.4,
             "normalize": True,
             "batch_size": 1,
             "niter": None,
@@ -451,6 +452,20 @@ def test_label_files_need_no_folder_while_segmentation_is_off():
 def test_cellpose_segmentation_needs_no_folder():
     data = made(segmentation={"enabled": True, "source": "cellpose"})
     assert parse_config(data).segmentation.enabled
+
+
+@pytest.mark.parametrize("value", [0.05, 0.4, 1])
+def test_cellpose_mask_size_limit_accepted(value):
+    data = made(segmentation={"cellpose": {"max_size_fraction": value}})
+    assert parse_config(data).segmentation.cellpose.max_size_fraction == value
+
+
+@pytest.mark.parametrize("value", [0, -0.2, 1.5, "big"])
+def test_cellpose_mask_size_limit_out_of_range(value):
+    data = made(segmentation={"cellpose": {"max_size_fraction": value}})
+    assert_one_message(
+        data, "`segmentation.cellpose.max_size_fraction` must be a number above 0 and up to 1", f"found `{value}`"
+    )
 
 
 def test_local_input_needs_nothing_more_at_load_time():

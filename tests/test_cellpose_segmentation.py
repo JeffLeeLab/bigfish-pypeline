@@ -20,7 +20,7 @@ from cellpose_standin import StandInModel, rectangle_labels
 def test_settings_reach_eval_unchanged():
     settings = CellposeSettings(
         diameter=42.5, flow_threshold=0.7, cellprob_threshold=-1.5, min_size=30,
-        normalize=False, batch_size=4, niter=500,
+        max_size_fraction=0.9, normalize=False, batch_size=4, niter=500,
     )
     model = StandInModel()
     image = np.arange(40 * 60, dtype=np.uint16).reshape(40, 60)
@@ -33,6 +33,7 @@ def test_settings_reach_eval_unchanged():
     assert call["flow_threshold"] == 0.7
     assert call["cellprob_threshold"] == -1.5
     assert call["min_size"] == 30
+    assert call["max_size_fraction"] == 0.9
     assert call["normalize"] is False
     assert call["batch_size"] == 4
     assert call["niter"] == 500
@@ -51,6 +52,7 @@ def test_default_settings_follow_the_config():
     assert call["flow_threshold"] == 0.4
     assert call["cellprob_threshold"] == 0
     assert call["min_size"] == 15
+    assert call["max_size_fraction"] == 0.4
     assert call["normalize"] is True
     assert call["batch_size"] == 1
     assert call["niter"] is None
@@ -381,6 +383,20 @@ def test_two_runs_on_the_same_device_give_the_same_labels(real_model, crop_dapi)
     first = seg.segment_cells(real_model, crop_dapi)["masks"]
     second = seg.segment_cells(real_model, crop_dapi)["masks"]
     np.testing.assert_array_equal(first, second)
+
+
+@pytest.mark.cellpose
+def test_real_model_removes_masks_above_the_size_limit(real_model, crop_dapi):
+    usual = seg.segment_cells(real_model, crop_dapi)["masks"]
+    sizes = np.bincount(usual.ravel())[1:]
+    assert len(sizes) > 1
+    # a limit halfway between the smallest and the largest cell of the usual result
+    limit_px = (sizes.min() + sizes.max()) / 2
+    limited = seg.segment_cells(real_model, crop_dapi, max_size_fraction=limit_px / usual.size)["masks"]
+    limited_sizes = np.bincount(limited.ravel())[1:]
+    assert len(limited_sizes) == int((sizes <= limit_px).sum())
+    assert limited_sizes.max() <= limit_px
+    seg.check_labels(limited, crop_dapi.shape)
 
 
 # ---------------------------------------------------------------------------

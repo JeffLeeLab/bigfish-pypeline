@@ -39,7 +39,7 @@ SPARSE_WARNING_START = re.escape("Sparse invariant checks are implicitly disable
 # Cellpose settings from the config that are passed on to `eval`
 EVAL_SETTINGS = (
     "diameter", "flow_threshold", "cellprob_threshold", "min_size",
-    "normalize", "batch_size", "niter",
+    "max_size_fraction", "normalize", "batch_size", "niter",
 )
 
 
@@ -329,13 +329,15 @@ def cellpose_eval_settings(cellpose_settings):
 
 
 def segment_cells(model, image, diameter=None, flow_threshold=0.4, cellprob_threshold=0,
-                  min_size=15, normalize=True, batch_size=1, niter=None):
+                  min_size=15, max_size_fraction=0.4, normalize=True, batch_size=1, niter=None):
     """
     Segment one 2D image with a loaded Cellpose model.
 
     image: the 2D (y, x) image given to Cellpose, usually from pretreat_channel.
     The other settings are passed to Cellpose's `eval` unchanged
     (see the `segmentation.cellpose` section of the config).
+    max_size_fraction: masks larger than this fraction of the image are
+    removed (1 keeps every mask).
 
     Returns a dict with:
     - "masks": the label image, 2D uint32 of the image's size, 0 for
@@ -363,6 +365,7 @@ def segment_cells(model, image, diameter=None, flow_threshold=0.4, cellprob_thre
             model_input, channel_axis=None, z_axis=None, do_3D=False,
             diameter=diameter, flow_threshold=flow_threshold,
             cellprob_threshold=cellprob_threshold, min_size=min_size,
+            max_size_fraction=max_size_fraction,
             normalize=normalize, batch_size=batch_size, niter=niter,
         )
     except MemoryError:
