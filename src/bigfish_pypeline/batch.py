@@ -667,17 +667,18 @@ def calibration_threshold(config, image_name, image_source, channel_index,
 # Batch run
 # ---------------------------------------------------------------------------
 
-# Memory needed by one worker: 35 bytes for each voxel of one channel of the
-# largest image (about 5 GB for 2048 × 2048 × 35), and never less than 0.5 GB.
-BYTES_PER_VOXEL_PER_WORKER = 35
+# Memory needed by one worker: 38 bytes for each voxel of one channel of the
+# largest image (about 5.6 GB for 2048 × 2048 × 35), and never less than 0.5 GB.
+BYTES_PER_VOXEL_PER_WORKER = 38
 MIN_MEMORY_PER_WORKER = 0.5e9
 # Memory kept free for the main process and other programs.
 MEMORY_RESERVE = 2e9
-# Further memory kept free when the main process segments with Cellpose: the
-# model (about 1.2 GB) and its working memory for one image.
+# Further memory kept free when the main process segments with Cellpose: with
+# the model loaded it holds up to about 2.9 GB while the workers run.
 CELLPOSE_MEMORY_RESERVE = 3e9
 # Processor threads Cellpose may use on the CPU in the main process (never more
-# than the computer has). The workers each use one thread.
+# than the computer has). The workers each use one thread, and `workers: auto`
+# leaves these cores to Cellpose.
 CELLPOSE_CPU_THREADS = 4
 
 # Label files made by Cellpose, in the run folder: kept in `labels/`, or in a
@@ -748,13 +749,21 @@ def cellpose_threads(cpu_count):
     return max(1, min(CELLPOSE_CPU_THREADS, cpu_count or 1))
 
 
+def worker_cores(cpu_count, cellpose_on_cpu=False):
+    """Processor cores `workers: auto` may give to workers: all but one, or all
+    but the Cellpose threads when Cellpose runs on the CPU; at least one."""
+    cpu_count = cpu_count or 1
+    kept = cellpose_threads(cpu_count) if cellpose_on_cpu else 1
+    return max(1, cpu_count - kept)
+
+
 def memory_reserve(cellpose=False):
     """Memory in bytes kept free, besides the workers; larger when Cellpose runs in the main process."""
     return MEMORY_RESERVE + (CELLPOSE_MEMORY_RESERVE if cellpose else 0)
 
 
 def choose_workers(requested, n_images, voxels_per_channel, cpu_count, available_memory,
-                   total_memory=None, cellpose=False):
+                   total_memory=None, cellpose=False, cellpose_on_cpu=False):
     """
     Number of worker processes for a run.
 
@@ -767,6 +776,8 @@ def choose_workers(requested, n_images, voxels_per_channel, cpu_count, available
         available memory).
     cellpose: True when the main process segments with Cellpose; the
         reserve then also covers the model (see memory_reserve).
+    cellpose_on_cpu: True when Cellpose is known to run on the CPU; "auto"
+        then leaves its threads' cores free (see worker_cores).
 
     "auto" gives the smaller of (cores − 1) and (available memory − reserve)
     ÷ (memory per worker), never more than the number of images and at
@@ -811,11 +822,14 @@ def choose_workers(requested, n_images, voxels_per_channel, cpu_count, available
                 "with one worker, but may be slow. Closing other programs frees memory."
             )
             return 1, reason, warning
-        cores = max(1, (cpu_count or 1) - 1)
+        cores = worker_cores(cpu_count, cellpose_on_cpu)
         n_workers = max(1, min(cores, fit_in_memory, n_images))
+        left_text = "one left for the main process"
+        if cellpose_on_cpu:
+            left_text = f"{cellpose_threads(cpu_count)} left for Cellpose on the CPU"
         reason = (
             f"{n_workers} worker(s), chosen automatically: {cpu_count or 1} processor cores "
-            f"(one left for the main process) and {memory_text} (room for {fit_in_memory}); "
+            f"({left_text}) and {memory_text} (room for {fit_in_memory}); "
             f"{n_images} image(s)"
         )
         return n_workers, reason, None
@@ -1965,6 +1979,7 @@ def _plan_run(config, omero_conn):
             config.run.workers, len(images), _largest_channel(config, headers),
             os.cpu_count(), psutil.virtual_memory().available, psutil.virtual_memory().total,
             cellpose=uses_cellpose(config),
+            cellpose_on_cpu=uses_cellpose(config) and config.segmentation.device == "cpu",
         )
     except BaseException:
         if owned_conn is not None:
@@ -2024,6 +2039,16 @@ def _run_batch(config, config_file, omero_conn, show, image_function, calibratio
             if show is not None:
                 show("Getting Cellpose ready: testing the device and loading the model...")
             cellpose = prepare_cellpose(config, device_chooser, model_loader)
+        n_workers, workers_reason = plan.n_workers, plan.workers_reason
+        if cellpose is not None and cellpose.device == "cpu" and config.run.workers == "auto":
+            # the device was chosen automatically, after the workers were counted
+            cores = worker_cores(os.cpu_count(), cellpose_on_cpu=True)
+            if n_workers > cores:
+                n_workers = cores
+                workers_reason += (
+                    f"; lowered to {cores} because Cellpose runs on the CPU "
+                    f"with {cellpose.threads} thread(s)"
+                )
         try:
             run_folder = outputs.make_run_folder(config)
         except outputs.OutputError as error:
@@ -2038,9 +2063,9 @@ def _run_batch(config, config_file, omero_conn, show, image_function, calibratio
         thresholds = dict(config.resolved.thresholds) if config.resolved is not None else {}
         run_config = config.with_full_paths().with_resolved([image.listed for image in plan.images], thresholds)
         run = _Run(run_config, run_folder, plan.images, label_folder, plan.subsets, thresholds,
-                   plan.n_workers, plan.omero, show, image_function, calibration_function,
+                   n_workers, plan.omero, show, image_function, calibration_function,
                    cellpose=cellpose, omero_conn=plan.omero_conn)
-        return _run(run, config_file, plan.workers_reason, plan.workers_warning)
+        return _run(run, config_file, workers_reason, plan.workers_warning)
     finally:
         if run is not None and run.omero_conn is not plan.omero_conn:
             # The main process rejoined the session after a drop. Its login

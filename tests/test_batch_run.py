@@ -345,16 +345,34 @@ FULL_CHANNEL = 2048 * 2048 * 35  # voxels
 
 def test_auto_workers():
     n, reason, warning = batch.choose_workers("auto", 10, FULL_CHANNEL, 8, 16e9)
-    assert n == 2  # (16 − 2) GB ÷ 5.1 GB
+    assert n == 2  # (16 − 2) GB ÷ 5.6 GB
     assert warning is None
-    assert "chosen automatically" in reason and "5.1 GB per worker" in reason
+    assert "chosen automatically" in reason and "5.6 GB per worker" in reason
+    assert "8 processor cores (one left for the main process)" in reason
     assert batch.choose_workers("auto", 10, 100, 4, 64e9)[0] == 3  # cores − 1
     assert batch.choose_workers("auto", 2, 100, 16, 64e9)[0] == 2  # number of images
     assert batch.choose_workers("auto", 10, 100, 1, 64e9)[0] == 1  # one core
     assert batch.choose_workers("auto", 10, 100, None, 64e9)[0] == 1
     assert batch.choose_workers("auto", 10, 100, 16, 3.6e9)[0] == 3  # 0.5 GB floor
     assert batch.memory_per_worker(100) == batch.MIN_MEMORY_PER_WORKER
-    assert batch.memory_per_worker(FULL_CHANNEL) == 35 * FULL_CHANNEL
+    assert batch.memory_per_worker(FULL_CHANNEL) == 38 * FULL_CHANNEL
+
+
+def test_auto_workers_leave_cores_to_cellpose_on_the_cpu():
+    # 10 cores: 9 for workers, or 6 beside the 4 threads of Cellpose on the CPU
+    assert batch.choose_workers("auto", 20, 100, 10, 64e9, cellpose=True)[0] == 9
+    n, reason, warning = batch.choose_workers("auto", 20, 100, 10, 64e9, cellpose=True, cellpose_on_cpu=True)
+    assert n == 6
+    assert warning is None
+    assert "10 processor cores (4 left for Cellpose on the CPU)" in reason
+    # a small computer keeps one worker
+    assert batch.choose_workers("auto", 20, 100, 4, 64e9, cellpose=True, cellpose_on_cpu=True)[0] == 1
+    assert batch.choose_workers("auto", 20, 100, 2, 64e9, cellpose=True, cellpose_on_cpu=True)[0] == 1
+    assert batch.worker_cores(10) == 9
+    assert batch.worker_cores(10, cellpose_on_cpu=True) == 6
+    assert batch.worker_cores(None, cellpose_on_cpu=True) == 1
+    # a number given in the config is used as it is
+    assert batch.choose_workers(9, 20, 100, 10, 64e9, cellpose=True, cellpose_on_cpu=True)[0] == 9
 
 
 def test_auto_workers_little_memory_available():

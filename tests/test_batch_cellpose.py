@@ -588,10 +588,10 @@ def test_cellpose_threads_with_the_worker_variables(tmp_path, order):
 
 def test_auto_workers_keep_more_memory_free_with_cellpose():
     channel = 2048 * 2048 * 35
-    without = batch.choose_workers("auto", 10, channel, 8, 16e9)
-    with_cellpose_on = batch.choose_workers("auto", 10, channel, 8, 16e9, cellpose=True)
-    assert without[0] == 2  # (16 − 2) GB ÷ 5.1 GB
-    assert with_cellpose_on[0] == 2  # (16 − 5) GB ÷ 5.1 GB
+    without = batch.choose_workers("auto", 10, channel, 8, 17e9)
+    with_cellpose_on = batch.choose_workers("auto", 10, channel, 8, 17e9, cellpose=True)
+    assert without[0] == 2  # (17 − 2) GB ÷ 5.6 GB
+    assert with_cellpose_on[0] == 2  # (17 − 5) GB ÷ 5.6 GB
     assert batch.choose_workers("auto", 10, channel, 8, 14e9)[0] == 2
     assert batch.choose_workers("auto", 10, channel, 8, 14e9, cellpose=True)[0] == 1
     assert "for the Cellpose model" in with_cellpose_on[1]
@@ -608,6 +608,41 @@ def test_workers_auto_uses_the_cellpose_reserve_in_the_log(tmp_path, monkeypatch
     config = with_cellpose(local_config(folder, tmp_path / "out", workers="auto"), qc=False)
     result = run_cellpose(config, StandInModel(), image_function=fake_process_image)
     assert "kept free (including 3.0 GB for the Cellpose model)" in log_text(result.run_folder)
+
+
+def workers_line(run_folder):
+    [line] = [line for line in log_text(run_folder).splitlines() if "Workers: " in line]
+    return line
+
+
+@pytest.mark.parametrize("device", ["auto", "cpu"])
+def test_workers_auto_leaves_cores_to_cellpose_on_the_cpu(tmp_path, monkeypatch, device):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(batch.psutil, "virtual_memory", lambda: SimpleNamespace(available=64e9, total=64e9))
+    monkeypatch.setattr(batch.os, "cpu_count", lambda: 6)
+    folder = tiny_images(tmp_path / "input", ["a", "b", "c"])
+    config = with_cellpose(local_config(folder, tmp_path / "out", workers="auto"), qc=False, device=device)
+    result = run_cellpose(config, StandInModel(), image_function=fake_process_image)
+    assert result.status == "finished", result.message
+    line = workers_line(result.run_folder)
+    if device == "cpu":
+        # known before the run: two cores are left for workers beside the four Cellpose threads
+        assert "Workers: 2 worker(s), chosen automatically: 6 processor cores (4 left for Cellpose on the CPU)" in line
+    else:
+        # the device is chosen after the workers are counted
+        assert "Workers: 3 worker(s), chosen automatically: 6 processor cores (one left for the main process)" in line
+        assert line.endswith("; lowered to 2 because Cellpose runs on the CPU with 4 thread(s).")
+    assert progress(result.run_folder)["workers"] == 2
+
+
+def test_workers_set_in_the_config_are_kept_with_cellpose_on_the_cpu(tmp_path, monkeypatch):
+    monkeypatch.setattr(batch.os, "cpu_count", lambda: 6)
+    folder = tiny_images(tmp_path / "input", ["a", "b", "c"])
+    config = with_cellpose(local_config(folder, tmp_path / "out", workers=3), qc=False)
+    result = run_cellpose(config, StandInModel(), image_function=fake_process_image)
+    assert result.status == "finished", result.message
+    assert "Workers: 3 worker(s), as set in the config." in workers_line(result.run_folder)
 
 
 # ---------------------------------------------------------------------------
