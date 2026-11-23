@@ -843,3 +843,21 @@ The user agreed the three proposals in the plan before any task started:
 3. **Rolling ball comparison:** the full-size test image (exon channel 2 and intron channel 3) and the crop. No other images were added.
 
 `main` (Phase 1) and `msp` (with the Phase 2 plan) were pushed to GitHub. The tasks have not started.
+
+### 2.0 Test marker (23 Nov 2026)
+
+- `pyproject.toml`: marker `cellpose`. `tests/conftest.py`: tests with this marker are skipped when the model file `cpsam_v2` is not in Cellpose's model folder (`~/.cellpose/models/`, or the folder named by `CELLPOSE_LOCAL_MODELS_PATH`). Tests never download it.
+
+### 2.1 Pre-treatment (23 Nov 2026)
+
+- `segmentation.py`: `pretreat_channel(image, projection, clip, clip_value, background, bg_method, bg_radius, median_px, gaussian_sigma_px)` turns the segmentation channel into the 2D image given to Cellpose, in the order of spec 5.7. `describe_pretreatment` gives the same settings as one line for the QC figure title, e.g. "max projection | rolling ball 200 px".
+- Checks: each step alone and all steps in order on generated images; 2D and 3D input; with every step off the projection comes back unchanged; rolling ball at 200 px on the crop's DAPI projection equals a direct call of `subtract_background`. 40 new tests; 641 pass without the full-size image.
+
+Choices the spec does not settle:
+
+- Projection: max keeps the image's data type; mean gives 64-bit float. A 2D image is used as it is, whichever projection is set.
+- Clip: as in the v1 tissue-culture script (`np.clip(image, 0, value)`), so values below 0 are also set to 0. The data type is kept, so a 16-bit image stays 16-bit for the rolling ball, and a clip value with decimals acts as the whole number below it on such an image. A clip value above the image's range changes nothing.
+- Background: data types follow `subtract_background` (devlog 1.1). A mean projection with rolling ball therefore keeps values below the background as negative numbers; a max projection of an 8-bit or 16-bit image has them set to 0.
+- Median filter (`scipy.ndimage.median_filter`, as in the workbook): the data type is kept. Gaussian filter (`scipy.ndimage.gaussian_filter`): whole-number images are turned into 64-bit float first, so that the smoothing is not rounded. With both on, the median runs first.
+- The result is not converted to 32-bit float at the end as the workbook does; Cellpose converts its input itself.
+- Only an empty setting switches a filter off. A median size or Gaussian sigma of 0 is refused with a plain message, as in the config.
