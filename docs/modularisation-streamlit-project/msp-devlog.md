@@ -1174,7 +1174,8 @@ The time for a FISH channel is that of 0.10 (42.0 s).
 | 2, then 3 | 376 s (296 s and 80 s) | 5.50 GB | 37.5 |
 
 - Channel 2: 23,680 spots detected, 37,126 after decomposition, 271 clusters, 1,287 cells. Channel 3 is quick because it has few spots (1,532).
-- A second channel does not raise the peak. SNR, intensity and cell assignment do not raise it either: the peak is 0.7 GB above the 4.8 GB of 0.10, which did not include the new package's steps.
+- A second channel does not raise the peak.
+- The peak is 0.7 GB above the 4.8 GB of 0.10, which measured the v1 steps only. Which of the added steps accounts for it was not measured.
 
 **Whole runs of `bigfish-pypeline batch` with Cellpose** (three copies of the image, channel 2, one worker)
 
