@@ -5,17 +5,16 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 ## State
 
 - **Phase 0 and Phase 1:** done, signed off, merged into `main` and pushed.
-- **Phase 2 (Cellpose 4 and comparisons):** under way on `msp`. Tasks 2.0, 2.1, 2.2, 2.3, 2.4 and 2.6 are done and committed (devlog 2.0–2.4 and 2.6). Tasks 2.5, 2.7 and 2.8 have not started.
+- **Phase 2 (Cellpose 4 and comparisons):** under way on `msp`. Tasks 2.0 to 2.6 are done and committed (devlog 2.0–2.6). Tasks 2.7 and 2.8 have not started.
 - **OMERO on the lab server (23 Nov 2026):** the login-sharing check passed, and a real batch of two images with Cellpose ran over the VPN (devlog, "OMERO check on the lab server" and "Real OMERO batch with Cellpose"). Image 5806 agrees with the local runs. Image 5795 failed when the connection dropped, which showed three defects: no retry when the image information is read, the session key printed in the terminal by omero-py, and stray lines in the terminal.
 - **OMERO fix:** reviewed and committed (devlog, "OMERO fix: second try and a clean terminal"). Tested with stand-ins for the server only; the check on the real server is still to be run by the user.
-- 752 tests pass in `bigfish-msp` without the full-size image (about 5 minutes), three of them with the real Cellpose model.
+- 771 tests pass in `bigfish-msp` without the full-size image (about 5 min 40 s), six of them with the real Cellpose model.
 - Nothing of Phase 2 has been pushed.
 
 ## Next step
 
-1. Task 2.5 (end-to-end tests, Sonnet 5.5): the executor was briefed on 23 Nov 2026 to write `tests/test_end_to_end_cellpose.py`. If that file is in the working tree and not committed, review it, run the suite and commit.
-2. Task 2.7 (benchmarks) on its own, with nothing else running; then the user agrees the final `workers: auto` figures.
-3. Task 2.8 (phase review), then the user's sign-off.
+1. Task 2.7 (benchmarks, Opus 5.5) on its own, with nothing else running; then the user agrees the final `workers: auto` figures.
+2. Task 2.8 (phase review), then the user's sign-off.
 
 **No OMERO testing on 23 Nov 2026:** the user's VPN was unstable and stays off. Trying the OMERO fix on the real server (a batch that survives a dropped connection, and a terminal free of the session key) is left for a later day and goes into the manual checks of the phase review.
 

@@ -1112,3 +1112,27 @@ Manual checks on the real server, for the phase review: the batch of images 5806
 - Checks: the setting reaches `eval` (stand-in model); values in and out of range; with the real model on the crop, a limit halfway between the smallest and the largest cell removes exactly the cells above it and leaves valid labels.
 
 For the Optimise notebook (Phase 4) and the app (Phase 5): the setting belongs with the other Cellpose settings.
+
+### 2.5 End-to-end tests with Cellpose (23 Nov 2026)
+
+`tests/test_end_to_end_cellpose.py`: 11 tests in about 60 s, two of them with the real model. No defect was found in the package, and no processes are left behind.
+
+| Case | Result |
+|---|---|
+| `bigfish-pypeline batch` on the test kit with `source: cellpose` (real model, device chosen automatically) | exit code 0; tables written; the label file is 2D, whole numbers and the image's size; the cells table agrees with the label file; QC figure written; `run.log` names the model and the device |
+| The same with `device: cpu` (no GPU) | the run finishes, with the warning about time in `run.log` (about 21 s) |
+| Three images of different sizes, 2 workers | each label file has its own image's size; every spot's `cell_id` is the label at its position |
+| 2D images (`YX`, `CYX`) | Cellpose gets the 2D image; no Z columns |
+| No cells in one image and a failed segmentation in another, with `outputs.label_images` on and off | the other images are not affected; every image keeps its spots; statuses and warnings as in 2.4; no label file or QC figure for the failed image; no label folder when `label_images` is off |
+| Cancel while workers are processing, with `label_images` on and off | status `cancelled`; tables, `per_image/`, label files and QC figures hold exactly the finished images; no temporary files |
+| Repeat from `run_config.yaml` | same tables and label images |
+| The first run's `labels/` folder used as label files | same spots, clusters and cells tables |
+
+- All but the first two cases use the stand-in model with the real pipeline for the spots, on generated images.
+- Already covered by the tests of 2.4 and not repeated: cancel during a segmentation (cancel file and Ctrl+C), `label_images` off on the test kit, a stopped worker.
+- Checks: 771 tests pass without the full-size image (5 min 40 s).
+
+Choice the spec does not settle: an image with no cells still gets its label file (all zero) and its QC figure.
+
+Seen: on import, Cellpose adds lines to its own log file, `~/.cellpose/run.log`, also during the tests with the real model.
+
