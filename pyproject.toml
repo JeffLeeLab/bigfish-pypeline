@@ -25,4 +25,5 @@ testpaths = ["tests"]
 addopts = "-ra"
 markers = [
     "full_image: needs the full-size image in BIGFISH_TEST_DATA (slow)",
+    "cellpose: needs the Cellpose model file on this computer (skipped when it is missing)",
 ]
