@@ -1034,3 +1034,23 @@ Choices the spec does not settle:
 - The line "Getting Cellpose ready: testing the device and loading the model..." is shown in the terminal only, because `run.log` does not exist yet.
 
 Seen, not part of this task: big-fish's `FutureWarning` about `mean_intensity` is printed in the terminal once per run by a worker (there since Phase 1).
+
+### OMERO check on the lab server (23 Nov 2026)
+
+The user ran `tests/manual/omero_session_check.py --image-id 5806` on the lab server over the VPN (manual check 1 of the Phase 1 review). All six steps passed:
+
+- the main process logged in and read the image information;
+- two helper processes joined the login, each read channel 0 (35 × 2048 × 2048, 16-bit) and left;
+- the main login still worked after the helpers had left, and again 5 seconds later.
+
+This confirms two of the three points left open in 1.13: a joined worker can read images, and leaving with `close(hard=False)` keeps the main login alive. Still open: which errors a dropped connection and an ended session really raise.
+
+Seen in the output:
+
+- Image 5806 is the full-size test image, so an OMERO run can be compared with the local runs.
+- Reading one channel took 50 s in each helper, with both reading at once over the VPN. A local file is read in a few seconds, so reading will take most of the time of an OMERO run from outside the lab network.
+- OMERO holds no Z voxel size for this image (65 nm in Y and X), so the config's Z value cannot be checked against it.
+- The image's name on OMERO ends in `.tiff`, and the output name keeps it: `5806_20240308_sypN_DAPI_Phal_jim-exon_jim-intron_100x_00001.tiff`. Tables and label files of this image would be named `5806_..._00001.tiff_spots.csv` and `5806_..._00001.tiff_seglabels.tif`. The spec says `<image ID>_<image name>` and does not mention the extension. Question for the user.
+- `get_omero_image` in `omero_tools.py` prints "Fetching ...", "Image fetched from OMERO in ... sec" and the image shape for every read. The file stays unchanged until Phase 8.
+
+Next: a small real OMERO batch with Cellpose on. A config for image 5806 is in `~/bigfish-testdata/phase2/omero/omero_batch.yaml` (rolling ball at 5 px, manual threshold 18, one worker); the user adds a second image ID and runs it.
