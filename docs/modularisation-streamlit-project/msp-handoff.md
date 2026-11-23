@@ -13,7 +13,7 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 
 ## Next step
 
-1. Task 2.7 (benchmarks, Opus 5.5) on its own, with nothing else running; then the user agrees the final `workers: auto` figures.
+1. Task 2.7 (benchmarks, Opus 5.5): the executor was started on the evening of 23 Nov 2026 and writes its scripts, logs and numbers to `~/bigfish-testdata/benchmarks/phase2/`; it changes nothing in the repository. If no devlog entry 2.7 exists, check what that folder holds before starting again. The orchestrator checks a sample of the numbers, writes the devlog entry and brings the proposed `workers: auto` figures to the user; once agreed, `choose_workers` and its tests are updated.
 2. Task 2.8 (phase review), then the user's sign-off.
 
 **No OMERO testing on 23 Nov 2026:** the user's VPN was unstable and stays off. Trying the OMERO fix on the real server (a batch that survives a dropped connection, and a terminal free of the session key) is left for a later day and goes into the manual checks of the phase review.
@@ -38,6 +38,7 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 | `~/bigfish-testdata/` | The full-size test image; set `BIGFISH_TEST_DATA` to this folder for the `full_image` tests |
 | `~/bigfish-testdata/reference_v1/` | v1 reference results for the full-size image |
 | `~/bigfish-testdata/benchmarks/phase0/` | Phase 0 benchmark scripts and numbers, the pattern for task 2.7 |
+| `~/bigfish-testdata/benchmarks/phase2/` | Benchmark scripts, logs and numbers of task 2.7 |
 | `~/bigfish-testdata/phase1/` | Full-size runs of Phase 1 and the v1 scripts run in the new env |
 | `~/bigfish-testdata/phase2/` | Scripts, tables and logs of the rolling ball comparison (task 2.6) |
 | `~/bigfish-testdata/phase2/omero/` | Config and run folder of the real OMERO batch |
