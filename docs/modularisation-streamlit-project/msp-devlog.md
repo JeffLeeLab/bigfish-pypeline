@@ -958,3 +958,21 @@ At the same threshold the spots found by one method only are mostly top-hat spot
 **Checked by the orchestrator.** `bigfish-pypeline batch` on the test kit with each method gave the same counts as the table (473 / 440 detected, 692 / 664 spots, 6 / 5 clusters at 18; 601, 868 and 7 for rolling ball at its automatic threshold), the same per-cell totals (413 / 396) and, with a separate matching script, the same shared spots after decomposition (636, 56 and 28). A batch run of the full-size exon channel with rolling ball gave 23,680 detected spots, 37,126 spots and 273 clusters, as in the table. The top-hat numbers are those of devlog 1.5 and 1.14.
 
 Waiting on the user: review of this comparison.
+
+### 2.3 Cellpose QC figure (23 Nov 2026)
+
+- `qc.py` (new): `write_cellpose_qc(run_folder, image_name, segmentation, channel, pretreatment, diameter, channel_name=None)` writes `qc/<image>_cellpose_qc.png` from the result of `segment_cells`, under a temporary name first. `draw_cellpose_qc` gives the figure without saving it, `cellpose_qc_title` the title text, and `cellpose_qc_path` the file's path.
+- Four panels as in the workbook's `qc_figure`, drawn by Cellpose's `show_segmentation`: input (contrast stretched between the 1st and 99th percentile for display only), outlines, masks and flows.
+- Title, e.g. "sypN_DAPI_Phal_jim-exon_crop | channel 0 (DAPI) | max projection | rolling ball 200 px | diameter chosen by Cellpose | 43 cells | 2.1 s". The projection and pre-treatment come from `describe_pretreatment`. A title longer than 150 characters continues on a new line.
+- The figure is made without `matplotlib.pyplot` and without a screen, so it can be written from any thread and does not change the matplotlib backend of a notebook or the app. `cellpose` is loaded only when the figure is drawn.
+- Checks: 20 new tests (cells and no cells, each title item, a thread that is not the main one, a process without a display, no `cellpose` or `torch` loaded by importing `qc.py`); 698 pass without the full-size image.
+
+Choices the spec does not settle:
+
+- The channel's name is shown after its number when it is given.
+- A diameter left empty in the config reads "diameter chosen by Cellpose".
+- The figure is 18 inches wide at 150 dots per inch (2,700 px, as the workbook saves it); its height follows the shape of the image.
+- Cellpose's own panel titles are kept ("original image", "predicted outlines", "predicted masks", "predicted cell pose").
+- The colours of the masks panel differ from run to run, because Cellpose picks them at random.
+
+Loading `cellpose.plot` also loads `matplotlib.pyplot` (through `cellpose/io.py`), without making a figure or changing the backend.
