@@ -1,6 +1,14 @@
-"""Label images of cells: preparing the segmentation channel and reading label files."""
+"""
+Label images of cells: preparing the segmentation channel, segmenting it with
+Cellpose, and writing and reading label files.
+
+`cellpose` and `torch` are imported only inside the functions that segment,
+so that reading label files never loads them.
+"""
 
 import numbers
+import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +22,21 @@ LABEL_SUFFIX = "_seglabels"
 LABEL_EXTENSION = ".tif"
 
 PROJECTIONS = ("max", "mean")
+
+DEVICE_SETTINGS = ("auto", "cuda", "mps", "cpu")
+DEVICE_NAMES = {"cuda": "the NVIDIA GPU (cuda)", "mps": "the Apple GPU (mps)", "cpu": "the CPU"}
+
+CPU_WARNING = (
+    "Cellpose runs on the CPU, so segmentation will be slow (minutes per image "
+    "instead of seconds)."
+)
+NO_CELLS_WARNING = "Cellpose found no cells in this image; there are no cell-level results."
+
+# Cellpose settings from the config that are passed on to `eval`
+EVAL_SETTINGS = (
+    "diameter", "flow_threshold", "cellprob_threshold", "min_size",
+    "normalize", "batch_size", "niter",
+)
 
 
 # Pre-treatment of the segmentation channel
@@ -121,6 +144,262 @@ def _check_pretreatment(projection, bg_method, median_px, gaussian_sigma_px):
         )
 
 
+# Device, model and segmentation with Cellpose
+
+class CellposeSetupError(Exception):
+    """The device or the Cellpose model cannot be used, with a plain one-line reason."""
+
+
+class SegmentationError(Exception):
+    """Cellpose could not segment an image, with a plain one-line reason."""
+
+
+def _one_line(error):
+    """The error's type and text on one line."""
+    text = " ".join(str(error).split())
+    return f"{type(error).__name__}: {text}" if text else type(error).__name__
+
+
+def _device_available(name):
+    """True when PyTorch can see the device "cuda" or "mps"; the CPU is always there."""
+    if name == "cpu":
+        return True
+    import torch
+    if name == "cuda":
+        return torch.cuda.is_available()
+    return torch.backends.mps.is_available()
+
+
+def _test_calculation(name):
+    """
+    Multiply a 256 x 256 matrix of ones by itself on the device and check the
+    result. Raises an error when the device does not work.
+    """
+    import torch
+    device = torch.device(name)
+    x = torch.ones((256, 256), device=device)
+    y = x @ x
+    if name == "cuda":
+        torch.cuda.synchronize()
+    elif name == "mps":
+        torch.mps.synchronize()
+    value = y[0, 0].item()
+    if y.device.type != name or value != 256.0:
+        raise RuntimeError(f"the result was {value} on {y.device.type} instead of 256 on {name}")
+
+
+def choose_device(setting="auto"):
+    """
+    Choose and test the device Cellpose runs on, before the model is loaded.
+
+    setting: "auto", "cuda" (NVIDIA GPU), "mps" (Apple GPU) or "cpu".
+    "auto" tries the NVIDIA GPU, then the Apple GPU, then the CPU. A GPU that
+    is found but fails a quick test calculation is passed over with a
+    warning, and the next device is tried. A device named in the setting
+    must be present and pass the test calculation.
+
+    Returns (device, report, warnings): the device name ("cuda", "mps" or
+    "cpu"), a sentence for the log naming the device used, and a list of
+    warning sentences (a GPU passed over; segmentation will be slow on the
+    CPU).
+    Raises CellposeSetupError with a plain one-line message when the device
+    named in the setting cannot be used.
+    """
+    if setting not in DEVICE_SETTINGS:
+        raise CellposeSetupError(
+            f"Unknown device '{setting}'. Use one of: {', '.join(DEVICE_SETTINGS)}."
+        )
+
+    warnings = []
+    if setting == "auto":
+        device = None
+        for name in ("cuda", "mps"):
+            if not _device_available(name):
+                continue
+            try:
+                _test_calculation(name)
+            except Exception as error:
+                warnings.append(
+                    f"{DEVICE_NAMES[name]} was found but failed a test calculation "
+                    f"({_one_line(error)}); the next device is tried."
+                )
+                continue
+            device = name
+            break
+        if device is None:
+            device = "cpu"
+            _check_named_device(device, setting)
+    else:
+        device = setting
+        _check_named_device(device, setting)
+
+    how = "chosen automatically" if setting == "auto" else "as set in the config"
+    report = f"Cellpose runs on {DEVICE_NAMES[device]}, {how}."
+    if device == "cpu":
+        warnings.append(CPU_WARNING)
+    return device, report, warnings
+
+
+def _check_named_device(name, setting):
+    """Raise CellposeSetupError when the device is missing or fails the test calculation."""
+    other = "Use `device: auto` or `device: cpu` instead."
+    if not _device_available(name):
+        raise CellposeSetupError(
+            f"`device: {setting}` is set in the config, but {DEVICE_NAMES[name]} is not "
+            f"available on this computer. {other}"
+        )
+    try:
+        _test_calculation(name)
+    except Exception as error:
+        if name == "cpu":
+            other = "PyTorch may not be installed correctly in this environment."
+        raise CellposeSetupError(
+            f"{DEVICE_NAMES[name][0].upper()}{DEVICE_NAMES[name][1:]} failed a test "
+            f"calculation ({_one_line(error)}). {other}"
+        ) from error
+
+
+def load_cellpose_model(model_name="cpsam_v2", device="cpu", threads=None):
+    """
+    Load a Cellpose model once, to be reused for every image.
+
+    model_name: one of Cellpose's own models (e.g. "cpsam_v2"), a model added
+        in the Cellpose window, or the full path to a model file. Cellpose
+        downloads one of its own models the first time it is used.
+    device: "cuda", "mps" or "cpu", as returned by choose_device.
+    threads: on the CPU, the number of processor threads Cellpose may use;
+        None leaves PyTorch's own choice.
+
+    Returns the Cellpose model.
+    Raises CellposeSetupError with a plain one-line message when the model
+    name is unknown, the model cannot be downloaded, or it cannot be loaded.
+    """
+    from cellpose import models
+    import torch
+
+    model_name = str(model_name).strip()
+    path = Path(model_name).expanduser()
+    known = list(models.MODEL_NAMES) + list(models.get_user_models())
+    if path.is_file():
+        pretrained = str(path)
+        downloading = False
+    elif model_name in known:
+        pretrained = model_name
+        downloading = not (models.MODEL_DIR / model_name).is_file()
+    else:
+        raise CellposeSetupError(
+            f"Unknown Cellpose model '{model_name}': it is neither a model file on this "
+            f"computer nor one of Cellpose's models ({', '.join(known)})."
+        )
+
+    if device == "cpu" and threads is not None:
+        torch.set_num_threads(int(threads))
+    try:
+        return models.CellposeModel(
+            pretrained_model=pretrained, device=torch.device(device), use_bfloat16=False
+        )
+    except MemoryError:
+        raise
+    except Exception as error:
+        if downloading:
+            raise CellposeSetupError(
+                f"The Cellpose model '{model_name}' could not be downloaded ({_one_line(error)}). "
+                f"Check the internet connection and try again; the model is saved in "
+                f"{models.MODEL_DIR} and is downloaded only once."
+            ) from error
+        raise CellposeSetupError(
+            f"The Cellpose model '{model_name}' could not be loaded ({_one_line(error)}). "
+            f"If the model file is damaged, delete it from {models.MODEL_DIR} so that "
+            f"Cellpose downloads it again."
+        ) from error
+
+
+def cellpose_eval_settings(cellpose_settings):
+    """
+    The settings passed to segment_cells, taken from the config's
+    `segmentation.cellpose` section (a CellposeSettings or a dict).
+    """
+    if not isinstance(cellpose_settings, dict):
+        cellpose_settings = cellpose_settings.model_dump()
+    return {name: cellpose_settings[name] for name in EVAL_SETTINGS}
+
+
+def segment_cells(model, image, diameter=None, flow_threshold=0.4, cellprob_threshold=0,
+                  min_size=15, normalize=True, batch_size=1, niter=None):
+    """
+    Segment one 2D image with a loaded Cellpose model.
+
+    image: the 2D (y, x) image given to Cellpose, usually from pretreat_channel.
+    The other settings are passed to Cellpose's `eval` unchanged
+    (see the `segmentation.cellpose` section of the config).
+
+    Returns a dict with:
+    - "masks": the label image, 2D uint32 of the image's size, 0 for
+      background and one whole number per cell,
+    - "model_input": the image as given to Cellpose (32-bit decimal numbers),
+    - "flows": Cellpose's flows; flows[0] is the flow picture shown in the QC
+      figure,
+    - "n_cells": the number of cells,
+    - "seconds": the time Cellpose took,
+    - "warning": NO_CELLS_WARNING when no cell was found, otherwise None.
+
+    Raises SegmentationError with a plain one-line reason when Cellpose fails.
+    """
+    image = np.asarray(image)
+    if image.ndim != 2:
+        raise SegmentationError(
+            f"The image given to Cellpose must be 2D (y, x); this one has shape {image.shape}."
+        )
+    model_input = np.ascontiguousarray(image, dtype=np.float32)
+
+    started = time.perf_counter()
+    try:
+        masks, flows, _ = model.eval(
+            model_input, channel_axis=None, z_axis=None, do_3D=False,
+            diameter=diameter, flow_threshold=flow_threshold,
+            cellprob_threshold=cellprob_threshold, min_size=min_size,
+            normalize=normalize, batch_size=batch_size, niter=niter,
+        )
+    except MemoryError:
+        raise
+    except Exception as error:
+        raise SegmentationError(f"Cellpose could not segment the image ({_one_line(error)})") from error
+    finally:
+        _release_gpu_memory(model)
+    seconds = time.perf_counter() - started
+
+    masks = np.asarray(masks)
+    if masks.size != model_input.size:
+        raise SegmentationError(
+            f"Cellpose returned labels of shape {masks.shape} for an image of shape "
+            f"{model_input.shape}."
+        )
+    masks = masks.reshape(model_input.shape).astype(np.uint32)
+    n_cells = len(np.unique(masks[masks > 0]))
+    return {
+        "masks": masks,
+        "model_input": model_input,
+        "flows": flows,
+        "n_cells": n_cells,
+        "seconds": seconds,
+        "warning": NO_CELLS_WARNING if n_cells == 0 else None,
+    }
+
+
+def _release_gpu_memory(model):
+    """Hand the GPU memory PyTorch keeps in reserve back to the computer after an image."""
+    device_type = getattr(getattr(model, "device", None), "type", None)
+    if device_type not in ("cuda", "mps"):
+        return
+    import torch
+    if device_type == "cuda":
+        torch.cuda.empty_cache()
+    else:
+        torch.mps.empty_cache()
+
+
+# Label files
+
 class LabelFileError(Exception):
     """A label file is missing, unreadable or does not fit its image."""
 
@@ -128,6 +407,38 @@ class LabelFileError(Exception):
 def label_file_path(label_folder, image_name):
     """Path of the label file for an image: `<image>_seglabels.tif` in the label folder."""
     return Path(label_folder) / f"{image_name}{LABEL_SUFFIX}{LABEL_EXTENSION}"
+
+
+def temporary_label_path(path):
+    """Name a label file has while it is written: `<image>_seglabels.tif.tmp`."""
+    path = Path(path)
+    return path.with_name(path.name + ".tmp")
+
+
+def write_label_file(masks, label_folder, image_name):
+    """
+    Write an image's labels as `<image>_seglabels.tif` in the label folder.
+
+    masks: 2D label image, 0 for background and one whole number per cell.
+    It is saved as uint32. The file is first written under a temporary name
+    and then renamed, so a half-written file never has the label file's name.
+    The folder is made when it does not exist.
+
+    Returns the path of the label file.
+    Raises LabelFileError when masks is not a usable label image.
+    """
+    path = label_file_path(label_folder, image_name)
+    masks = np.asarray(masks)
+    masks = check_labels(masks, masks.shape[-2:], name=path.name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = temporary_label_path(path)
+    try:
+        tifffile.imwrite(temporary, masks, photometric="minisblack", metadata={"axes": "YX"})
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return path
 
 
 def read_label_file(label_folder, image_name, image_shape_yx):

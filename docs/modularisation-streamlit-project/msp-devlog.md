@@ -861,3 +861,40 @@ Choices the spec does not settle:
 - Median filter (`scipy.ndimage.median_filter`, as in the workbook): the data type is kept. Gaussian filter (`scipy.ndimage.gaussian_filter`): whole-number images are turned into 64-bit float first, so that the smoothing is not rounded. With both on, the median runs first.
 - The result is not converted to 32-bit float at the end as the workbook does; Cellpose converts its input itself.
 - Only an empty setting switches a filter off. A median size or Gaussian sigma of 0 is refused with a plain message, as in the config.
+
+### 2.2 Device, model and segmentation (23 Nov 2026)
+
+- `segmentation.py`, with `cellpose` and `torch` loaded only inside the functions that segment:
+  - `choose_device(setting)` gives the device (`cuda`, `mps` or `cpu`), a sentence for the log and a list of warnings. The test calculation is the workbook's (a 256 × 256 matrix of ones multiplied by itself) and also runs for the CPU.
+  - `load_cellpose_model(model_name, device, threads=None)` gives the model: `CellposeModel(pretrained_model=..., device=torch.device(...), use_bfloat16=False)`. `threads` sets PyTorch's thread number on the CPU only.
+  - `segment_cells(model, image, ...)` gives `masks` (2D, uint32), the model input, Cellpose's flows, the number of cells, the time taken and a warning when there are no cells. `cellpose_eval_settings` takes the seven `eval` settings from the config.
+  - `write_label_file(masks, label_folder, image_name)` writes `<image>_seglabels.tif` under the name `<image>_seglabels.tif.tmp` and then renames it.
+- Errors: `CellposeSetupError` for what stops a run before processing (device, unknown model, failed download, model that cannot be loaded); `SegmentationError` for one image. A memory error is passed on unchanged, as in the batch runner.
+- `tests/cellpose_standin.py`: a stand-in model that returns rectangles as cells and records the settings it was called with, for the tests of 2.4 and 2.5.
+- Checks: 37 new tests, 2 of them with the real model; 678 pass without the full-size image. A fresh process that reads a label file has loaded neither `cellpose` nor `torch`.
+- Real model on the crop's DAPI channel (384 × 384 px, default pre-treatment), labels of the right form, masks not judged:
+
+| Device | Model load | One image |
+|---|---|---|
+| Apple GPU | 12 s | 3.2 s the first time, then 2.0 s |
+| CPU | 2.8 s | 11 s |
+
+- The first use of PyTorch in a process took 21 s before the device was chosen.
+- Repeated runs give identical labels on the Apple GPU and on the CPU (three runs each, no pixel different). The test keeps this check on the device chosen automatically.
+
+Cellpose 4.2.1.1 details:
+
+- An unknown model name is not an error in Cellpose: it logs a warning and loads `cpsam_v2`. The package checks the name itself (a model file, one of Cellpose's models, or a model added in the Cellpose window) and stops with a plain message.
+- `device=` overrides `gpu=`, so `gpu=` is not passed. `use_bfloat16` is on by default and is switched off as the spec says.
+- A 2D image is passed as it is (32-bit float, `channel_axis=None`); Cellpose adds the channel axis, which gives the same input as the workbook's YXC image with `channel_axis=-1`.
+- `eval` removes masks larger than 40% of the image (`max_size_fraction=0.4`). The config has no setting for this, so Cellpose's default applies.
+- `eval` returns the flows as a list of three items; the first is the flow picture for the QC figure.
+- Each `eval` with the real model gives a PyTorch warning about "sparse invariant checks" from `cellpose/dynamics.py`. It is harmless and shows in the test output.
+
+Choices the spec does not settle:
+
+- Warnings are returned to the caller, which logs them, as `choose_workers` and decomposition do.
+- A model name that is a path must be an existing file. When a known model has no file in Cellpose's model folder and loading fails, the message says it could not be downloaded; when the file is there, it says the model could not be loaded and to delete the file so that it is downloaded again.
+- GPU memory that PyTorch keeps in reserve is handed back after every image (`torch.mps.empty_cache()` or `torch.cuda.empty_cache()`). Task 2.7 measures memory over five images.
+
+For 2.4: the runner's one-line error text does not yet know the two new error types, and the PyTorch warning above should not reach `run.log` once per image.
