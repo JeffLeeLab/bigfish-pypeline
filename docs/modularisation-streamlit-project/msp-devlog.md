@@ -946,7 +946,7 @@ At the same threshold the spots found by one method only are mostly top-hat spot
 
 **Per-cell counts on the crop** (44 nuclei of the label image, spots after decomposition): at 18 the totals are 413 with top-hat and 396 with rolling ball (r = 0.990; largest difference 4 spots, cell 11 with 28 and 24); at each method's automatic threshold 510 and 514 (r = 0.996; largest difference 2 spots). The median difference per cell is 0.
 
-**Other numbers.** Rolling ball sets 36 to 38 % of the pixels to 0 and top-hat about 5 %. At the centre of the spots detected on the full-size exon channel, the raw intensity is the same for both methods (median 195 and 196), and the intensity after background subtraction is lower with rolling ball (median 69 against 80). Decomposition works on the image after background subtraction, so its reference spot differs between the methods. Whether this explains the extra clusters was not tested. A full-size channel took 46 to 50 s to filter with top-hat and 60 s with rolling ball.
+**Other numbers.** Rolling ball sets 36 to 38 % of the pixels to 0 and top-hat about 5 %. At the centre of the spots detected on the full-size exon channel, the raw intensity is the same for both methods (median 195 and 196), and the intensity after background subtraction is lower with rolling ball (median 69 against 80). Decomposition works on the image after background subtraction, so its reference spot differs between the methods; see "Where the extra clusters come from" below. A full-size channel took 46 to 50 s to filter with top-hat and 60 s with rolling ball.
 
 **Figures** (image panels come from the crop only):
 
@@ -956,6 +956,33 @@ At the same threshold the spots found by one method only are mostly top-hat spot
 - [Spots per cell on the crop](figures/phase2/per-cell-counts_crop_ch2.png), top-hat against rolling ball.
 
 **Checked by the orchestrator.** `bigfish-pypeline batch` on the test kit with each method gave the same counts as the table (473 / 440 detected, 692 / 664 spots, 6 / 5 clusters at 18; 601, 868 and 7 for rolling ball at its automatic threshold), the same per-cell totals (413 / 396) and, with a separate matching script, the same shared spots after decomposition (636, 56 and 28). A batch run of the full-size exon channel with rolling ball gave 23,680 detected spots, 37,126 spots and 273 clusters, as in the table. The top-hat numbers are those of devlog 1.5 and 1.14.
+
+**Where the extra clusters come from** (asked for by the user; full-size exon channel at 18; script `clusters.py` in `~/bigfish-testdata/phase2/`).
+
+They come from decomposition on the rolling ball image, not from which spots are detected. With the detected spots of one method decomposed on the image of the other, over seeds 0 to 5:
+
+| Detected spots from | Image for decomposition | Spots after decomposition | Clusters |
+|---|---|---|---|
+| Top-hat | Top-hat | 36,360 to 37,126 | 197 to 212 |
+| Rolling ball | Top-hat | 35,232 to 35,553 | 185 to 198 |
+| Top-hat | Rolling ball | 37,946 to 38,546 | 268 to 284 |
+| Rolling ball | Rolling ball | 36,505 to 37,126 | 258 to 273 |
+
+- **Same places, more spots in each.** At seed 0, 197 of the 199 top-hat clusters are also found with rolling ball (centres within 600 nm). In these the median is 15 spots with top-hat and 18 with rolling ball; rolling ball has more spots in 172 of them. Of the 76 clusters found with rolling ball only, 73 are places where top-hat has 8 to 11 spots within 600 nm, just under the limit of 12. The other seeds give the same picture (51 to 76 rolling-ball-only clusters, nearly all at 8 to 11 top-hat spots).
+- **Clusters here are made by decomposition.** Nearly every spot in a cluster was placed by decomposition in a dense region; only about 2 detected spots lie within 600 nm of a cluster centre.
+- **The spot limit.** Rolling ball at `min_spots` 12 (273 clusters) lies between top-hat at 11 (241) and at 10 (307). Rolling ball at 13 gives 229 and at 14 gives 182, on either side of top-hat at 12 (199).
+- **A matched threshold does not remove it.** Top-hat at 18 against rolling ball at 17 (the same number of detected spots): 199 against 283 clusters.
+- **The places are not dim.** At the rolling-ball-only clusters the brightest raw value nearby is 463 (median), against 562 at the shared clusters, and both methods leave them about as bright (332 after top-hat, 323 after rolling ball).
+
+How big-fish counts the spots of a dense region: it builds a reference spot (the median of up to 2,000 detected spots, on a copy of the background-subtracted image with a wide blur removed), takes as dense regions the connected pixels brighter than the reference spot's peak, and places copies of the reference spot in each region one at a time until one more no longer improves the fit. The number of spots therefore depends on how much light a region holds compared with one reference spot.
+
+Likely reason, which fits the numbers but was not tested directly: the reference spot is smaller and slightly dimmer on the rolling ball image (width 254 nm in Z and 94 nm in YX against 271 and 100 nm; amplitude 61.8 against 62.9), so one reference spot holds about 18 % less light, while the dense regions themselves are only a few per cent dimmer. The same region is then split into about 1.2 times as many spots, which matches the rise from 15 to 18. The lower limit for a dense region (60 against 64 grey levels) adds a little (10,846 against 10,521 regions).
+
+Not settled: which count is nearer the truth. The numbers show that the number of spots given to a bright focus depends on the size of the reference spot, which the background method changes, so the same `min_spots` stands for a slightly different amount of RNA with each method. This is one image and one channel; the intron channel at 30 has no clusters with either method.
+
+Figures: [clusters for the four combinations](figures/phase2/clusters-detection-vs-image_full_ch2.png), [spots per cluster with each method](figures/phase2/spots-per-cluster_full_ch2.png), [clusters against the spot limit](figures/phase2/clusters-vs-min-spots_full_ch2.png).
+
+Checked by the orchestrator with a separate script: pairing the cluster tables of the two batch runs gives 197 shared, 2 top-hat only and 76 rolling ball only, with medians of 15 and 18 spots; `detect_clusters` on the runs' spot tables gives 307, 241 and 199 clusters for top-hat at 10, 11 and 12, and 273, 229 and 182 for rolling ball at 12, 13 and 14; top-hat spots decomposed on the rolling ball image give 38,115 spots and 268 clusters, and the reverse 35,489 and 194.
 
 Waiting on the user: review of this comparison.
 

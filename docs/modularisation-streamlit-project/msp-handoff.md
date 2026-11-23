@@ -22,7 +22,7 @@ Review and commit 2.4, then 2.5 (end-to-end tests, Sonnet 5.5), then 2.7 (benchm
 
 ## Waiting on the user
 
-- **Review of the rolling ball comparison** (devlog 2.6): does rolling ball stay the default for FISH channels? It gives about a third more clusters than top-hat on the full-size exon channel; the reason has not been looked into.
+- **Review of the rolling ball comparison** (devlog 2.6): does rolling ball stay the default for FISH channels? It gives about a third more clusters than top-hat on the full-size exon channel, because decomposition places more spots in each bright focus on the rolling ball image.
 - **Mask size limit:** Cellpose removes masks larger than 40% of the image and the config has no setting for it (devlog 2.2). The user was asked whether to add one.
 - **OMERO check on the lab server** (left over from Phase 1): `python tests/manual/omero_session_check.py --image-id <ID>` in `bigfish-msp`, on the lab network; the user pastes the printed lines. Then a small real OMERO batch of two images, with Cellpose on once 2.4 is done.
 - **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
