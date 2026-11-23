@@ -28,7 +28,6 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 
 ## Waiting on the user
 
-- **Mask size limit:** Cellpose removes masks larger than 40% of the image and the config has no setting for it (devlog 2.2). The user was asked whether to add one.
 - **OMERO on the real server, on a later day:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) to see both images finish, the "rejoining" line if the connection drops, and no session key or `WARNING:` lines in the terminal. Not on 23 Nov 2026: the VPN stays off.
 - **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.
@@ -61,6 +60,7 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 - Subpixel positions differ slightly from v1 because of the newer packages, not the new code. The user accepted this; the exact comparison is with `tests/data/reference_v1_new_env/` (devlog 1.5).
 - During a batch run the main process sets the thread variables to 1 for the workers. Cellpose on CPU in that process must not be limited by this (plan 2.4).
 - Two executors must not work in the same file at once: 2.1 and 2.2 both edit `segmentation.py`, so they were run one after the other.
+- Cellpose removes masks larger than a fraction of the image. The user asked for a setting: `segmentation.cellpose.max_size_fraction`, default 0.4 (devlog, "Mask size limit for Cellpose"). It is not in the spec; the notebook (Phase 4) and the app (Phase 5) should offer it with the other Cellpose settings.
 - Cellpose 4.2.1.1 loads `cpsam_v2` without an error when given an unknown model name; the package checks the name itself (devlog 2.2).
 - Once the main process has rejoined an OMERO session after a drop, nothing keeps the session alive except the reads of the run (devlog, OMERO fix). Keep-alive in the batch process is a Phase 5 point.
 - `workers: auto` uses 35 bytes per voxel of one channel, with a 2 GB reserve. With little free memory it runs one worker with a warning. The final figures come from task 2.7.

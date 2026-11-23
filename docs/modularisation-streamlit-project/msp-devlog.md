@@ -1100,3 +1100,15 @@ Choices the spec does not settle:
 Known limit, carried to Phase 5 with the keep-alive point of 1.13: once the main process has rejoined the session, its keep-alive (every 60 s, from `connect_to_omero`) no longer reaches the server, so the session stays alive only through the reads of the run. A pause of more than the server's idle time (10 minutes by default) with no read would end the session. This was already so before the fix.
 
 Manual checks on the real server, for the phase review: the batch of images 5806 and 5795 finishes; a dropped connection gives the "rejoining" line and the image finishes; no session key and no `WARNING:` lines in the terminal.
+
+### Mask size limit for Cellpose (23 Nov 2026)
+
+**Decision by the user (23 Nov 2026): the config gets a setting for Cellpose's mask size limit.** Cellpose removes every mask larger than a fraction of the image (devlog 2.2); the fraction was fixed at Cellpose's default of 0.4.
+
+- New setting `segmentation.cellpose.max_size_fraction`, default 0.4, so results do not change. It is passed to Cellpose's `eval` unchanged.
+- Accepted values: above 0 and up to 1. With 1, no mask is removed for its size. Any other value gives the message "`segmentation.cellpose.max_size_fraction` must be a number above 0 and up to 1".
+- The fraction is of the whole image, so the same value allows larger cells in a larger image. A crop that holds one large cell may need a higher value than the full image.
+- This is an addition to spec 5.7 and to the config layout of spec 6.2, which name seven `eval` settings; there are now eight. The test kit config lists the new setting.
+- Checks: the setting reaches `eval` (stand-in model); values in and out of range; with the real model on the crop, a limit halfway between the smallest and the largest cell removes exactly the cells above it and leaves valid labels.
+
+For the Optimise notebook (Phase 4) and the app (Phase 5): the setting belongs with the other Cellpose settings.
