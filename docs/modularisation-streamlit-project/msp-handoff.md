@@ -7,18 +7,17 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 - **Phase 0 and Phase 1:** done, signed off, merged into `main` and pushed.
 - **Phase 2 (Cellpose 4 and comparisons):** under way on `msp`. Tasks 2.0, 2.1, 2.2, 2.3, 2.4 and 2.6 are done and committed (devlog 2.0–2.4 and 2.6). Tasks 2.5, 2.7 and 2.8 have not started.
 - **OMERO on the lab server (23 Nov 2026):** the login-sharing check passed, and a real batch of two images with Cellpose ran over the VPN (devlog, "OMERO check on the lab server" and "Real OMERO batch with Cellpose"). Image 5806 agrees with the local runs. Image 5795 failed when the connection dropped, which showed three defects: no retry when the image information is read, the session key printed in the terminal by omero-py, and stray lines in the terminal.
-- **OMERO fix:** with its executor (Opus 5.5); not yet reviewed or committed. Uncommitted changes in `io.py`, `batch.py`, `cli.py` and the OMERO tests belong to it.
-- 730 tests passed in `bigfish-msp` without the full-size image before the fix (about 5.5 minutes), three of them with the real Cellpose model.
+- **OMERO fix:** reviewed and committed (devlog, "OMERO fix: second try and a clean terminal"). Tested with stand-ins for the server only; the check on the real server is still to be run by the user.
+- 752 tests pass in `bigfish-msp` without the full-size image (about 5 minutes), three of them with the real Cellpose model.
 - Nothing of Phase 2 has been pushed.
 
 ## Next step
 
-1. Review the OMERO fix, rerun the suite, commit, and write its devlog entry.
-2. Task 2.5 (end-to-end tests, Sonnet 5.5).
-3. Task 2.7 (benchmarks) on its own, with nothing else running; then the user agrees the final `workers: auto` figures.
-4. Task 2.8 (phase review), then the user's sign-off.
+1. Task 2.5 (end-to-end tests, Sonnet 5.5): the executor was briefed on 23 Nov 2026 to write `tests/test_end_to_end_cellpose.py`. If that file is in the working tree and not committed, review it, run the suite and commit.
+2. Task 2.7 (benchmarks) on its own, with nothing else running; then the user agrees the final `workers: auto` figures.
+3. Task 2.8 (phase review), then the user's sign-off.
 
-**No OMERO testing for the rest of 23 Nov 2026:** the user's VPN was unstable and stays off. The OMERO fix is tested with stand-ins for the server only. Trying it on the real server (a batch that survives a dropped connection, and a terminal free of the session key) is left for a later day and goes into the manual checks of the phase review.
+**No OMERO testing on 23 Nov 2026:** the user's VPN was unstable and stays off. Trying the OMERO fix on the real server (a batch that survives a dropped connection, and a terminal free of the session key) is left for a later day and goes into the manual checks of the phase review.
 
 ## How the work is run
 
@@ -30,7 +29,7 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 ## Waiting on the user
 
 - **Mask size limit:** Cellpose removes masks larger than 40% of the image and the config has no setting for it (devlog 2.2). The user was asked whether to add one.
-- **OMERO on the real server, on a later day:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) once the OMERO fix is committed, to see both images finish and no session key in the terminal. Not today: the VPN stays off.
+- **OMERO on the real server, on a later day:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) to see both images finish, the "rejoining" line if the connection drops, and no session key or `WARNING:` lines in the terminal. Not on 23 Nov 2026: the VPN stays off.
 - **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.
 
@@ -63,4 +62,5 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 - During a batch run the main process sets the thread variables to 1 for the workers. Cellpose on CPU in that process must not be limited by this (plan 2.4).
 - Two executors must not work in the same file at once: 2.1 and 2.2 both edit `segmentation.py`, so they were run one after the other.
 - Cellpose 4.2.1.1 loads `cpsam_v2` without an error when given an unknown model name; the package checks the name itself (devlog 2.2).
+- Once the main process has rejoined an OMERO session after a drop, nothing keeps the session alive except the reads of the run (devlog, OMERO fix). Keep-alive in the batch process is a Phase 5 point.
 - `workers: auto` uses 35 bytes per voxel of one channel, with a 2 GB reserve. With little free memory it runs one worker with a warning. The final figures come from task 2.7.
