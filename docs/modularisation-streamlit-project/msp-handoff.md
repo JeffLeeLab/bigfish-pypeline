@@ -6,12 +6,19 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 
 - **Phase 0 and Phase 1:** done, signed off, merged into `main` and pushed.
 - **Phase 2 (Cellpose 4 and comparisons):** under way on `msp`. Tasks 2.0, 2.1, 2.2, 2.3, 2.4 and 2.6 are done and committed (devlog 2.0–2.4 and 2.6). Tasks 2.5, 2.7 and 2.8 have not started.
-- 730 tests pass in `bigfish-msp` without the full-size image (about 5.5 minutes), three of them with the real Cellpose model.
-- The working tree is clean. Nothing of Phase 2 has been pushed.
+- **OMERO on the lab server (23 Nov 2026):** the login-sharing check passed, and a real batch of two images with Cellpose ran over the VPN (devlog, "OMERO check on the lab server" and "Real OMERO batch with Cellpose"). Image 5806 agrees with the local runs. Image 5795 failed when the connection dropped, which showed three defects: no retry when the image information is read, the session key printed in the terminal by omero-py, and stray lines in the terminal.
+- **OMERO fix:** with its executor (Opus 5.5); not yet reviewed or committed. Uncommitted changes in `io.py`, `batch.py`, `cli.py` and the OMERO tests belong to it.
+- 730 tests passed in `bigfish-msp` without the full-size image before the fix (about 5.5 minutes), three of them with the real Cellpose model.
+- Nothing of Phase 2 has been pushed.
 
 ## Next step
 
-The work is paused at the user's request while they run the OMERO check over the VPN. When they say resume: 2.5 (end-to-end tests, Sonnet 5.5), then 2.7 (benchmarks) on its own with nothing else running, then the phase review 2.8 (plan, Phase 2).
+1. Review the OMERO fix, rerun the suite, commit, and write its devlog entry.
+2. Task 2.5 (end-to-end tests, Sonnet 5.5).
+3. Task 2.7 (benchmarks) on its own, with nothing else running; then the user agrees the final `workers: auto` figures.
+4. Task 2.8 (phase review), then the user's sign-off.
+
+**No OMERO testing for the rest of 23 Nov 2026:** the user's VPN was unstable and stays off. The OMERO fix is tested with stand-ins for the server only. Trying it on the real server (a batch that survives a dropped connection, and a terminal free of the session key) is left for a later day and goes into the manual checks of the phase review.
 
 ## How the work is run
 
@@ -23,7 +30,7 @@ The work is paused at the user's request while they run the OMERO check over the
 ## Waiting on the user
 
 - **Mask size limit:** Cellpose removes masks larger than 40% of the image and the config has no setting for it (devlog 2.2). The user was asked whether to add one.
-- **Small real OMERO batch** with Cellpose on: the config is `~/bigfish-testdata/phase2/omero/omero_batch.yaml` (image 5806, the full-size test image); the user adds a second image ID and runs `bigfish-pypeline batch` in their own terminal over the VPN. The OMERO check itself passed on 23 Nov 2026 (devlog).
+- **OMERO on the real server, on a later day:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) once the OMERO fix is committed, to see both images finish and no session key in the terminal. Not today: the VPN stays off.
 - **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.
 
@@ -36,6 +43,7 @@ The work is paused at the user's request while they run the OMERO check over the
 | `~/bigfish-testdata/benchmarks/phase0/` | Phase 0 benchmark scripts and numbers, the pattern for task 2.7 |
 | `~/bigfish-testdata/phase1/` | Full-size runs of Phase 1 and the v1 scripts run in the new env |
 | `~/bigfish-testdata/phase2/` | Scripts, tables and logs of the rolling ball comparison (task 2.6) |
+| `~/bigfish-testdata/phase2/omero/` | Config and run folder of the real OMERO batch |
 | `../bigfish-pypeline-v1` | The v1 code at tag `v1.0`, for comparisons in the main env |
 | `~/Documents/Tools/Image-analysis/Segmentation/Cellpose-SAM-AppleM1/cellpose-sam-workbook.ipynb` | The Cellpose-SAM workbook that tasks 2.1–2.3 follow |
 | `~/.cellpose/models/cpsam_v2` | The Cellpose model, already downloaded |
@@ -43,7 +51,10 @@ The work is paused at the user's request while they run the OMERO check over the
 ## Worth knowing
 
 - The user reviewed the rolling ball comparison and kept rolling ball as the default for FISH channels (devlog 2.6). It gives about a third more clusters than top-hat on the full-size exon channel, because decomposition places more spots in each bright focus on the rolling ball image.
-
+- OMERO output names leave out a `.tif` or `.tiff` ending (user's decision, devlog): image 5806 gives `5806_20240308_sypN_DAPI_Phal_jim-exon_jim-intron_100x_00001`.
+- `bigfish-pypeline batch` does not ask for the OMERO username; it must be in the settings file (`run.input.omero.username`). Only the password is asked for.
+- Over the VPN, reading one full-size channel from OMERO took 23 to 50 s, and Cellpose-SAM took about 49 s per full-size image on the Apple GPU.
+- The full test suite takes over 5 minutes: run it in the background, so that the user can ask for progress without stopping it.
 - `conda run` does not pass typed or piped input: put scripts in files and run those.
 - The laptop has 17 GB of memory and often only about 4 GB free. One worker needs about 5 GB for a full-size channel, so full-size runs and benchmarks go one at a time.
 - PyTorch 2.14.1 in `bigfish-msp` can use the Apple GPU.
