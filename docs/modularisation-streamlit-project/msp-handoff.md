@@ -5,13 +5,13 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 ## State
 
 - **Phase 0 and Phase 1:** done, signed off, merged into `main` and pushed.
-- **Phase 2 (Cellpose 4 and comparisons):** under way on `msp`. Tasks 2.0, 2.1, 2.2, 2.3 and 2.6 are done and committed (devlog 2.0–2.3 and 2.6). Task 2.4 (segmentation in the batch runner) is with its executor; 2.5, 2.7 and 2.8 have not started.
-- 698 tests pass in `bigfish-msp` without the full-size image (about 3.5 minutes), two of them with the real Cellpose model.
-- Nothing of Phase 2 has been pushed.
+- **Phase 2 (Cellpose 4 and comparisons):** under way on `msp`. Tasks 2.0, 2.1, 2.2, 2.3, 2.4 and 2.6 are done and committed (devlog 2.0–2.4 and 2.6). Tasks 2.5, 2.7 and 2.8 have not started.
+- 723 tests pass in `bigfish-msp` without the full-size image (about 4.5 minutes), three of them with the real Cellpose model.
+- The working tree is clean. Nothing of Phase 2 has been pushed.
 
 ## Next step
 
-Review and commit 2.4, then 2.5 (end-to-end tests, Sonnet 5.5), then 2.7 (benchmarks) on its own with nothing else running, then the phase review 2.8 (plan, Phase 2).
+The work is paused at the user's request while they run the OMERO check over the VPN. When they say resume: 2.5 (end-to-end tests, Sonnet 5.5), then 2.7 (benchmarks) on its own with nothing else running, then the phase review 2.8 (plan, Phase 2).
 
 ## How the work is run
 
@@ -23,7 +23,7 @@ Review and commit 2.4, then 2.5 (end-to-end tests, Sonnet 5.5), then 2.7 (benchm
 ## Waiting on the user
 
 - **Mask size limit:** Cellpose removes masks larger than 40% of the image and the config has no setting for it (devlog 2.2). The user was asked whether to add one.
-- **OMERO check on the lab server** (left over from Phase 1): `python tests/manual/omero_session_check.py --image-id <ID>` in `bigfish-msp`, on the lab network; the user pastes the printed lines. Then a small real OMERO batch of two images, with Cellpose on once 2.4 is done.
+- **OMERO check on the lab server** (left over from Phase 1): `python tests/manual/omero_session_check.py --image-id <ID>` in `bigfish-msp`, on the lab network; the user pastes the printed lines. Then a small real OMERO batch of two images, with Cellpose on (2.4 is done).
 - **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.
 
