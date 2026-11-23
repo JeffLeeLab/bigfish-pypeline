@@ -898,3 +898,63 @@ Choices the spec does not settle:
 - GPU memory that PyTorch keeps in reserve is handed back after every image (`torch.mps.empty_cache()` or `torch.cuda.empty_cache()`). Task 2.7 measures memory over five images.
 
 For 2.4: the runner's one-line error text does not yet know the two new error types, and the PyTorch warning above should not reach `run.log` once per image.
+
+### 2.6 Rolling ball against top-hat (23 Nov 2026)
+
+The two background methods at 5 px on the full-size image (exon channel 2, intron channel 3) and on the crop (exon channel 2; it has no intron channel). Everything else is the v1 reference settings with run seed 0: decomposition alpha 0.5 and beta 1, clusters of 12 spots within 600 nm, subpixel fitting off. The manual threshold is 18 for the exon channel and 30 for the intron channel, as in the reference config; the intron channel was also counted at 18. Scripts, logs and tables are in `~/bigfish-testdata/phase2/` (see its `README.md`).
+
+TH is top-hat, RB is rolling ball.
+
+| Image, channel | Automatic threshold TH / RB | Threshold used | Detected TH / RB | After decomposition TH / RB | Clusters TH / RB |
+|---|---|---|---|---|---|
+| Crop, exon | 13 / 12 | 18 | 473 / 440 | 692 / 664 | 6 / 5 |
+| | | each method's automatic | 610 / 601 | 869 / 868 | 6 / 7 |
+| Full size, exon | 15 / 13 | 18 | 24,631 / 23,680 | 36,360 / 37,126 | 199 / 273 |
+| | | each method's automatic | 27,514 / 28,199 | 41,249 / 43,925 | 246 / 308 |
+| Full size, intron | 23 / 22 | 30 | 1,143 / 1,131 | 1,526 / 1,532 | 0 / 0 |
+| | | 18 | 3,143 / 2,612 | 6,365 / 4,725 | 22 / 4 |
+| | | each method's automatic | 1,643 / 1,654 | 2,404 / 2,462 | 0 / 0 |
+
+**Thresholds.** The automatic threshold is 1 to 2 lower with rolling ball. To detect the same number of spots as top-hat at the manual threshold, rolling ball needs 17 instead of 18 on the exon channel (crop: 464 against 473; full size: 24,623 against 24,631). On the intron channel 30 stays the nearest (1,131 against 1,143). Thresholds are whole numbers here, because the LoG-filtered image is a 16-bit image.
+
+**Run-to-run range** (run seeds 0 to 5, full-size exon channel at 18; devlog 1.14):
+
+| | Spots after decomposition | Clusters |
+|---|---|---|
+| Top-hat | 36,360 to 37,126 | 197 to 212 |
+| Rolling ball | 36,505 to 37,126 | 258 to 273 |
+
+- The difference in spots after decomposition (+766 with rolling ball at seed 0) is as large as the top-hat range itself, so it is not a clear difference.
+- The difference in clusters is clear: the two ranges do not overlap, and rolling ball gives about a third more clusters (273 against 199; 4,557 against 3,077 spots in clusters). With each method's automatic threshold it is 308 against 246.
+- The intron channel at 30 and the crop have fewer than 2,000 spots, so no random choice is made and their differences are exact. The range was not measured for the intron channel at 18 or for the automatic thresholds on the full-size image.
+
+**Same spots.** Two spots count as the same when they are at most 1 px apart in each of Z, Y and X; each spot is paired once.
+
+| Comparison | Both | Top-hat only | Rolling ball only |
+|---|---|---|---|
+| Crop, detected at 18 | 439 | 34 | 1 |
+| Crop, detected, TH at 18 and RB at 17 | 459 | 14 | 5 |
+| Crop, after decomposition at 18 | 636 | 56 | 28 |
+| Full-size exon, detected at 18 | 23,516 | 1,115 | 164 |
+| Full-size exon, detected at each automatic threshold | 27,090 | 424 | 1,109 |
+| Full-size exon, detected, TH at 18 and RB at 17 | 24,153 | 478 | 470 |
+| Full-size exon, after decomposition at 18 | 34,349 | 2,011 | 2,777 |
+| Full-size intron, detected at 30 | 1,104 | 39 | 27 |
+| Full-size intron, detected at 18 | 2,514 | 629 | 98 |
+
+At the same threshold the spots found by one method only are mostly top-hat spots. When rolling ball is given the threshold that matches the count, 98 % of the spots are shared and the rest split evenly.
+
+**Per-cell counts on the crop** (44 nuclei of the label image, spots after decomposition): at 18 the totals are 413 with top-hat and 396 with rolling ball (r = 0.990; largest difference 4 spots, cell 11 with 28 and 24); at each method's automatic threshold 510 and 514 (r = 0.996; largest difference 2 spots). The median difference per cell is 0.
+
+**Other numbers.** Rolling ball sets 36 to 38 % of the pixels to 0 and top-hat about 5 %. At the centre of the spots detected on the full-size exon channel, the raw intensity is the same for both methods (median 195 and 196), and the intensity after background subtraction is lower with rolling ball (median 69 against 80). Decomposition works on the image after background subtraction, so its reference spot differs between the methods. Whether this explains the extra clusters was not tested. A full-size channel took 46 to 50 s to filter with top-hat and 60 s with rolling ball.
+
+**Figures** (image panels come from the crop only):
+
+- Elbow curves of both methods: [crop](figures/phase2/elbow_crop_ch2.png), [full-size exon](figures/phase2/elbow_full_ch2.png), [full-size intron](figures/phase2/elbow_full_ch3.png).
+- Spot intensities, raw and after background subtraction: [crop](figures/phase2/spot-intensities_crop_ch2.png), [full-size exon](figures/phase2/spot-intensities_full_ch2.png), [full-size intron](figures/phase2/spot-intensities_full_ch3.png).
+- [Examples from the crop](figures/phase2/crop-examples_raw-background-spots.png): a sparse region, a dense region and the edge of a nucleus, with the raw image, each background result and the spots found with each ([where the regions are](figures/phase2/crop-examples_where.png)).
+- [Spots per cell on the crop](figures/phase2/per-cell-counts_crop_ch2.png), top-hat against rolling ball.
+
+**Checked by the orchestrator.** `bigfish-pypeline batch` on the test kit with each method gave the same counts as the table (473 / 440 detected, 692 / 664 spots, 6 / 5 clusters at 18; 601, 868 and 7 for rolling ball at its automatic threshold), the same per-cell totals (413 / 396) and, with a separate matching script, the same shared spots after decomposition (636, 56 and 28). A batch run of the full-size exon channel with rolling ball gave 23,680 detected spots, 37,126 spots and 273 clusters, as in the table. The top-hat numbers are those of devlog 1.5 and 1.14.
+
+Waiting on the user: review of this comparison.
