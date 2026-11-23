@@ -1136,3 +1136,71 @@ Choice the spec does not settle: an image with no cells still gets its label fil
 
 Seen: on import, Cellpose adds lines to its own log file, `~/.cellpose/run.log`, also during the tests with the real model.
 
+### 2.7 Benchmarks on the full-size image (23 Nov 2026)
+
+Scripts, raw logs, `benchmarks.csv` and `conditions.txt` are in `~/bigfish-testdata/benchmarks/phase2/`.
+
+Conditions: `bigfish-msp` (Python 3.12.16, numpy 2.5.5, scipy 1.18.1, scikit-image 0.26.0, big-fish 0.6.2.post1, PyTorch 2.14.1, Cellpose 4.2.1.1), on the laptop (M1 Pro, 10 cores, 17 GB). Full-size image, 35 × 2048 × 2048 per channel; rolling ball at 5 px; exon channel 2 at threshold 18, intron channel 3 at threshold 30; every step switched on (decomposition, subpixel fitting, clusters, SNR, intensity, cell assignment). One measurement at a time, a new process for each. Memory is the process's physical footprint, as in 0.10. Before each measurement 6.2 to 7.4 GB of memory was available; other programs were open.
+
+**Rolling ball through the package** (3 repeats)
+
+| What | Time, median (range) | Peak memory |
+|---|---|---|
+| Channel 2, 35 planes, 5 px | 42.1 s (41.8–42.2) | 0.95 GB |
+| Channel 3, 35 planes, 5 px | 42.1 s (42.1–42.3) | 0.95 GB |
+| DAPI max projection, 200 px | 0.48 s (0.48–0.49) | 0.37 GB, with reading the channel |
+
+The time for a FISH channel is that of 0.10 (42.0 s).
+
+**Cellpose-SAM on the 2048 × 2048 DAPI projection** (default pre-treatment; 1,287 cells every time, on both devices; masks not judged)
+
+| Device | Getting ready (PyTorch, device test, model) | One image | Peak memory | Held between images |
+|---|---|---|---|---|
+| Apple GPU | 4.8–5.5 s | 47.4 s the first, then 46.6 and 46.9 s | 4.4 GB, during the first image | 2.6–2.7 GB |
+| CPU, 1 thread | 4.2 s | 993 s | 2.9 GB, while the model loads | 1.6 GB |
+| CPU, 4 threads | 4.3 s | 304 s | 2.9 GB | 1.6 GB |
+| CPU, 8 threads | 4.4 s | 218 s | 2.9 GB | 1.6 GB |
+
+- Five images in a row on the Apple GPU: 3.66, 2.60, 2.62, 2.63 and 2.65 GB held after each image, and 48.9 to 49.5 s per image. Memory does not grow.
+- The higher memory during the first image on the GPU is memory the graphics driver keeps from loading the model (3.1 GB, then 2.1 GB from the second image on).
+- On the CPU, four threads are 3.3 times faster than one and eight threads 4.6 times; from four to eight the gain is 1.4 times.
+- The first load of PyTorch in a process took about 1 s here, not the 21 s seen in 2.2.
+
+**One worker, every step on** (`process_image` in a new process, with the Cellpose label file)
+
+| Channels | Time | Peak memory | Bytes per voxel of one channel |
+|---|---|---|---|
+| 2 | 294 s | 5.49 GB | 37.4 |
+| 2, then 3 | 376 s (296 s and 80 s) | 5.50 GB | 37.5 |
+
+- Channel 2: 23,680 spots detected, 37,126 after decomposition, 271 clusters, 1,287 cells. Channel 3 is quick because it has few spots (1,532).
+- A second channel does not raise the peak. SNR, intensity and cell assignment do not raise it either: the peak is 0.7 GB above the 4.8 GB of 0.10, which did not include the new package's steps.
+
+**Whole runs of `bigfish-pypeline batch` with Cellpose** (three copies of the image, channel 2, one worker)
+
+| Run | Total time | Main process, peak | Main process while a worker runs | Worker, peak | Highest sum at one moment |
+|---|---|---|---|---|---|
+| Apple GPU | 16 min 0 s | 4.3 GB | 2.7–2.9 GB | 5.52 GB | 8.45 GB |
+| CPU, 4 threads | 21 min 15 s | 2.9 GB | 1.7–2.0 GB | 5.51 GB | 7.51 GB |
+
+- The main process's peak comes before the first worker starts (model loading, first segmentation), so it does not add to the workers' peak.
+- With Cellpose on the GPU the worker took 296–297 s per image against 291 s alone (2 % slower). With Cellpose on the CPU beside it, the worker took 320–326 s against 289 s alone (10–13 % slower), and Cellpose 315–318 s against 299 s alone (5–6 % slower).
+- On the CPU with four threads, a segmentation (about 300 s) takes as long as one channel in a worker with subpixel fitting on (about 290 s), so one worker is not kept waiting.
+- Available memory fell to 2.4 GB (GPU run) and 2.8 GB (CPU run) for a short time and swap in use rose from 3.7 to 6.1 GB; the workers' times were not affected.
+- A run with two workers was not made: it needs about 11 GB available, and 7.3 GB was.
+- `workers: auto` on this laptop with 7.3 GB available: one worker with the warning about little memory when Cellpose is on (room for none after the 5 GB kept free), and one worker without Cellpose.
+
+Checked by the orchestrator against the logs: the worker's peak and bytes per voxel, the CPU time with four threads, the memory over five images, and the times and highest sums of both whole runs.
+
+**What this means for `workers: auto`**
+
+- Memory per worker: the estimate of 35 bytes per voxel (5.1 GB for this image) is about 7 % under the 5.5 GB measured in four runs that agree within 0.03 GB.
+- Memory kept free for Cellpose: the main process holds 2.6–2.9 GB with the GPU and 1.7–2.0 GB with the CPU while workers run, of which about 0.15 GB is there without Cellpose. The 3 GB kept free covers both.
+- Threads for Cellpose on the CPU: four give most of the gain, and cost a worker beside them 10–13 %.
+
+**Proposed final figures, for the user to agree**
+
+1. Memory per worker: 38 bytes per voxel of one channel (5.6 GB for this image) in place of 35.
+2. Memory kept free: 2 GB, and 3 GB more with Cellpose, unchanged.
+3. Cellpose on the CPU: 4 threads, unchanged. With `workers: auto`, the workers give way: the number of cores counted for workers is the cores less the Cellpose threads, in place of the cores less one. Not measured with several workers.
+
