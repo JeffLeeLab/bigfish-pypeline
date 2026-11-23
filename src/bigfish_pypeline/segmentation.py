@@ -8,7 +8,9 @@ so that reading label files never loads them.
 
 import numbers
 import os
+import re
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +33,8 @@ CPU_WARNING = (
     "instead of seconds)."
 )
 NO_CELLS_WARNING = "Cellpose found no cells in this image; there are no cell-level results."
+# Start of a harmless PyTorch warning that Cellpose causes for every image
+SPARSE_WARNING_START = re.escape("Sparse invariant checks are implicitly disabled")
 
 # Cellpose settings from the config that are passed on to `eval`
 EVAL_SETTINGS = (
@@ -351,6 +355,7 @@ def segment_cells(model, image, diameter=None, flow_threshold=0.4, cellprob_thre
             f"The image given to Cellpose must be 2D (y, x); this one has shape {image.shape}."
         )
     model_input = np.ascontiguousarray(image, dtype=np.float32)
+    _hide_sparse_warning()
 
     started = time.perf_counter()
     try:
@@ -384,6 +389,20 @@ def segment_cells(model, image, diameter=None, flow_threshold=0.4, cellprob_thre
         "seconds": seconds,
         "warning": NO_CELLS_WARNING if n_cells == 0 else None,
     }
+
+
+def _hide_sparse_warning():
+    """
+    Hide the harmless PyTorch warning "Sparse invariant checks are implicitly
+    disabled", which Cellpose's `dynamics` module causes for every image. Only
+    this warning, raised from that module, is hidden.
+    """
+    warnings.filterwarnings(
+        "ignore",
+        message=SPARSE_WARNING_START,
+        category=UserWarning,
+        module=r"cellpose\.dynamics",
+    )
 
 
 def _release_gpu_memory(model):

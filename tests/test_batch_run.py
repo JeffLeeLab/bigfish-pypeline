@@ -509,11 +509,11 @@ def test_channel_not_in_first_image(tmp_path):
     assert not (tmp_path / "out").exists()
 
 
-def test_cellpose_not_available(tmp_path):
+def test_segmentation_channel_not_in_first_image(tmp_path):
     folder = tiny_images(tmp_path / "input", ["a"])
-    config = with_changes(local_config(folder, tmp_path / "out"),
-                          lambda data: data["segmentation"].update(enabled=True, source="cellpose"))
-    with pytest.raises(batch.BatchError, match="Cellpose is not available yet"):
+    config = with_changes(local_config(folder, tmp_path / "out"), lambda data: data["segmentation"].update(
+        enabled=True, source="cellpose", channel=4))
+    with pytest.raises(batch.BatchError, match="channel 4 does not exist"):
         batch.run_batch(config)
     assert not (tmp_path / "out").exists()
 

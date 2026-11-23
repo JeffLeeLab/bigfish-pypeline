@@ -1,5 +1,6 @@
-"""A stand-in for a Cellpose model, for tests that must not load Cellpose or its model file."""
+"""Stand-ins for a Cellpose model, for tests that must not load Cellpose or its model file."""
 
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -50,3 +51,50 @@ class StandInModel:
             np.zeros(shape_yx, dtype=np.float32),
         ]
         return masks, flows, np.zeros(256, dtype=np.float32)
+
+
+class BlockingModel(StandInModel):
+    """
+    A stand-in whose `eval` waits until `release` is set, like a long
+    segmentation on the CPU that cannot be interrupted.
+
+    block_from: the first call that waits (counted from 1); earlier calls
+        return at once.
+    timeout: the longest a call waits, in seconds.
+
+    `waiting` is set when a call starts to wait; `returned` is set when a
+    call that waited has returned.
+    """
+
+    def __init__(self, block_from=1, timeout=60, **kwargs):
+        super().__init__(**kwargs)
+        self.block_from = block_from
+        self.timeout = timeout
+        self.waiting = threading.Event()
+        self.release = threading.Event()
+        self.returned = threading.Event()
+
+    def eval(self, x, **settings):
+        if len(self.calls) + 1 < self.block_from:
+            return super().eval(x, **settings)
+        self.waiting.set()
+        self.release.wait(self.timeout)
+        try:
+            return super().eval(x, **settings)
+        finally:
+            self.returned.set()
+
+
+class FailingModel(StandInModel):
+    """A stand-in whose `eval` raises `error` on the call numbers in `fail_on` (counted from 1)."""
+
+    def __init__(self, fail_on=(2,), error=None, **kwargs):
+        super().__init__(**kwargs)
+        self.fail_on = set(fail_on)
+        self.fail_error = error if error is not None else RuntimeError("the stand-in model failed")
+
+    def eval(self, x, **settings):
+        if len(self.calls) + 1 in self.fail_on:
+            self.calls.append({"x": x, **settings})
+            raise self.fail_error
+        return super().eval(x, **settings)

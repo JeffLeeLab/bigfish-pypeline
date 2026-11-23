@@ -10,13 +10,21 @@ What the stand-in does depends on words in the image name:
 - `key_in_error`: an error whose message holds the session key.
 - `threads`: the thread variables are written in the `warnings` column.
 - anything else: one spot per channel, written at once.
+
+With a label folder, `segmentation_status` is "done" when the image's label
+file is there, "no_labels" when it is not, and "failed" with a segmentation
+error; `n_cells` is the number of cells in the label file.
 """
 
 import os
 import time
 from pathlib import Path
 
+import numpy as np
+import tifffile
+
 from bigfish_pypeline import io, outputs
+from bigfish_pypeline.segmentation import label_file_path
 
 CRASH_DELAY_S = 2
 LONG_WAIT_S = 120
@@ -28,7 +36,8 @@ def _crash():
 
 
 def fake_process_image(config, image_name, image_source, run_folder, label_folder=None,
-                       omero_host=None, omero_port=None, omero_key=None):
+                       omero_host=None, omero_port=None, omero_key=None,
+                       segmentation_warnings=(), segmentation_error=None):
     run_folder = Path(run_folder)
     per_image = run_folder / outputs.PER_IMAGE_FOLDER_NAME
 
@@ -50,10 +59,22 @@ def fake_process_image(config, image_name, image_source, run_folder, label_folde
         (per_image / f"{image_name}_images.csv.tmp").write_text("image\n", encoding="utf-8")
         time.sleep(LONG_WAIT_S)
 
-    warnings = []
+    warnings = list(segmentation_warnings)
     if "threads" in image_name:
         warnings = [f"{name}={os.environ.get(name)}" for name in
                     ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")]
+    source, status, n_cells = "", "", None
+    if label_folder is not None:
+        source = config.segmentation.source
+        path = label_file_path(label_folder, image_name)
+        if segmentation_error is not None:
+            status = "failed"
+            warnings.append(f"no cell results: segmentation failed: {segmentation_error}")
+        elif path.is_file():
+            status = "done"
+            n_cells = len(np.unique(tifffile.imread(path))) - 1
+        else:
+            status = "no_labels"
     rows = []
     spots = []
     columns = outputs.spot_columns(3)
@@ -61,7 +82,9 @@ def fake_process_image(config, image_name, image_source, run_folder, label_folde
         rows.append(outputs.image_row(
             image_name, channel.index, channel.name, "done",
             threshold_mode=channel.threshold.mode, threshold=10.0,
-            n_spots_detected=1, n_spots=1, n_clusters=0, warnings=warnings, runtime_s=0.01,
+            n_spots_detected=1, n_spots=1, n_clusters=0, n_cells=n_cells,
+            segmentation_source=source, segmentation_status=status,
+            warnings=warnings, runtime_s=0.01,
         ))
         spots.append(outputs.make_spots_table(
             image_name, channel.index, channel.name, [[1, 2, 3]], 3, 65, 200, columns=columns,

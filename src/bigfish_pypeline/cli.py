@@ -44,7 +44,9 @@ The command ends with 0 when the run finished (even if some images failed),
 CHECK_EPILOG = """\
 Options given here are used instead of the same settings in the file.
 Nothing is processed and no folder is made. When the images are on an OMERO
-server, you are asked for your password.
+server, you are asked for your password. With Cellpose, the segmentation
+channel is checked, but the device and the model are only checked when a
+run starts.
 """
 
 
@@ -189,8 +191,19 @@ def describe_plan(config, plan, config_path):
         name = f" ({channel.name})" if channel.name else ""
         lines.append(f"  channel {channel.index}{name}: {_threshold_text(config, channel)}")
 
-    if plan.label_folder is None:
+    segmentation = config.segmentation
+    if not segmentation.enabled:
         lines.append("Cell results: no (segmentation is switched off)")
+    elif segmentation.source == "cellpose":
+        lines.append(
+            f"Cell results: yes, cells found by Cellpose (model {segmentation.cellpose.model}, "
+            f"channel {segmentation.channel}, device: {segmentation.device}). The device and "
+            "the model are checked when the run starts."
+        )
+        if config.outputs.label_images:
+            lines.append("Label images: saved in `labels/` in the run folder")
+        else:
+            lines.append("Label images: not kept (`outputs.label_images` is off)")
     else:
         lines.append(f"Cell results: yes, from the label files in {plan.label_folder}")
 

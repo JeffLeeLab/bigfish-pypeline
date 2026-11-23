@@ -1003,3 +1003,34 @@ Choices the spec does not settle:
 - The colours of the masks panel differ from run to run, because Cellpose picks them at random.
 
 Loading `cellpose.plot` also loads `matplotlib.pyplot` (through `cellpose/io.py`), without making a figure or changing the backend.
+
+### 2.4 Segmentation in the batch runner (23 Nov 2026)
+
+`source: cellpose` now runs in `bigfish-pypeline batch`.
+
+- **Before processing** (`prepare_cellpose` in `batch.py`): the segmentation channel is checked against the first image, the device is chosen and tested, and the model is loaded once. This happens before the run folder is made, so a problem (unknown model, device that does not work) leaves no folder. `bigfish-pypeline check` checks the channel only: it does not test the device or load the model, and does not load PyTorch (its first load takes about 20 s).
+- **Run flow.** The main process segments in one background thread, one image at a time and in order: it reads only the segmentation channel (local file, or OMERO through the main connection with the existing retry), pre-treats it, segments it, writes the label file and the QC figure, and hands the image to a worker when one is free. The next image is segmented only when no segmented image is waiting for a worker. The main loop keeps its 1 s rhythm throughout: cancel, `progress.json` (new entry `segmenting`) and finished images.
+- **Cancel during a segmentation.** Cellpose cannot be stopped part way through an image, so the segmentation is abandoned: its thread writes nothing more, the image's label file and QC figure are removed, and the command returns. Ctrl+C during a segmentation on the CPU returned after 1.1 s. The abandoned thread uses the processor and holds the model until that one image is done, which matters for the app (Phase 5): a new run started at once could hold two copies of the model for a short time.
+- **Label files.** With `outputs.label_images` on they go to `labels/` in the run folder; with it off to `labels_temporary/`, where each file is deleted as its image finishes and the folder is removed at the end, also after a cancel or a stop. Labels and QC figures are kept only for finished images. An image retried after a stopped worker keeps its label file and is not segmented again.
+- **Failures.** A segmentation that fails (also an unreadable segmentation channel) leaves the image's spots: `segmentation_status` is `failed`, the channels stay `done`, and the reason is in the `warnings` column ("no cell results: segmentation failed: ...") and in `run.log`. No cells: `segmentation_status` `done`, `n_cells` 0 and a warning. A QC figure that cannot be written gives a warning only.
+- **Log.** `run.log` names the model, the channel, the pre-treatment, the device (with the CPU warning and the number of threads) and where the labels go, and gives for each image the segmentation time and the number of cells. The PyTorch "sparse invariant checks" warning is hidden (only that warning, from `cellpose.dynamics`).
+- **End of the run.** The model is let go and the GPU memory handed back.
+- Checks: 25 new tests in `tests/test_batch_cellpose.py`, one with the real model; 723 pass without the full-size image. With the stand-in model: the test kit with one and two workers gives the same tables; its `labels/` folder reused as label files gives the same spot, cluster and cell tables; `outputs.label_images` off; cancel during a segmentation (cancel file and Ctrl+C); `progress.json` renewed during a long segmentation; a stopped worker; a failed segmentation; no cells; set-up problems; OMERO input with stand-ins for the server; a fresh process that runs with label files loads neither `cellpose` nor `torch`.
+- Checked by the orchestrator with the real command on the test kit: Apple GPU, 14 s for the whole command (model ready in 4.9 s, segmentation 2.2 s); CPU with four threads and `label_images` off, 22 s (segmentation 12.2 s), no label folder left; an unknown model name stops with the plain message and no run folder. Both runs: 692 spots, 6 clusters, 43 cells.
+
+**Threads on the CPU.** When PyTorch is first loaded while `OMP_NUM_THREADS` is 1, it stays on one thread whatever it is told later: `torch.set_num_threads(4)` then reports 4 but the work runs on one. The runner therefore sets the thread variables to the Cellpose thread number while it tests the device and loads the model, and to 1 for the workers afterwards. A test with the real PyTorch checks both orders and that the work really runs in parallel. For the app (Phase 5): PyTorch must not be loaded for the first time while the thread variables are 1. Segmentation of the crop on the CPU through the runner took 37.7 s with one thread, 11.5 s with four and 8.9 s with eight.
+
+First estimates, to be replaced by the figures of 2.7:
+
+- `CELLPOSE_CPU_THREADS = 4` (fewer on a computer with fewer cores). With `workers: auto` on the CPU these threads run beside the workers, so the processor is asked for more than it has; 2.7 decides which of the two should give way.
+- `CELLPOSE_MEMORY_RESERVE = 3 GB`, on top of the 2 GB kept free without Cellpose. The reason logged for `workers: auto` names it.
+
+Choices the spec does not settle:
+
+- The reason for a failed segmentation goes into the `warnings` column, because the `reason` column belongs to the channel's own status.
+- Segmentation starts with the main pass, not during the calibration pass.
+- A memory error during a segmentation fails that image only.
+- `run_config.yaml` of a Cellpose run keeps the `segmentation.label_folder` of the config, which is not used.
+- The line "Getting Cellpose ready: testing the device and loading the model..." is shown in the terminal only, because `run.log` does not exist yet.
+
+Seen, not part of this task: big-fish's `FutureWarning` about `mean_intensity` is printed in the terminal once per run by a worker (there since Phase 1).
