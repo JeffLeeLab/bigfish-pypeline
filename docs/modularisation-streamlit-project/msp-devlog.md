@@ -1649,3 +1649,100 @@ Seen on the full-size final QC: the picture does not use the full width of the f
 
 Waiting for the user's review of the samples.
 
+### 3.11 Phase 3 review (24 Nov 2026)
+
+Checks run in a fresh shell, at commit `bf270e0`. One command is cut off after 10 minutes, so each suite run was made in two parts.
+
+| Check | Result |
+|---|---|
+| Whole suite, with the full-size image | 1,057 passed (134 and 923), 11 min 45 s in all |
+| The same without the full-size image (`-m "not full_image"`) | 1,054 passed, 9 min 36 s |
+| The same without the tests that need the Cellpose model, as on a computer without the model | 1,048 passed (131 and 917), 8 min 46 s |
+| v1 imports in the main env (`image_utils`, `omero_tools` from `src/`, Python 3.9, Cellpose 3.1.1.2) | work as before |
+| Main env | `conda env export` identical to the export stored with the reference run |
+| v1 files (`environment.yml`, `image_utils.py`, `omero_tools.py`) | unchanged since `v1.0` |
+| `msp-environment.yml` and `pyproject.toml` | unchanged in this phase |
+| Worker and `caffeinate` processes left after the tests | none |
+
+Phase 3 "done when" (spec section 11, with the plan's addition):
+
+| Condition | Result | Entry |
+|---|---|---|
+| A full run on the test kit produces every output | yes: every file of spec 8.1 and 8.3, with the final QC as PNG and as HTML | 3.6, 3.8 |
+| Repeating the run from `run_config.yaml` gives the same tables | yes, with the outputs on or off; calibration is not made again | 3.8 |
+| The user has reviewed sample QC images and the log | the samples are with the user | 3.10 |
+| The `workers: auto` estimate is confirmed with the QC outputs on | confirmed: 38 bytes per voxel, 2 GB kept free, 3 GB more with Cellpose | 3.9 |
+
+**What Phase 3 delivered**
+
+- `run_info.yaml` in every run folder, written at the start and completed however the run ends.
+- `run.log` complete against spec 8.4.
+- The optional `.npz` files with the v1 keys, equal to the v1 reference files on the crop.
+- The QC images of spec 8.3: elbow plot, calibration plot, detection plot, reference spot, and the final QC as PNG or as an interactive HTML page; each with its switch, and each also available to the notebook and the app as a function that gives the figure.
+- Keep-awake during a run on macOS and Windows.
+- Plain messages in place of Python error reports when a run stops unexpectedly, with the OMERO session key hidden.
+- 9,400 lines in `src/bigfish_pypeline/`, 1,057 tests.
+- On the full-size image the outputs add about 3 s to a channel of about 290 s, do not raise the worker's memory, and take about 12.5 MB of disk for each image and channel.
+
+**Deviations from the spec and the plan**
+
+| # | Deviation | Entry |
+|---|---|---|
+| 1 | The elbow plot is written in every threshold mode, with the elbow method's value as a second line when it was not the one used. User's decision. | 3.0, 3.3 |
+| 2 | The final QC as PNG shows each cell's number and its number of spots, not all the counts, and no text above 300 cells. User's decision. | 3.0, 3.5 |
+| 3 | The HTML final QC holds plotly's script inside each page: about 12 MB for a full-size image, where the brief expected a few MB. User's decision. | 3.5 |
+| 4 | The final QC and the detection plot are 2,000 px wide. User's decision. | 3.5, 3.6 |
+| 5 | The detection plot is not v1's file: its height follows the image, it has a title, and it is named `_detection.png`. | 3.4 |
+| 6 | `run_info.yaml` has four keys the spec does not list: `message`, `started_in_folder`, `settings_file` and `omero_server`. | 3.1 |
+| 7 | The calibration plot follows the `elbow_plot` switch; it has none of its own. | 3.6 |
+| 8 | QC files are drawn in `qc_temporary/<image>/` and moved into `qc/` just before the image's tables are written, not renamed in one step with them. The image still counts as finished only once `_images.csv` is there. | 3.6 |
+| 9 | An unexpected problem during a run raises `RunStoppedError`, and the command line prints a plain message in place of Python's report. Not asked for by the spec. | 3.2 |
+| 10 | `runtime_s` in `images.csv` includes the time spent on the QC files. | 3.6 |
+| 11 | Keep-awake prevents idle sleep only. The Windows request is tested with a stand-in. | 3.7 |
+| 12 | The test suite takes 9 min 36 s; the aim of 8 minutes set in 3.8 was missed. | 3.8 |
+| 13 | Three small changes were written by the orchestrator, not by an executor: the hiding of session keys in an unexpected problem outside a run, the two defaults decided by the user (2,000 px, script inside the page), and true pixels for enlarged pictures. | 3.2, 3.6, 3.9 |
+| 14 | Task 3.6 was started before the user's first look at the final QC, which the plan put before it; the look changed two defaults only. | 3.5 |
+| 15 | The margin of the per-worker memory figure is under 1 % (5.54 GB measured against 5.58 GB). | 3.9 |
+
+**Points carried forward**
+
+Phase 4 and Phase 5:
+
+1. Each QC figure has a function that gives the figure (`draw_...`) without saving it; the final QC is built from the per-image tables and the label image, as the Results page needs (spec 10.4).
+2. `run_batch` takes the text for `command` in `run_info.yaml`, and raises `RunStoppedError` when a run stops unexpectedly; the app has to show its message.
+3. From Phase 2, unchanged: `max_size_fraction` with the other Cellpose settings; PyTorch must not be loaded first while the thread variables are 1; an abandoned segmentation holds the model for a short time; the batch process taking over an OMERO session and keeping it alive.
+
+Phase 6 (documentation):
+
+4. What each QC image shows; the elbow plot's vertical axis is the natural logarithm of the number of spots.
+5. Disk use of the QC images, and the switches that turn each off.
+6. Keep-awake does not stop a laptop sleeping when its lid is closed.
+7. The keys of `run_info.yaml`; "finished" in the summary line counts images in which every channel failed, which the next log line names.
+
+Phase 7 (Windows and Linux):
+
+8. Keep-awake on Windows with the real system call; from Phase 2: Cellpose on an NVIDIA GPU, a whole run with two or more workers beside Cellpose, Ctrl+C on Windows.
+
+Small points left as they are:
+
+9. Ctrl+C at a moment when the run's own handling of it is not in place is recorded as "stopped".
+10. On the full-size final QC the picture does not use the full width of the figure.
+
+**For the user to decide**
+
+- Whether the tests may run in parallel, which needs `pytest-xdist` in `msp-environment.yml` and should bring the suite well under 8 minutes.
+
+**Manual checks for the user**
+
+1. The samples of 3.10: the QC images, `run.log` and `run_info.yaml`. Are the pictures, the wording and the file names what you expect?
+2. Try it on the test kit, from the repository folder with `bigfish-msp` active: `bigfish-pypeline batch tests/data/sypN_DAPI_Phal_jim-exon_crop_config.yaml --output-folder ~/Desktop/bigfish_test`, then open the `qc/` folder of the run.
+3. Open an HTML final QC in your browser (e.g. `~/bigfish-testdata/phase3/samples/kit_label_files_html/`), with the internet connection off if you want to see that it needs none.
+4. Read the "choices the spec does not settle" in entries 3.1, 3.2, 3.5 and 3.6, which decide what users see.
+5. Still open from Phase 2: the OMERO fix on the real server, and an image for the Cellpose mask review.
+
+**Housekeeping**
+
+- `~/bigfish-testdata/phase3/` (0.15 GB) holds the samples; `~/bigfish-testdata/benchmarks/phase3/` holds the benchmarks: about 0.2 GB of run folders, and hard links to the full-size image, which take no extra space.
+- `docs/modularisation-streamlit-project/figures/` holds 3.1 MB, of which 1.6 MB is new.
+- `msp` is 25 commits ahead of GitHub: none of the Phase 3 work has been pushed.
+
