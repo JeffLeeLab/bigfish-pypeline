@@ -1575,3 +1575,54 @@ The test kit config has `keep_awake: false`, as the test configs do.
 - Run by the orchestrator in two halves: 134 tests in 5 min 49 s (end-to-end, keep-awake, command line, Cellpose batch) and 920 in 3 min 47 s.
 - Not done, for the user to decide: running the tests in parallel, which needs the package `pytest-xdist` in `msp-environment.yml`.
 
+### 3.9 Time and memory with the outputs on (24 Nov 2026)
+
+Scripts, raw logs, `benchmarks.csv` and `conditions.txt` are in `~/bigfish-testdata/benchmarks/phase3/`. Conditions and memory measure as in 2.7: full-size image, channel 2, rolling ball at 5 px, threshold 18, every step on, one measurement at a time in a new process. Before each measurement 8.4 to 9.4 GB of memory was available.
+
+**One worker** (`process_image`, with the Cellpose label file of 2.7; 37,126 spots, 271 clusters and 1,287 cells every time)
+
+| Outputs | Time | Peak memory | Bytes per voxel |
+|---|---|---|---|
+| Every QC image and `npz` off | 293.5 s | 5.49 GB | 37.4 |
+| Every QC image on, final QC as PNG, `npz` on | 293.7 s | 5.52 GB | 37.6 |
+| The same with the final QC as HTML | 293.4 s | 5.52 GB | 37.6 |
+| Elbow plot alone | 290.7 s | 5.51 GB | 37.6 |
+| Detection plot alone | 291.4 s | 5.52 GB | 37.6 |
+| Final QC as PNG alone | 290.5 s | 5.53 GB | 37.7 |
+
+The totals differ by about 3 s from run to run, more than the outputs cost. The time of each file, measured on its own:
+
+| File | Time | Size |
+|---|---|---|
+| `_elbow.png` | 0.1 s | 0.06 MB |
+| `_detection.png` | 0.7 s | 3.1 MB |
+| `_referencespot.tif` | under 0.01 s | 1 kB |
+| `_final.png` | 2.0 s | 6.5 MB |
+| `_final.html` | 1.6 s | 11.9 MB |
+| `.npz` | under 0.01 s | 1.2 MB |
+| All QC files of the channel | 2.5 to 2.9 s | – |
+
+- **The peak does not come from the outputs.** It falls about 52 s into the channel, during background subtraction and the LoG filter, as before. The figures are drawn at the end, when the worker holds about 0.25 GB.
+- The 0.02 to 0.04 GB above the base line is `matplotlib`, which the worker has loaded from the start when a QC image is on.
+- Working out the elbow values for a manual threshold (3.6) takes 1.4 s and raises memory to 1.4 GB for a moment, far below the peak.
+
+**Whole run with Cellpose on the Apple GPU** (three copies of the image, one worker, every output on, keep-awake on)
+
+| | Every output on | Without the outputs (2.7) |
+|---|---|---|
+| Total time | 15 min 57 s | 16 min 0 s |
+| Main process, peak (before the first worker starts) | 4.31 GB | 4.33 GB |
+| Main process while the worker runs | 2.6 to 3.2 GB | 2.6 to 3.5 GB |
+| Worker, peak | 5.54 GB | 5.52 GB |
+| Highest sum at one moment | 8.47 GB | 8.45 GB |
+| Lowest memory available | 2.9 GB | 2.4 GB |
+
+- The run folder is 137 MB for three images: `qc/` 37.5 MB (12.5 MB for each image, with the Cellpose QC figure), `labels/` 50 MB, `npz/` 3.6 MB.
+- The "while the worker runs" figures of the main process are every sample of the two logs; 2.7 gave the usual range (2.7 to 2.9 GB). Single samples above 3 GB during a segmentation were there in Phase 2 as well.
+
+Checked by the orchestrator against the logs: time and peak of the worker with the outputs off, with all on and with the final QC alone; the time of each QC file; the time and the highest sum of the whole run.
+
+**Result: the `workers: auto` figures stand** (38 bytes per voxel, 2 GB kept free, 3 GB more with Cellpose). The highest worker peak measured is 5.54 GB against the 5.58 GB of the estimate, and the highest sum of 8.47 GB is under the 8.58 GB the estimate allows for one worker beside Cellpose. The margin of the per-worker figure is under 1 %.
+
+**Enlarged pictures.** Seen by the orchestrator on the test kit: with the detection plot at 2,000 px, the 384 px crop was enlarged by a factor that is not a whole number and smoothed, which made the file 2.3 MB and soft. A picture shown larger than its own size now keeps its pixels as they are: the crop's detection plot is 0.7 MB. Images of 1,000 px or more across are drawn as before.
+
