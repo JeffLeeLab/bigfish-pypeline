@@ -1369,3 +1369,64 @@ Where the picture differs from v1's:
 
 For 3.6: the runner chooses the image to draw on (v1 used the channel after background subtraction) and passes the final spot positions (subpixel when on) and the cluster positions without their other columns; the cluster radius is passed in pixels.
 
+### 3.1 Run record (24 Nov 2026)
+
+Every run folder now holds `run_info.yaml`, with every item of spec 8.4. The file of a test kit run:
+
+```yaml
+# Run record: when the run took place, on which computer, with which software,
+# and how it ended. The settings of the run are in run_config.yaml.
+status: finished
+message: 'The run finished: 1 image(s) processed.'
+started: '2026-11-24 00:43:47+00:00'
+ended: '2026-11-24 00:43:49+00:00'
+duration: 2 s
+command: bigfish-pypeline batch tests/data/sypN_DAPI_Phal_jim-exon_crop_config.yaml --output-folder ~/Desktop/bigfish_test --workers 1
+started_in_folder: /Users/jefflee/Documents/Tools/bigfish-pypeline
+settings_file: /Users/jefflee/Documents/Tools/bigfish-pypeline/tests/data/sypN_DAPI_Phal_jim-exon_crop_config.yaml
+pipeline_version: 2.0.0.dev0
+git_commit: 5ba6632974e4632b04d3ddea22c67bd3e9a10021 (with changes not yet committed)
+python_version: 3.12.16
+package_versions:
+  big-fish: 0.6.2.post1
+  cellpose: 4.2.1.1
+  torch: 2.14.1
+  numpy: 2.5.5
+  scipy: 1.18.1
+  scikit-image: 0.26.0
+  tifffile: 2026.11.16
+  omero-py: 5.22.1
+operating_system: macOS 26.5.1 (arm64)
+processor_cores: 10
+computer_memory: 17.2 GB
+cellpose_device: not used
+workers: 1
+workers_reason: 1 worker(s), as set in the config
+worker_restarts: none
+random_seed: 0
+calibrated_thresholds: none
+omero_server: not used
+```
+
+- **When it is written.** The first part is written as soon as the run folder is made, with `status`, `ended` and `duration` reading "not ended". It is completed however the run ends: finished, cancelled, stopped (ended OMERO session, a single worker that stops, calibration without a usable value) or an unexpected error. A run that is killed leaves the first part.
+- **Keys** always come in this order and are always present; a value that does not apply is a word ("not used", "none", "not available", "not installed", "not given").
+- `worker_restarts` lists each restart of the pool with its time, the new number of workers and the images lost. `calibrated_thresholds` holds the thresholds in use at the end, e.g. `channel 2: 13.0`. `cellpose_device` is `cpu`, `mps` or `cuda`. `omero_server` is the server and port only.
+- `workers` is the number the run really used, and `workers_reason` the text of the log's `Workers:` line, with "lowered to N" when Cellpose runs on the CPU (2.7).
+- Package versions are read from the installed package details without loading the packages, so a run with label files still loads neither `cellpose` nor `torch`.
+- `git_commit` is given when the package runs from the repository folder and git is installed, with "(with changes not yet committed)" when the code differs from the commit.
+- The command is the command line as typed, quoted where needed. `run_batch` takes it as the new argument `command`, for the app; without it the file reads "started from Python (run_batch), not from the command line".
+- The OMERO session key is hidden in every value, and the user name is never collected.
+- Checks: 11 new tests, and the file is checked in the existing tests of calibration, cancel, stopped workers, the ended OMERO session and Cellpose runs; 866 tests pass without the full-size image. Checked by the orchestrator with the real command on the test kit.
+
+Choices the spec does not settle:
+
+- Three keys the spec does not list: `message` (the closing sentence of the run), `started_in_folder` (so that paths in the command can be followed) and `settings_file`.
+- The start time is taken after the checks made before a run, so after the OMERO password is typed and before Cellpose is loaded.
+- Times are written as "2026-11-24 10:05:31+00:00": local time with the difference from UTC.
+- If the first part cannot be written the run stops with a plain message; if the file cannot be completed, a warning goes into `run.log`.
+
+Seen by the executor in the existing code, both given to task 3.2:
+
+- An unexpected error in a run is written to `run.log` with the session key hidden, but then reaches the terminal as a Python error report whose text is not passed through the same hiding.
+- If the label folder of a Cellpose run cannot be made, the run ends with a bare error and leaves a run folder without `run.log`.
+
