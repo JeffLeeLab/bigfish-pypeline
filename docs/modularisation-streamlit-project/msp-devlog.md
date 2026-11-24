@@ -1327,3 +1327,23 @@ The user agreed the three proposals in the plan before any task started:
 
 `msp` with the Phase 3 plan is not pushed.
 
+### 3.3 Elbow plot and calibration plot (24 Nov 2026)
+
+Drawing and writing functions in `qc.py`; the batch runner calls them from task 3.6 on.
+
+- **Elbow plot**, `qc/<image>_ch<index>_elbow.png`: `write_elbow_plot(run_folder, image_name, detected, channel, threshold_mode, lower_limit=None, channel_name=None)`, with `draw_elbow_plot` for the figure alone and `elbow_path` for the file's path. It is drawn from the elbow values `detect_spots` returns, with the look of big-fish's own plot.
+  - Legend: "Selected threshold = 18.0" (the threshold used, also marked on the curve); "Lower limit = 20.0" when one is set; and, for a manual or calibrated threshold, "Automatic threshold = 13.0 (not used)" (decision 1 of 3.0). When the lower limit raised an automatic threshold: "Automatic threshold = 13.0 (raised to the lower limit)". When the elbow method gives no value: "No automatic threshold found".
+  - Title: image, channel number and name, and "manual threshold", "automatic threshold" or "calibrated threshold".
+  - Without elbow values (no candidate spots) nothing is written and the function returns nothing, so that the runner can log a warning.
+- **Calibration plot**, `qc/calibration.png`: `write_calibration_plot(run_folder, calibration, thresholds, lower_limits=None, channel_names=None)`, with `draw_calibration_plot` and `calibration_path`. One panel for each calibrated channel: the automatic value of each image of the subset, a line at the median used ("Median used = 15.0"), the lower limit when set, and a cross at the bottom for each image left out of the median, with their number in the legend. Image names are written along the axis for up to 30 images; above that the images are numbered in the order of `calibration.csv`.
+- Both are written under a temporary name and renamed, from any thread and without a screen, as the Cellpose QC figure is.
+- Checks: 30 new tests in `tests/test_qc.py` (51 pass): each threshold mode with its exact legend text, no elbow values, a manual value outside the curve, a failed write, a thread that is not the main one, a process without a display; the calibration plot with one and several channels, images left out, no usable median, and 30, 31 and 45 images.
+- Looked at by the orchestrator: the crop's elbow plot (top-hat, channel 2) with a manual threshold of 18, with the automatic threshold (13) and with a lower limit of 20, and a calibration plot of 8 images and two channels. Samples in `~/bigfish-testdata/phase3/samples_3.3/`.
+
+Choices the spec does not settle:
+
+- With a manual or calibrated threshold `detect_spots` does not return the elbow method's value, so the plot works it out from the curve with the same big-fish function (`get_breaking_point`).
+- In automatic mode the second line is drawn only when the lower limit raised the value.
+- The vertical axis keeps big-fish's label "Number of mRNAs detected (log scale)" and its numbers, which are natural logarithms of the counts, as in v1.
+- The elbow plot is 6.5 × 5 inches at 150 dots per inch.
+
