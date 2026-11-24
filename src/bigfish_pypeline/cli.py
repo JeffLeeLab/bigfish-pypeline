@@ -6,6 +6,7 @@ import os
 import shlex
 import subprocess
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -312,6 +313,17 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("Cancelled.", file=sys.stderr, flush=True)
         return EXIT_CANCELLED
+    except Exception:
+        # A problem nobody foresaw, outside a run. Python's own report is shown
+        # for whoever looks into it, with any OMERO session key hidden.
+        report = io.SESSION_KEY_PATTERN.sub("[hidden]", traceback.format_exc())
+        print(
+            "The command stopped because of an unexpected problem. "
+            "Please pass on the lines below when you report it.",
+            file=sys.stderr, flush=True,
+        )
+        print(report.rstrip(), file=sys.stderr, flush=True)
+        return EXIT_PROBLEM
 
 
 if __name__ == "__main__":

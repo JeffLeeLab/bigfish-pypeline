@@ -441,6 +441,24 @@ def test_unexpected_problem_gives_a_plain_message(tmp_path, capsys, monkeypatch,
             assert KEY not in path.read_text(encoding="utf-8"), path.name
 
 
+@pytest.mark.parametrize("command", ["batch", "check"])
+def test_unexpected_problem_outside_a_run_hides_the_session_key(tmp_path, capsys, monkeypatch,
+                                                                crop_config_path, command):
+    """A problem nobody foresaw, before any run folder exists: Python's report is
+    shown with the OMERO session key hidden, and the exit code is 1."""
+    def broken(*args, **kwargs):
+        raise RuntimeError(f"session {KEY} refused")
+
+    monkeypatch.setattr(cli, "run_batch", broken)
+    monkeypatch.setattr(cli, "plan_run", broken)
+    code, out, err = run_command(capsys, command, crop_config_path, "--output-folder", tmp_path / "out")
+    assert code == cli.EXIT_PROBLEM
+    assert KEY not in out + err
+    assert err.startswith("The command stopped because of an unexpected problem.")
+    assert "RuntimeError: session [hidden] refused" in err
+    assert not (tmp_path / "out").exists()
+
+
 def test_mean_intensity_warning_not_in_the_terminal(crop_config_path, tmp_path):
     """A real run of the test kit, from the command and from Python with a worker
     that gives another warning: big-fish's FutureWarning about `mean_intensity` is
