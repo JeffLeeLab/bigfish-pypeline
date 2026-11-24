@@ -5,15 +5,15 @@ Where the work stands, for whoever picks it up next. Updated 24 Nov 2026. Detail
 ## State
 
 - **Phases 0, 1 and 2:** done, signed off, merged into `main` and pushed. Phase 2 was signed off and merged on 24 Nov 2026 (devlog 2.8).
-- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0). Tasks 3.1 (run record, Opus 5.5) and 3.3 (elbow and calibration plots, Sonnet 5.5) were given to their executors on 24 Nov 2026. Uncommitted changes in `outputs.py`, `batch.py`, `cli.py` and their tests belong to 3.1; those in `qc.py` and `tests/test_qc.py` to 3.3.
+- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0). Task 3.3 (elbow and calibration plots) is done and committed (devlog 3.3). Tasks 3.1 (run record, Opus 5.5) and 3.4 (detection plot and reference spot, Sonnet 5.5) are with their executors since 24 Nov 2026. Uncommitted changes in `outputs.py`, `batch.py`, `cli.py` and their tests belong to 3.1; those in `qc.py` and `tests/test_qc.py` to 3.4.
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
 - 778 tests pass in `bigfish-msp` with the full-size image (about 8 minutes), 775 without it (about 5 min 40 s) and 769 without the Cellpose model.
 - The Phase 3 plan and devlog 3.0 are committed on `msp` and not pushed.
 
 ## Next step
 
-1. Review the changes of 3.1 and 3.3 when their executors report, run the suite, commit each, and write the devlog entries.
-2. Then 3.2 (follows 3.1) and 3.4 → 3.5 (follow 3.3); the order of the other tasks is in the plan.
+1. Review the changes of 3.1 and 3.4 when their executors report, run the suite, commit each, and write the devlog entries.
+2. Then 3.2 (follows 3.1) and 3.5 (follows 3.4); the order of the other tasks is in the plan.
 
 ## How the work is run
 
