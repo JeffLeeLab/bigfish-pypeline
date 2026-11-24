@@ -16,6 +16,7 @@ import os
 import platform
 import shutil
 import signal
+import subprocess
 import threading
 import time
 import traceback
@@ -49,6 +50,17 @@ from bigfish_pypeline.subpixel import fit_subpixel
 
 # Problems that stop the whole run rather than one image or channel.
 PASS_THROUGH = (io.OmeroSessionEnded, KeyboardInterrupt, MemoryError)
+
+# Keeping the computer awake during a run (see `_KeepAwake`). On macOS this is
+# the `caffeinate` program; on Windows it is the system's request that the
+# computer stays awake.
+CAFFEINATE = "caffeinate"
+# how long to wait after starting `caffeinate` to see that it is running
+CAFFEINATE_START_WAIT_S = 0.2
+CAFFEINATE_STOP_WAIT_S = 5
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+KEEP_AWAKE_LID_NOTE = "a laptop still sleeps when its lid is closed"
 
 NO_AUTO_THRESHOLD_REASON = "no automatic threshold (too few candidate spots)"
 
@@ -1614,6 +1626,117 @@ def _threshold_text(value):
     return f"{value:g}"
 
 
+def _system_name():
+    """The name of the operating system: Darwin (macOS), Windows or Linux."""
+    return platform.system()
+
+
+def _set_execution_state(flags):
+    """Tell Windows what the calling thread needs (`SetThreadExecutionState`).
+
+    Returns the thread's earlier state, or 0 when Windows did not accept the request.
+    """
+    import ctypes
+
+    function = ctypes.windll.kernel32.SetThreadExecutionState
+    function.argtypes = [ctypes.c_uint]
+    function.restype = ctypes.c_uint
+    return function(flags)
+
+
+class _KeepAwake:
+    """Keeps the computer from going to sleep on its own while a run is going.
+
+    macOS: a `caffeinate` process that is tied to this process, so that it ends
+    by itself when this process ends, even if this process is killed.
+    Windows: a request to the system that the computer stays awake, made from
+    the thread that calls `start` and withdrawn from the same thread by `stop`.
+    Linux and other systems: nothing is done.
+
+    `start` returns the line for run.log; a computer that cannot be kept
+    awake gives a warning line, never an error. `stop` can be called at any
+    time, also when `start` was never called, and more than once.
+    """
+
+    def __init__(self):
+        self.process = None
+        self.requested = False
+
+    def start(self, enabled):
+        """Switch keep-awake on when `enabled`; returns the line for run.log."""
+        if not enabled:
+            return "Keep awake: off (`run.keep_awake` is off), so the computer may go to sleep during the run."
+        system = _system_name()
+        if system == "Darwin":
+            problem = self._start_caffeinate()
+        elif system == "Windows":
+            problem = self._request_windows()
+        elif system == "Linux":
+            return ("Keep awake: not available on Linux, so the computer may go to sleep "
+                    "during the run.")
+        else:
+            return ("Keep awake: not available on this system, so the computer may go to sleep "
+                    "during the run.")
+        if problem is not None:
+            return (f"Warning: the computer could not be kept awake ({problem}); the run goes on, "
+                    "and the computer may go to sleep.")
+        return f"Keep awake: the computer is kept from sleeping on its own until the run ends ({KEEP_AWAKE_LID_NOTE})."
+
+    def _start_caffeinate(self):
+        """Start `caffeinate`; returns None, or the reason in one line."""
+        program = shutil.which(CAFFEINATE)
+        if program is None:
+            return f"`{CAFFEINATE}` was not found"
+        try:
+            # -i: no sleep when the computer is idle; -w: end when this process ends.
+            # Its own session keeps a Ctrl+C in the terminal from reaching it.
+            process = subprocess.Popen(
+                [program, "-i", "-w", str(os.getpid())],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as error:
+            return _one_line(error)
+        try:
+            code = process.wait(timeout=CAFFEINATE_START_WAIT_S)
+        except subprocess.TimeoutExpired:
+            self.process = process
+            return None
+        return f"`{CAFFEINATE}` stopped at once (exit code {code})"
+
+    def _request_windows(self):
+        """Ask Windows to stay awake; returns None, or the reason in one line."""
+        try:
+            before = _set_execution_state(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+        except Exception as error:
+            return _one_line(error)
+        if not before:
+            return "Windows did not accept the request"
+        self.requested = True
+        return None
+
+    def stop(self):
+        """End keep-awake; does nothing when it was not started."""
+        process, self.process = self.process, None
+        if process is not None:
+            try:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=CAFFEINATE_STOP_WAIT_S)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+            except Exception:
+                pass
+        if self.requested:
+            self.requested = False
+            try:
+                _set_execution_state(ES_CONTINUOUS)
+            except Exception:
+                pass
+
+
 class _Run:
     """State of one batch run, from the creation of its folder to the end."""
 
@@ -2644,6 +2767,7 @@ def _run(run, config_file, workers_reason, workers_warning):
     old_handler = None
     if threading.current_thread() is threading.main_thread():
         old_handler = signal.signal(signal.SIGINT, run.interrupt)
+    keep_awake = _KeepAwake()
     try:
         run.log(f"Run folder: {run.run_folder}")
         if config_file is not None:
@@ -2666,6 +2790,7 @@ def _run(run, config_file, workers_reason, workers_warning):
         run.log(f"Workers: {workers_reason}.")
         if workers_warning:
             run.log(f"Warning: {workers_warning}")
+        run.log(keep_awake.start(config.run.keep_awake))
         run.log(f"QC images: {_qc_images_text(config, bool(run.subsets), run.cellpose is not None)}")
         for channel in config.channels:
             run.log(f"FISH channel {_channel_label(channel)}: {_threshold_setting(channel)}")
@@ -2699,6 +2824,7 @@ def _run(run, config_file, workers_reason, workers_warning):
             pass
         raise
     finally:
+        keep_awake.stop()
         run.pool.stop_now()
         run.end_segmentation()
         _restore_variables(old_variables)
