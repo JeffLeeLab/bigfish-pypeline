@@ -1655,8 +1655,8 @@ Checks run in a fresh shell, at commit `bf270e0`. One command is cut off after 1
 
 | Check | Result |
 |---|---|
-| Whole suite, with the full-size image | 1,057 passed (134 and 923), 11 min 45 s in all |
-| The same without the full-size image (`-m "not full_image"`) | 1,054 passed, 9 min 36 s |
+| Whole suite, with the full-size image | 1,057 passed (134 and 923), 11 min 44 s in all |
+| The same without the full-size image (`-m "not full_image"`) | 1,054 passed, 9 min 36 s; run during 3.8, not in a fresh shell and before the last small change to `qc.py` |
 | The same without the tests that need the Cellpose model, as on a computer without the model | 1,048 passed (131 and 917), 8 min 46 s |
 | v1 imports in the main env (`image_utils`, `omero_tools` from `src/`, Python 3.9, Cellpose 3.1.1.2) | work as before |
 | Main env | `conda env export` identical to the export stored with the reference run |
