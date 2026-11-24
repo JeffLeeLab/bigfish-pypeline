@@ -1526,3 +1526,25 @@ Choices the spec does not settle:
 
 For 3.9: with a manual or calibrated threshold and the elbow plot on, detection now works out the elbow values, which uses a mask of the channel's size for a short time; the worker's peak has to be measured with it.
 
+### 3.7 Keep-awake (24 Nov 2026)
+
+With `run.keep_awake` on, the computer is kept from going to sleep on its own for the length of a run.
+
+- **macOS:** `caffeinate -i -w <the runner's process number>`, started when the run starts. The runner ends it when the run ends; because of `-w` it also ends by itself if the runner is killed. It runs apart from the terminal, so that Ctrl+C does not end it before the run has been cancelled in good order.
+- **Windows:** the system's keep-awake request (`SetThreadExecutionState` with `ES_CONTINUOUS | ES_SYSTEM_REQUIRED`), made at the start of the run and withdrawn at its end from the same thread. Tested with a stand-in for the system call only; the real check is left to Phase 7.
+- **Linux:** nothing is done.
+- It starts once the run folder and `run.log` exist, and ends however the run ends: finished, cancelled (cancel file or Ctrl+C), stopped, or an unexpected problem. `check` starts nothing.
+- One line in `run.log`, after the workers line:
+  - "Keep awake: the computer is kept from sleeping on its own until the run ends (a laptop still sleeps when its lid is closed)."
+  - "Keep awake: off (`run.keep_awake` is off), so the computer may go to sleep during the run."
+  - "Keep awake: not available on Linux, so the computer may go to sleep during the run."
+  - "Warning: the computer could not be kept awake (<reason>); the run goes on, and the computer may go to sleep."
+- Checks: 30 new tests in `tests/test_keep_awake.py`. On macOS: `caffeinate` runs during a run with exactly these options and is gone after each kind of ending; a runner killed during a run leaves none a few seconds later. The Windows and Linux paths with stand-ins; `caffeinate` missing or failing to start. Any test that leaves a `caffeinate` process fails. Checked by the orchestrator with the real command on a copy of the test kit with keep-awake on: the log line is there and no `caffeinate` is left.
+
+Choices the spec does not settle:
+
+- Only idle sleep is prevented (`-i`): the screen may still switch off, and a laptop sleeps when its lid is closed.
+- After starting `caffeinate` the runner waits 0.2 s to see that it is running, so a failed start gives the warning.
+
+The test kit config has `keep_awake: false`, as the test configs do.
+

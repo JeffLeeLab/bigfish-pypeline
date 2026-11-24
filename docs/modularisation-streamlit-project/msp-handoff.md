@@ -5,16 +5,15 @@ Where the work stands, for whoever picks it up next. Updated 24 Nov 2026. Detail
 ## State
 
 - **Phases 0, 1 and 2:** done, signed off, merged into `main` and pushed. Phase 2 was signed off and merged on 24 Nov 2026 (devlog 2.8).
-- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0) and two more on the QC files (devlog 3.5, at its end). Tasks 3.1 to 3.6 are done and committed (devlog 3.1–3.6). Task 3.7 (keep-awake, Sonnet 5.5) is with its executor since 24 Nov 2026; uncommitted changes in `batch.py` and the tests belong to it.
+- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0) and two more on the QC files (devlog 3.5, at its end). Tasks 3.1 to 3.7 are done and committed (devlog 3.1–3.7). Task 3.8 (end-to-end tests and the suite's run time, Sonnet 5.5) is with its executor since 24 Nov 2026; uncommitted changes in `tests/` belong to it.
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
 - 1,011 tests pass in `bigfish-msp` without the full-size image (10 min 33 s) after tasks 3.1 to 3.6. A foreground command is cut off after 10 minutes: run the suite in the background.
 - The Phase 3 plan and devlog 3.0 are committed on `msp` and not pushed.
 
 ## Next step
 
-1. Review the changes of 3.7 when its executor reports, run the suite, commit, and write the devlog entry.
-2. Task 3.8 (end-to-end tests, Sonnet 5.5). It also has to bring the suite's time back down: it rose from under 7 to over 10 minutes when the QC outputs came on by default in the test configs.
-3. Task 3.9 (time and memory with the QC outputs on, Opus 5.5) on its own, then 3.10 (samples for the user) and 3.11 (phase review).
+1. Review the changes of 3.8 when its executor reports, run the suite, commit, and write the devlog entry. It also has to bring the suite's time back down: it rose from under 7 to over 10 minutes when the QC outputs came on by default in the test configs.
+2. Task 3.9 (time and memory with the QC outputs on, Opus 5.5) on its own, then 3.10 (samples for the user) and 3.11 (phase review).
 
 ## How the work is run
 
