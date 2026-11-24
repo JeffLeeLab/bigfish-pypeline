@@ -3,6 +3,8 @@
 import argparse
 import csv
 import os
+import shlex
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -106,6 +108,15 @@ def make_parser():
     )
     _add_run_options(check)
     return parser
+
+
+def command_line(argv):
+    """The command as typed, for the run record: the program name and its arguments,
+    with quotes where an argument needs them on this system."""
+    words = [PROGRAM] + [str(argument) for argument in argv]
+    if sys.platform == "win32":
+        return subprocess.list2cmdline(words)
+    return shlex.join(words)
 
 
 def _workers_option(text):
@@ -256,7 +267,8 @@ def _check(arguments):
 
 def _batch(arguments):
     config = _load(arguments)
-    result = run_batch(config, config_file=Path(os.path.abspath(arguments.config)), show=_say)
+    result = run_batch(config, config_file=Path(os.path.abspath(arguments.config)), show=_say,
+                       command=arguments.command_line)
     if result.status == "finished":
         for line in _failure_lines(result.run_folder):
             _say(line)
@@ -277,6 +289,7 @@ COMMANDS = {"batch": _batch, "check": _check}
 def main(argv=None):
     """Run the command given in `argv` (default: the command line); returns the exit code."""
     parser = make_parser()
+    argv = sys.argv[1:] if argv is None else list(argv)
     try:
         arguments = parser.parse_args(argv)
     except SystemExit as stop:
@@ -284,6 +297,7 @@ def main(argv=None):
     if arguments.command is None:
         parser.print_help()
         return EXIT_OK
+    arguments.command_line = command_line(argv)
     try:
         # omero-py may neither print its own messages nor set up logging for the program
         with io.plain_logging():

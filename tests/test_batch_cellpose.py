@@ -37,6 +37,7 @@ from test_batch_run import (
     omero_info,  # noqa: F401  (fixture)
     progress,
     read_table,
+    run_info,
     same_tables,
     tiny_images,
     with_changes,
@@ -138,6 +139,7 @@ def test_kit_one_and_two_workers(kit_runs):
         assert not (folder / TEMPORARY_LABELS).exists()
         assert progress(folder)["status"] == "finished"
         assert progress(folder)["segmenting"] is None
+        assert run_info(folder, "finished")["cellpose_device"] == "cpu"
     same_tables(one.run_folder, two.run_folder)
 
     # the model is loaded once and every image is segmented once, with the config's settings
@@ -259,6 +261,9 @@ def test_cancel_during_segmentation(tmp_path, how, label_images):
     text = log_text(run_folder)
     assert "Discarded (in progress): b (being segmented)" in text
     assert "c: segmenting" not in text
+    info = run_info(run_folder, "cancelled")
+    assert info["message"] == result.message
+    assert info["cellpose_device"] == "cpu"
 
     # once Cellpose has finished `b`, nothing of it is written
     assert model.returned.wait(10)
@@ -519,8 +524,14 @@ def test_cellpose_and_torch_not_loaded_without_cellpose(tmp_path):
             assert result.status == "finished", result.message
             assert loaded() == [], loaded()
             print("nothing loaded")
+            print(result.run_folder)
     """)
     assert "nothing loaded" in output
+    # the record still holds the versions of the packages that were not loaded
+    info = run_info(Path(output.strip().splitlines()[-1]), "finished")
+    assert info["cellpose_device"] == "not used"
+    for name in ("cellpose", "torch"):
+        assert info["package_versions"][name] != "not available"
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +645,9 @@ def test_workers_auto_leaves_cores_to_cellpose_on_the_cpu(tmp_path, monkeypatch,
         assert "Workers: 3 worker(s), chosen automatically: 6 processor cores (one left for the main process)" in line
         assert line.endswith("; lowered to 2 because Cellpose runs on the CPU with 4 thread(s).")
     assert progress(result.run_folder)["workers"] == 2
+    info = run_info(result.run_folder, "finished")
+    assert info["workers"] == 2
+    assert line.endswith(f"Workers: {info['workers_reason']}.")
 
 
 def test_workers_set_in_the_config_are_kept_with_cellpose_on_the_cpu(tmp_path, monkeypatch):

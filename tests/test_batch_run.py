@@ -2,12 +2,15 @@
 
 import json
 import os
+import platform
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from datetime import datetime
 from types import SimpleNamespace
 
 import numpy as np
@@ -16,7 +19,7 @@ import pytest
 import tifffile
 
 from batch_helpers import fake_process_image, omero_process_image
-from bigfish_pypeline import batch, io
+from bigfish_pypeline import __version__, batch, io, outputs
 from bigfish_pypeline.config import load_config, parse_config
 from conftest import CROP_NAME
 from synthetic import make_image
@@ -118,6 +121,56 @@ def per_image_files(run_folder):
     return sorted(path.name for path in (run_folder / "per_image").iterdir())
 
 
+RUN_INFO_KEYS = [
+    "status", "message", "started", "ended", "duration", "command", "started_in_folder",
+    "settings_file", "pipeline_version", "git_commit", "python_version", "package_versions",
+    "operating_system", "processor_cores", "computer_memory", "cellpose_device", "workers",
+    "workers_reason", "worker_restarts", "random_seed", "calibrated_thresholds", "omero_server",
+]
+PACKAGES = ["big-fish", "cellpose", "torch", "numpy", "scipy", "scikit-image", "tifffile", "omero-py"]
+
+
+def run_info(run_folder, status):
+    """The run record of a run that has ended, after checking each item and the kind of its value."""
+    assert not (run_folder / "run_info.yaml.tmp").exists()
+    info = outputs.read_run_info(run_folder)
+    assert list(info) == RUN_INFO_KEYS
+    assert info["status"] == status
+    assert isinstance(info["message"], str) and info["message"]
+    started = datetime.fromisoformat(info["started"])
+    ended = datetime.fromisoformat(info["ended"])
+    assert started.tzinfo is not None and started <= ended
+    assert re.fullmatch(r"\d+ s|\d+ min \d+ s|\d+ h \d+ min", info["duration"]), info["duration"]
+    for key in ("command", "started_in_folder", "settings_file", "git_commit", "operating_system",
+                "workers_reason", "omero_server"):
+        assert isinstance(info[key], str) and info[key], key
+    assert info["pipeline_version"] == __version__
+    assert info["git_commit"] == "not available" or re.match(r"[0-9a-f]{40}", info["git_commit"])
+    assert info["python_version"] == platform.python_version()
+    assert list(info["package_versions"]) == PACKAGES
+    assert all(isinstance(value, str) and value for value in info["package_versions"].values())
+    assert info["package_versions"]["numpy"] == np.__version__
+    assert info["processor_cores"] == os.cpu_count()
+    assert re.fullmatch(r"\d+\.\d GB", info["computer_memory"])
+    assert info["cellpose_device"] in ("not used", "cpu", "mps", "cuda")
+    assert isinstance(info["workers"], int) and info["workers"] >= 1
+    # the reason is the logged line; a lowered number is given at its end
+    assert re.match(r"\d+ worker\(s\)", info["workers_reason"])
+    restarts = info["worker_restarts"]
+    assert restarts == "none" or (isinstance(restarts, list) and restarts)
+    for restart in [] if restarts == "none" else restarts:
+        assert list(restart) == ["time", "workers", "images_lost"]
+        datetime.fromisoformat(restart["time"])
+        assert isinstance(restart["workers"], int) and restart["workers"] >= 1
+        assert restart["images_lost"] and all(isinstance(name, str) for name in restart["images_lost"])
+    assert isinstance(info["random_seed"], int)
+    thresholds = info["calibrated_thresholds"]
+    assert thresholds == "none" or all(
+        re.fullmatch(r"channel \d+", name) and isinstance(value, float) for name, value in thresholds.items()
+    )
+    return info
+
+
 # ---------------------------------------------------------------------------
 # Test kit, one and two workers
 # ---------------------------------------------------------------------------
@@ -178,6 +231,22 @@ def test_kit_one_and_two_workers(kit_runs, crop_reference_folder):
 
     run_config = load_config(one.run_folder / "run_config.yaml")
     assert run_config.resolved.images == [f"{CROP_NAME}.tif", "zz_generated.tif"]
+
+
+def test_kit_run_info(kit_runs):
+    for workers, result in kit_runs.items():
+        info = run_info(result.run_folder, "finished")
+        assert info["message"] == result.message
+        assert info["command"] == batch.COMMAND_FROM_PYTHON
+        assert info["settings_file"] == "not given"
+        assert info["started_in_folder"] == os.getcwd()
+        assert info["cellpose_device"] == "not used"
+        assert info["workers"] == workers
+        assert info["workers_reason"] == f"{workers} worker(s), as set in the config"
+        assert info["worker_restarts"] == "none"
+        assert info["random_seed"] == 0
+        assert info["calibrated_thresholds"] == "none"
+        assert info["omero_server"] == "not used"
 
 
 def test_kit_log(kit_runs):
@@ -283,6 +352,7 @@ def test_calibrated_mode(calibrated_run):
     assert (channel_0["threshold_mode"] == "calibrated").all()
     assert (images[images["channel"] == 1]["threshold"] == 50).all()
     assert f"Channel 0: calibrated threshold {median:g} (median of 2 image(s); 1 left out)" in log_text(run_folder)
+    assert run_info(run_folder, "finished")["calibrated_thresholds"] == {"channel 0": median}
 
 
 def test_repeat_calibrated_run(calibrated_run, tmp_path):
@@ -294,6 +364,8 @@ def test_repeat_calibrated_run(calibrated_run, tmp_path):
     assert "from the config (not calibrated again)" in log_text(result.run_folder)
     assert "(calibration): started" not in log_text(result.run_folder)
     same_tables(first.run_folder, result.run_folder)
+    thresholds = run_info(result.run_folder, "finished")["calibrated_thresholds"]
+    assert thresholds == run_info(first.run_folder, "finished")["calibrated_thresholds"]
 
     # A listed image that has gone missing stops the run before processing.
     copy = tmp_path / "copy"
@@ -325,6 +397,9 @@ def test_calibration_without_usable_value(tmp_path):
     assert per_image_files(result.run_folder) == []
     assert not (result.run_folder / "images.csv").exists()
     assert progress(result.run_folder)["status"] == "stopped"
+    info = run_info(result.run_folder, "stopped")
+    assert info["message"] == result.message
+    assert info["calibrated_thresholds"] == "none"
 
 
 def test_calibration_filter_matches_nothing(tmp_path):
@@ -440,6 +515,9 @@ def test_cancel_file(tmp_path):
     assert "Discarded (in progress): b_slow, c_cancel" in text
     assert "d: started" not in text
     assert "Summary: 1 of 4 image(s) finished, 3 not processed" in text
+    info = run_info(run_folder, "cancelled")
+    assert info["message"] == result.message
+    assert info["worker_restarts"] == "none"
 
 
 def test_ctrl_c_cancels(tmp_path):
@@ -454,6 +532,7 @@ def test_ctrl_c_cancels(tmp_path):
     result = run_fake(config, show=show)
     assert result.status == "cancelled"
     assert "Ctrl+C" in result.message
+    assert "Ctrl+C" in run_info(result.run_folder, "cancelled")["message"]
 
 
 def test_worker_stopped_once_is_retried(tmp_path):
@@ -466,6 +545,11 @@ def test_worker_stopped_once_is_retried(tmp_path):
     text = log_text(result.run_folder)
     assert "A worker process stopped unexpectedly" in text
     assert "Starting again with 1 worker(s); b_crash_once will be tried once more." in text
+    info = run_info(result.run_folder, "finished")
+    assert info["workers"] == 2
+    [restart] = info["worker_restarts"]
+    assert restart["workers"] == 1
+    assert "b_crash_once" in restart["images_lost"]
 
 
 def test_worker_stopped_twice_marks_image_failed(tmp_path):
@@ -481,6 +565,10 @@ def test_worker_stopped_twice_marks_image_failed(tmp_path):
     text = log_text(result.run_folder)
     assert text.count("A worker process stopped unexpectedly") == 2
     assert "Starting again with 2 worker(s)" in text
+    info = run_info(result.run_folder, "finished")
+    assert info["workers"] == 4
+    assert [restart["workers"] for restart in info["worker_restarts"]] == [2, 1]
+    assert all("b_crash_always" in restart["images_lost"] for restart in info["worker_restarts"])
 
 
 def test_worker_stopped_with_one_worker(tmp_path):
@@ -492,6 +580,77 @@ def test_worker_stopped_with_one_worker(tmp_path):
     assert per_image_files(result.run_folder) == ["a_images.csv", "a_spots.csv"]
     assert progress(result.run_folder)["status"] == "stopped"
     assert "A worker process stopped unexpectedly" in log_text(result.run_folder)
+    info = run_info(result.run_folder, "stopped")
+    assert info["message"] == result.message
+    assert info["worker_restarts"] == "none"
+
+
+# ---------------------------------------------------------------------------
+# Run record
+# ---------------------------------------------------------------------------
+
+
+def test_run_info_first_part_and_command(tmp_path):
+    """While the run is going, the file is the valid first part and says the run has not ended."""
+    folder = tiny_images(tmp_path / "input", ["a"])
+    seen = {}
+
+    def show(text):
+        if text.startswith("a: started"):
+            [run_folder] = (tmp_path / "out").iterdir()
+            seen["first"] = outputs.read_run_info(run_folder)
+
+    command = "Batch page of the app, settings my_settings.yaml"
+    result = run_fake(local_config(folder, tmp_path / "out"), show=show, command=command)
+    first = seen["first"]
+    assert list(first) == RUN_INFO_KEYS
+    for key in ("status", "ended", "duration"):
+        assert first[key] == "not ended"
+    assert "has not ended" in first["message"]
+    assert first["worker_restarts"] == "none"
+    final = run_info(result.run_folder, "finished")
+    assert final["command"] == command
+    for key in RUN_INFO_KEYS:
+        if key not in ("status", "message", "ended", "duration"):
+            assert first[key] == final[key], key
+
+
+def test_run_info_after_an_error_in_the_run(tmp_path, monkeypatch):
+    folder = tiny_images(tmp_path / "input", ["a"])
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("the disk is full")
+
+    monkeypatch.setattr(batch.outputs, "write_run_config", broken)
+    with pytest.raises(RuntimeError, match="the disk is full"):
+        run_fake(local_config(folder, tmp_path / "out"))
+    [run_folder] = (tmp_path / "out").iterdir()
+    info = run_info(run_folder, "stopped")
+    assert info["message"] == "The run stopped because of an unexpected problem: RuntimeError: the disk is full"
+
+
+def test_run_info_of_an_omero_run(tmp_path, omero_info, monkeypatch):
+    """Only the server and the port of OMERO are in the file: no session key and no user name."""
+    conn = FakeConn([(123, "a.tif"), (124, "b key_in_error.tif")])
+    config = omero_config(tmp_path / "out", dataset_id=5, username="omero_user_name", port=4065)
+    result = run_fake(config, omero_conn=conn)
+    assert result.status == "finished"
+    text = (result.run_folder / "run_info.yaml").read_text(encoding="utf-8")
+    assert KEY not in text
+    assert "omero_user_name" not in text
+    assert run_info(result.run_folder, "finished")["omero_server"] == "omero.example, port 4065"
+
+    # an unexpected problem whose message holds the session key
+    def broken(*args, **kwargs):
+        raise RuntimeError(f"session {KEY} refused")
+
+    monkeypatch.setattr(batch.outputs, "write_run_config", broken)
+    with pytest.raises(RuntimeError):
+        run_fake(omero_config(tmp_path / "again", dataset_id=5, username="omero_user_name"), omero_conn=conn)
+    [run_folder] = (tmp_path / "again").iterdir()
+    text = (run_folder / "run_info.yaml").read_text(encoding="utf-8")
+    assert KEY not in text and "omero_user_name" not in text
+    assert run_info(run_folder, "stopped")["message"].endswith("session [hidden] refused")
 
 
 # ---------------------------------------------------------------------------
@@ -643,6 +802,9 @@ def test_omero_session_ended(tmp_path, omero_info):
     assert "Log in again" in result.message
     assert list(dict.fromkeys(read_table(result.run_folder, "images")["image"])) == ["1_a"]
     assert "3_c: started" not in log_text(result.run_folder)
+    info = run_info(result.run_folder, "stopped")
+    assert "Log in again" in info["message"]
+    assert info["omero_server"] == "omero.example, port 4064"
 
 
 def test_omero_needs_dataset_or_images(tmp_path):

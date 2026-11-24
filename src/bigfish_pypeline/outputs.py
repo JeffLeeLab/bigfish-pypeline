@@ -5,23 +5,50 @@ run folder follows section 8.1. Each image's tables are written to
 `per_image/` and joined into one table per type at the end of a run.
 """
 
+import importlib.metadata
 import os
+import platform
 import re
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import psutil
+import yaml
 
+from . import __version__
 from .cells import CELL_COLUMNS
 from .config import load_config, save_config
 
 RESULTS_FOLDER_NAME = "bigfish_results"
 PER_IMAGE_FOLDER_NAME = "per_image"
 RUN_CONFIG_NAME = "run_config.yaml"
+RUN_INFO_NAME = "run_info.yaml"
 CALIBRATION_NAME = "calibration.csv"
 TEMPORARY_SUFFIX = ".tmp"
+
+# Packages whose versions go in `run_info.yaml`: (name shown, name of the installed package).
+RUN_INFO_PACKAGES = (
+    ("big-fish", "big-fish"),
+    ("cellpose", "cellpose"),
+    ("torch", "torch"),
+    ("numpy", "numpy"),
+    ("scipy", "scipy"),
+    ("scikit-image", "scikit-image"),
+    ("tifffile", "tifffile"),
+    ("omero-py", "omero-py"),
+)
+NOT_INSTALLED = "not installed"
+NOT_AVAILABLE = "not available"
+GIT_TIMEOUT_S = 10
+
+RUN_INFO_HEADER = (
+    "# Run record: when the run took place, on which computer, with which software,\n"
+    "# and how it ended. The settings of the run are in run_config.yaml.\n"
+)
 
 # Kinds of per-image table, in the order they are written. `images` is last,
 # so an image whose `_images.csv` exists has all its files.
@@ -594,6 +621,116 @@ def write_text_replacing(path, text):
         _remove_quietly(temporary)
         raise
     return path
+
+
+# ---------------------------------------------------------------------------
+# Run record
+# ---------------------------------------------------------------------------
+
+
+def package_versions():
+    """Version of each package of RUN_INFO_PACKAGES, or "not installed".
+
+    The versions are read from the installed package details, so no package
+    is loaded (a run without Cellpose never loads `cellpose` or `torch`).
+    """
+    versions = {}
+    for shown, installed in RUN_INFO_PACKAGES:
+        try:
+            versions[shown] = importlib.metadata.version(installed)
+        except importlib.metadata.PackageNotFoundError:
+            versions[shown] = NOT_INSTALLED
+        except Exception:
+            versions[shown] = NOT_AVAILABLE
+    return versions
+
+
+def git_commit(package_folder=None):
+    """The git commit of the pipeline's code, or None.
+
+    Given only when the package runs from the source folder of a git copy
+    (`src/bigfish_pypeline/` of a repository) and git is installed. Changes
+    not yet committed are mentioned after the commit.
+    """
+    package_folder = Path(package_folder or Path(__file__).parent).resolve()
+    git = shutil.which("git")
+    if git is None:
+        return None
+
+    def ask(*arguments):
+        done = subprocess.run(
+            [git, "-C", str(package_folder), *arguments], capture_output=True, text=True,
+            timeout=GIT_TIMEOUT_S, stdin=subprocess.DEVNULL,
+        )
+        if done.returncode != 0:
+            raise OSError(done.stderr.strip())
+        return done.stdout.strip()
+
+    try:
+        top = Path(ask("rev-parse", "--show-toplevel")).resolve()
+        if top / "src" / package_folder.name != package_folder:
+            return None
+        commit = ask("rev-parse", "HEAD")
+        if ask("status", "--porcelain", "--untracked-files=no"):
+            commit += " (with changes not yet committed)"
+        return commit
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def operating_system():
+    """Name and version of the operating system, e.g. "macOS 15.1 (arm64)"."""
+    try:
+        system = platform.system()
+        machine = platform.machine()
+        if system == "Darwin":
+            name = f"macOS {platform.mac_ver()[0]}"
+        elif system == "Windows":
+            name = f"Windows {platform.release()} (version {platform.version()})"
+        elif system == "Linux":
+            try:
+                name = platform.freedesktop_os_release()["PRETTY_NAME"]
+            except (OSError, KeyError):
+                name = f"Linux {platform.release()}"
+        else:
+            name = platform.platform()
+        return f"{name} ({machine})" if machine else name
+    except Exception:
+        return NOT_AVAILABLE
+
+
+def computer_memory():
+    """Memory of the computer, e.g. "17.2 GB"."""
+    try:
+        return f"{psutil.virtual_memory().total / 1e9:.1f} GB"
+    except Exception:
+        return NOT_AVAILABLE
+
+
+def run_info_text(info):
+    """Text of `run_info.yaml` for `info`, a dictionary whose keys keep their order."""
+    body = yaml.safe_dump(info, sort_keys=False, allow_unicode=True, default_flow_style=False, width=1000)
+    return RUN_INFO_HEADER + body
+
+
+def write_run_info(run_folder, info):
+    """Write `run_info.yaml` in the run folder, under a temporary name first.
+
+    info: a dictionary of plain values, written in the order given.
+    Returns the path written; raises OutputError when it cannot be written.
+    """
+    path = Path(run_folder) / RUN_INFO_NAME
+    try:
+        write_text_replacing(path, run_info_text(info))
+    except OSError as error:
+        raise OutputError(f"{path} could not be written: {error}") from error
+    return path
+
+
+def read_run_info(run_folder):
+    """The contents of a run folder's `run_info.yaml`, as a dictionary."""
+    path = Path(run_folder) / RUN_INFO_NAME
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------

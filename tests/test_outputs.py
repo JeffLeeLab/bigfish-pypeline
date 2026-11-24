@@ -591,3 +591,54 @@ def test_write_text_replacing(tmp_path):
     write_text_replacing(path, '{"done": 2}')
     assert path.read_text(encoding="utf-8") == '{"done": 2}'
     assert [p.name for p in tmp_path.iterdir()] == ["progress.json"]
+
+
+# ---------------------------------------------------------------------------
+# Run record
+# ---------------------------------------------------------------------------
+
+
+def test_package_versions_without_loading_the_packages(monkeypatch):
+    import importlib.metadata
+
+    real_version = importlib.metadata.version
+
+    def version(name):
+        if name == "omero-py":
+            raise importlib.metadata.PackageNotFoundError(name)
+        return real_version(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", version)
+    versions = outputs.package_versions()
+    assert list(versions) == [shown for shown, _ in outputs.RUN_INFO_PACKAGES]
+    assert versions["omero-py"] == outputs.NOT_INSTALLED
+    assert versions["numpy"] == np.__version__
+    assert all(isinstance(value, str) and value for value in versions.values())
+
+
+def test_git_commit(tmp_path, monkeypatch):
+    commit = outputs.git_commit()
+    if commit is not None:
+        assert len(commit.split()[0]) == 40
+    # a package folder outside a git copy, and a computer without git
+    assert outputs.git_commit(tmp_path / "bigfish_pypeline") is None
+    monkeypatch.setattr(outputs.shutil, "which", lambda name: None)
+    assert outputs.git_commit() is None
+
+
+def test_computer_details():
+    assert isinstance(outputs.operating_system(), str) and outputs.operating_system()
+    memory = outputs.computer_memory()
+    assert memory.endswith(" GB") and float(memory.split()[0]) > 0
+
+
+def test_write_run_info_keeps_the_order(tmp_path):
+    info = {"status": "finished", "started": "2026-11-24 10:00:00+00:00", "workers": 2,
+            "package_versions": {"numpy": "2.0"}, "calibrated_thresholds": {"channel 2": 14.0}}
+    path = outputs.write_run_info(tmp_path, info)
+    assert path == tmp_path / "run_info.yaml"
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("# Run record")
+    assert outputs.read_run_info(tmp_path) == info
+    assert list(outputs.read_run_info(tmp_path)) == list(info)
+    assert _leftovers(tmp_path) == []

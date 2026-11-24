@@ -135,6 +135,23 @@ def test_batch_test_kit(kit_run):
     assert (folders[0] / "run_config.yaml").is_file()
 
 
+def test_batch_writes_the_command_in_the_run_record(crop_config_path, kit_run):
+    _, output = kit_run
+    [folder] = [path for path in output.iterdir() if path.is_dir()]
+    info = yaml.safe_load((folder / "run_info.yaml").read_text(encoding="utf-8"))
+    assert info["status"] == "finished"
+    assert info["command"] == cli.command_line(["batch", str(crop_config_path), "--output-folder", str(output)])
+    assert info["command"].startswith("bigfish-pypeline batch ")
+    assert info["settings_file"] == str(crop_config_path)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="quotes differ on Windows")
+def test_command_line_quotes():
+    assert cli.command_line(["batch", "my settings.yaml", "--workers", "2"]) == (
+        "bigfish-pypeline batch 'my settings.yaml' --workers 2"
+    )
+
+
 def test_batch_test_kit_messages(crop_config_path, tmp_path, capsys):
     code, out, err = run_command(capsys, "batch", crop_config_path, "--output-folder", tmp_path / "out")
     assert code == 0, err

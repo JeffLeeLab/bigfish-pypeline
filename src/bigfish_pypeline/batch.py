@@ -13,6 +13,7 @@ import json
 import math
 import multiprocessing
 import os
+import platform
 import shutil
 import signal
 import threading
@@ -27,7 +28,7 @@ from pathlib import Path
 import numpy as np
 import psutil
 
-from bigfish_pypeline import io
+from bigfish_pypeline import __version__, io
 from bigfish_pypeline import outputs
 from bigfish_pypeline import segmentation
 from bigfish_pypeline.cells import assign_cells
@@ -1301,6 +1302,11 @@ def _now_text():
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def _record_time():
+    """Date and time for the run record, with the difference from UTC, e.g. "2026-11-24 10:05:31+00:00"."""
+    return datetime.now().astimezone().isoformat(sep=" ", timespec="seconds")
+
+
 def _duration(seconds):
     seconds = int(round(seconds))
     if seconds < 60:
@@ -1359,6 +1365,8 @@ class _Run:
         self.calibration_finished = 0
         self.cancel_reason = None
         self.last_progress = 0.0
+        # each restart of the pool after a worker stopped: time, new number of workers, images lost
+        self.restarts = []
 
     # -- log and progress ----------------------------------------------------
 
@@ -1609,6 +1617,11 @@ class _Run:
                     return "stopped"
 
                 self.pool = _WorkerPool(max(1, self.pool.n_workers // 2))
+                self.restarts.append({
+                    "time": _record_time(),
+                    "workers": self.pool.n_workers,
+                    "images_lost": [task.label for task in lost],
+                })
                 lost_before.update(task.order for task in once)
                 pending = sorted(once + pending, key=lambda task: task.order)
                 if once:
@@ -1872,6 +1885,114 @@ class _Run:
         self.write_progress()
 
 
+NOT_ENDED = "not ended"
+NOT_ENDED_MESSAGE = (
+    "The run has not ended: it is still going, or it was ended before it could finish "
+    "this file (for example when the computer was switched off)."
+)
+COMMAND_FROM_PYTHON = "started from Python (run_batch), not from the command line"
+
+
+def _thresholds_for_record(thresholds):
+    if not thresholds:
+        return "none"
+    return {f"channel {index}": float(value) for index, value in sorted(thresholds.items())}
+
+
+def _hide_in_values(value, key):
+    """`value` with the OMERO session key hidden in every text it holds."""
+    if isinstance(value, str):
+        return _hide_session_key(value, key)
+    if isinstance(value, dict):
+        return {name: _hide_in_values(item, key) for name, item in value.items()}
+    if isinstance(value, list):
+        return [_hide_in_values(item, key) for item in value]
+    return value
+
+
+class _RunRecord:
+    """The run record `run_info.yaml`: its first part is written when the run
+    folder is made, and it is completed when the run ends, however it ends."""
+
+    def __init__(self, config, run_folder, plan, n_workers, workers_reason, cellpose,
+                 command, config_file, started_text, start):
+        self.run_folder = Path(run_folder)
+        self.key = plan.omero["key"]
+        self.start = start
+        try:
+            folder = os.getcwd()
+        except OSError:
+            folder = outputs.NOT_AVAILABLE
+        if config.run.input.source == "omero":
+            omero_server = f"{plan.omero['host']}, port {plan.omero['port']}"
+        else:
+            omero_server = "not used"
+        thresholds = config.resolved.thresholds if config.resolved is not None else {}
+        self.info = {
+            "status": NOT_ENDED,
+            "message": NOT_ENDED_MESSAGE,
+            "started": started_text,
+            "ended": NOT_ENDED,
+            "duration": NOT_ENDED,
+            "command": command or COMMAND_FROM_PYTHON,
+            "started_in_folder": folder,
+            "settings_file": str(config_file) if config_file is not None else "not given",
+            "pipeline_version": __version__,
+            "git_commit": outputs.git_commit() or outputs.NOT_AVAILABLE,
+            "python_version": platform.python_version(),
+            "package_versions": outputs.package_versions(),
+            "operating_system": outputs.operating_system(),
+            "processor_cores": os.cpu_count() or outputs.NOT_AVAILABLE,
+            "computer_memory": outputs.computer_memory(),
+            "cellpose_device": cellpose.device if cellpose is not None else "not used",
+            "workers": n_workers,
+            "workers_reason": workers_reason,
+            "worker_restarts": "none",
+            "random_seed": config.run.seed,
+            "calibrated_thresholds": _thresholds_for_record(thresholds),
+            "omero_server": omero_server,
+        }
+
+    def write(self):
+        info = self.info if self.key is None else _hide_in_values(self.info, self.key)
+        outputs.write_run_info(self.run_folder, info)
+
+    def complete(self, run, error=None):
+        """Fill in how the run ended and write the whole file.
+
+        run: the _Run, or None when the run ended before it was set up.
+        error: the problem that ended the run, or None.
+        A file that cannot be written gives a line in the log; it does not
+        change how the run ends.
+        """
+        if run is not None and run.status != "running":
+            status, message = run.status, run.message
+        elif isinstance(error, KeyboardInterrupt):
+            status, message = "cancelled", "The run was cancelled (Ctrl+C was pressed)."
+        elif error is not None:
+            status = "stopped"
+            message = f"The run stopped because of an unexpected problem: {_one_line(error)}"
+        else:
+            status, message = "stopped", "The run ended before any image was processed."
+        self.info.update(
+            status=status,
+            message=message,
+            ended=_record_time(),
+            duration=_duration(time.monotonic() - self.start),
+        )
+        if run is not None:
+            self.info["worker_restarts"] = list(run.restarts) or "none"
+            self.info["calibrated_thresholds"] = _thresholds_for_record(run.thresholds)
+        try:
+            self.write()
+        except Exception as problem:
+            if run is not None:
+                try:
+                    run.log(f"Warning: {outputs.RUN_INFO_NAME} could not be completed: {_one_line(problem)}")
+                except Exception:
+                    pass
+
+
 def _set_thread_variables(value="1"):
     """Set the thread variables (1 for the workers by default); returns the old values."""
     old = {name: os.environ.get(name) for name in THREAD_VARIABLES}
@@ -1994,7 +2115,7 @@ def _plan_run(config, omero_conn):
 
 def run_batch(config, config_file=None, omero_conn=None, show=None,
               image_function=None, calibration_function=None,
-              device_chooser=None, model_loader=None):
+              device_chooser=None, model_loader=None, command=None):
     """
     Run every image of a batch, as set out in the config.
 
@@ -2008,6 +2129,9 @@ def run_batch(config, config_file=None, omero_conn=None, show=None,
         `calibration_threshold`, used by the tests.
     device_chooser, model_loader: stand-ins for segmentation.choose_device
         and segmentation.load_cellpose_model, used by the tests.
+    command: the command that started the run, written in `run_info.yaml`
+        (e.g. the command line). When None, the file says the run was
+        started from Python.
 
     With Cellpose, the device is chosen and tested and the model is loaded
     once, before the run folder is made; the model is let go at the end.
@@ -2023,15 +2147,16 @@ def run_batch(config, config_file=None, omero_conn=None, show=None,
     """
     with io.plain_logging():
         return _run_batch(config, config_file, omero_conn, show, image_function,
-                          calibration_function, device_chooser, model_loader)
+                          calibration_function, device_chooser, model_loader, command)
 
 
 def _run_batch(config, config_file, omero_conn, show, image_function, calibration_function,
-               device_chooser, model_loader):
+               device_chooser, model_loader, command=None):
     image_function = image_function or process_image
     calibration_function = calibration_function or calibration_threshold
 
     plan = plan_run(config, omero_conn)
+    started_text, start = _record_time(), time.monotonic()
     cellpose = None
     run = None
     try:
@@ -2054,18 +2179,32 @@ def _run_batch(config, config_file, omero_conn, show, image_function, calibratio
         except outputs.OutputError as error:
             raise BatchError(str(error)) from None
 
-        label_folder = plan.label_folder
-        if cellpose is not None:
-            name = LABEL_FOLDER_NAME if config.outputs.label_images else TEMPORARY_LABEL_FOLDER_NAME
-            label_folder = run_folder / name
-            label_folder.mkdir()
+        record = _RunRecord(config, run_folder, plan, n_workers, workers_reason, cellpose,
+                            command, config_file, started_text, start)
+        try:
+            record.write()
+        except outputs.OutputError as error:
+            raise BatchError(str(error)) from None
 
-        thresholds = dict(config.resolved.thresholds) if config.resolved is not None else {}
-        run_config = config.with_full_paths().with_resolved([image.listed for image in plan.images], thresholds)
-        run = _Run(run_config, run_folder, plan.images, label_folder, plan.subsets, thresholds,
-                   n_workers, plan.omero, show, image_function, calibration_function,
-                   cellpose=cellpose, omero_conn=plan.omero_conn)
-        return _run(run, config_file, workers_reason, plan.workers_warning)
+        ending = None
+        try:
+            label_folder = plan.label_folder
+            if cellpose is not None:
+                name = LABEL_FOLDER_NAME if config.outputs.label_images else TEMPORARY_LABEL_FOLDER_NAME
+                label_folder = run_folder / name
+                label_folder.mkdir()
+
+            thresholds = dict(config.resolved.thresholds) if config.resolved is not None else {}
+            run_config = config.with_full_paths().with_resolved([image.listed for image in plan.images], thresholds)
+            run = _Run(run_config, run_folder, plan.images, label_folder, plan.subsets, thresholds,
+                       n_workers, plan.omero, show, image_function, calibration_function,
+                       cellpose=cellpose, omero_conn=plan.omero_conn)
+            return _run(run, config_file, workers_reason, plan.workers_warning)
+        except BaseException as error:
+            ending = error
+            raise
+        finally:
+            record.complete(run, ending)
     finally:
         if run is not None and run.omero_conn is not plan.omero_conn:
             # The main process rejoined the session after a drop. Its login
