@@ -1217,3 +1217,99 @@ Checked by the orchestrator against the logs: the worker's peak and bytes per vo
 
 To be checked again in Phase 3, when the QC figures are added to the workers.
 
+### 2.8 Phase 2 review (24 Nov 2026)
+
+Checks run in a fresh shell:
+
+| Check | Result |
+|---|---|
+| `conda run -n bigfish-msp python -m pytest` (whole suite, with the full-size image) | 778 passed in 7 min 54 s |
+| The same without the full-size image (`-m "not full_image"`) | 775 passed in 5 min 41 s |
+| The same without the tests that need the Cellpose model (`-m "not cellpose and not full_image"`), as on a computer without the model | 769 passed in 5 min 3 s |
+| v1 imports in the main env (`image_utils`, `omero_tools` from `src/`, Python 3.9, Cellpose 3.1.1.2) | work as before |
+| Main env | `conda env export` identical to the export stored with the reference run |
+| v1 files (`environment.yml`, `image_utils.py`, `omero_tools.py`) | unchanged since `v1.0` |
+| Worker processes left after the tests | none |
+
+Phase 2 "done when" (spec section 11, with the plan's additions):
+
+| Condition | Result | Entry |
+|---|---|---|
+| The package tests pass | yes, see above | – |
+| The rolling ball comparison is reviewed by the user | reviewed; rolling ball stays the default for FISH channels | 2.6 |
+| The benchmarks are in the devlog | yes | 2.7 |
+| The final `workers: auto` figures are agreed | agreed by the user | 2.7 |
+
+Still open, and not part of "done when": the Cellpose 4 mask review on an image the user supplies (spec, comparison 2; before Phase 8), and the OMERO fix tried on the real server.
+
+**What Phase 2 delivered**
+
+- `source: cellpose` in `bigfish-pypeline batch`, for local folders and OMERO: pre-treatment of the segmentation channel, the device chosen and tested, the model loaded once, one image segmented at a time in the main process while the workers go on, label files in `labels/` and the four-panel QC figure in `qc/`.
+- `segmentation.py` with Cellpose 4 and the new `qc.py`: 7,060 lines in `src/bigfish_pypeline/`, 778 tests.
+- On the full-size image: Cellpose-SAM takes about 48 s on the Apple GPU and about 5 min on the CPU with four threads; a batch of three images with every step on took 16 min with the GPU.
+- OMERO tried on the lab server: the shared login works, and image 5806 gives the results of the local runs.
+- The comparison of rolling ball and top-hat, with figures, and the reason for the extra clusters with rolling ball.
+
+**Deviations from the spec and the plan**
+
+| # | Deviation | Entry |
+|---|---|---|
+| 1 | `workers: auto` uses 38 bytes per voxel of one channel for each worker: 5.6 GB for 35 planes and 4.8 GB for 30, not 3–4 GB. User's decision. Replaces deviation 1 of the Phase 1 review. | 2.7 |
+| 2 | With Cellpose on the CPU, `workers: auto` leaves four cores to Cellpose. With `device: auto` the number is lowered after the device is chosen, so `check` can show a higher number than the run uses. User's decision. | 2.7 |
+| 3 | New setting `segmentation.cellpose.max_size_fraction` (default 0.4), not in spec 5.7 or 6.2. User's decision. | Mask size limit |
+| 4 | OMERO output names leave out a `.tif` or `.tiff` ending. User's decision. | OMERO check |
+| 5 | Label files given by the user are not copied into the run folder; `outputs.label_images` applies to Cellpose labels only. User's decision. | 2.0 |
+| 6 | With `device: auto`, a device that fails its test is passed over for the next one with a warning; a device named in the config that fails stops the run. User's decision. | 2.0 |
+| 7 | An unknown Cellpose model name stops the run with a plain message; Cellpose itself would load `cpsam_v2` without saying so. | 2.2 |
+| 8 | The reason for a failed segmentation is in the `warnings` column, not in `reason`. | 2.4 |
+| 9 | A segmentation under way when a run is cancelled cannot be stopped: it is abandoned and writes nothing more, but uses the processor until that image is done. | 2.4 |
+| 10 | Nothing omero-py logs is shown or written, at any level, because its messages can hold the session key. | OMERO fix |
+| 11 | After a dropped OMERO connection, the main process and a worker each have their own second try for the same image. | OMERO fix |
+| 12 | A whole run with two workers was not measured, because the laptop did not have the 11 GB of available memory it needs. | 2.7 |
+| 13 | The mask size limit and the change to the workers estimate were written by the orchestrator, not by an executor, as each was a few lines. | Mask size limit, 2.7 |
+| 14 | Cellpose on an NVIDIA GPU (CUDA) is tested with stand-ins only; this laptop has none. | 2.2 |
+
+**Points carried forward**
+
+Phase 3:
+
+1. The workers estimate is checked again once the workers draw QC figures.
+2. Lines in the terminal that are not the runner's: big-fish's `FutureWarning` about `mean_intensity` (once per image), and the "Fetching ..." lines of `omero_tools.py` (unchanged until Phase 8).
+3. From Phase 1, unchanged: the other QC images, `run_info.yaml`, `.npz` files, keep-awake and the full `run.log` contents.
+
+Phase 4 and Phase 5:
+
+4. `max_size_fraction` belongs with the other Cellpose settings in the notebook and the app.
+5. The app must not load PyTorch for the first time while the thread variables are 1 (2.4).
+6. After a cancel during a segmentation, the abandoned segmentation holds the model until its image is done; a run started at once could hold two copies for a short time (2.4).
+7. OMERO: the batch process taking over a session from the app, and keeping the session alive after the main process has rejoined it (1.13, OMERO fix).
+8. Not tested: handing the graphics memory back once after the model is loaded might lower the main process's short peak on the Apple GPU from 4.3 to about 3.3 GB (2.7).
+
+Phase 6 (documentation):
+
+9. A manual threshold and a `min_spots` value chosen with top-hat do not carry over unchanged to rolling ball (2.6).
+10. `max_size_fraction` is a fraction of the whole image, so a crop may need a higher value than the full image.
+11. On a 16 GB laptop, `workers: auto` with Cellpose usually runs one worker with the warning about little memory.
+12. From outside the lab network, reading from OMERO takes most of the time of a run (23 to 50 s per channel over the VPN).
+13. `bigfish-pypeline batch` asks for the OMERO password only; the user name is in the settings file.
+14. Cellpose keeps its own log file in `~/.cellpose/run.log`.
+
+Phase 7 (Windows and Linux):
+
+15. Cellpose on an NVIDIA GPU, and a whole run with two or more workers beside Cellpose, on a lab machine.
+
+**Manual checks for the user**
+
+1. On a day with a stable VPN, in the `bigfish-msp` env: `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795). Both images should finish. If the connection drops, `run.log` shows a line ending in "rejoining the session and trying again". The terminal should show no session key and no lines starting with `WARNING:`.
+2. Try Cellpose on the test kit, from the repository folder with `bigfish-msp` active. Copy `tests/data/sypN_DAPI_Phal_jim-exon_crop_config.yaml` and `tests/data/sypN_DAPI_Phal_jim-exon_crop.tif` into a folder on the Desktop, change `source: label_files` to `source: cellpose` in the copy, and run `bigfish-pypeline batch <the copied config>`. Look at `run.log`, `labels/` and the figure in `qc/`: are the wording and the figure what you expect? The masks themselves are not the point here (brief R8).
+3. Look at a full-size run with Cellpose: `~/bigfish-testdata/benchmarks/phase2/runs/2026-11-23_2134_batch_gpu_1w/`.
+4. Read the "choices the spec does not settle" in entries 2.1, 2.3 and 2.4, which decide what users see.
+5. An image that suits Cellpose-SAM (e.g. cultured cells) for the mask review, any time before Phase 8.
+
+**Housekeeping**
+
+- `~/bigfish-testdata/phase2/` (1.2 GB) holds the rolling ball comparison and the OMERO run; 1.1 GB of it is the `cache/` folder of the comparison scripts, which can be deleted once the phase is signed off.
+- `~/bigfish-testdata/benchmarks/phase2/` holds the benchmarks: 0.2 GB of run folders, and three hard links to the full-size image in `images/`, which take no extra space.
+- `tests/data/` holds about 10 MB.
+- `msp` is about 30 commits ahead of GitHub: none of the Phase 2 work has been pushed.
+

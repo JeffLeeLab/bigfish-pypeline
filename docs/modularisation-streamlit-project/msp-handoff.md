@@ -1,26 +1,27 @@
 # MSP handoff
 
-Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Details are in `msp-devlog.md`; tasks are in `msp-plan.md`.
+Where the work stands, for whoever picks it up next. Updated 24 Nov 2026. Details are in `msp-devlog.md`; tasks are in `msp-plan.md`.
 
 ## State
 
 - **Phase 0 and Phase 1:** done, signed off, merged into `main` and pushed.
-- **Phase 2 (Cellpose 4 and comparisons):** under way on `msp`. Tasks 2.0 to 2.7 are done and committed (devlog 2.0–2.7). The user agreed the final `workers: auto` figures. Task 2.8 is left.
+- **Phase 2 (Cellpose 4 and comparisons):** all tasks done and committed on `msp` (devlog 2.0–2.8). The phase review (2.8) was written on 24 Nov 2026 and waits for the user's sign-off.
 - **OMERO on the lab server (23 Nov 2026):** the login-sharing check passed, and a real batch of two images with Cellpose ran over the VPN (devlog, "OMERO check on the lab server" and "Real OMERO batch with Cellpose"). Image 5806 agrees with the local runs. Image 5795 failed when the connection dropped, which showed three defects: no retry when the image information is read, the session key printed in the terminal by omero-py, and stray lines in the terminal.
 - **OMERO fix:** reviewed and committed (devlog, "OMERO fix: second try and a clean terminal"). Tested with stand-ins for the server only; the check on the real server is still to be run by the user.
-- 775 tests pass in `bigfish-msp` without the full-size image (about 5 min 40 s), six of them with the real Cellpose model.
+- 778 tests pass in `bigfish-msp` with the full-size image (about 8 minutes), 775 without it (about 5 min 40 s) and 769 without the Cellpose model.
 - Nothing of Phase 2 has been pushed.
 
 ## Next step
 
-1. Task 2.8 (phase review): whole suite in a fresh shell with the full-size image and without the `cellpose` tests, the v1 imports in the main env, the Phase 2 review entry in the devlog, then the user's sign-off.
+1. The user reads the Phase 2 review (devlog 2.8), signs off and says when to merge `msp` into `main` and push. Nothing is merged or pushed before that.
+2. After the merge, Phase 3 (outputs, logs and QC) is planned in detail in `msp-plan.md`, starting from the points carried forward in devlog 2.8 and 1.15.
 
 **No OMERO testing on 23 Nov 2026:** the user's VPN was unstable and stays off. Trying the OMERO fix on the real server (a batch that survives a dropped connection, and a terminal free of the session key) is left for a later day and goes into the manual checks of the phase review.
 
 ## How the work is run
 
 - The orchestrator briefs each executor (goal, spec sections, files, check), reviews every change, runs the checks itself, commits to `msp` after each task and writes the devlog. Models and effort are in the plan; no other executors are used.
-- The user is asked at each check-in in the plan and whenever something is unclear. Phase 2 check-in left: the phase review (2.8).
+- The user is asked at each check-in in the plan and whenever something is unclear. Phase 2 check-in left: the sign-off of the phase review (2.8).
 - Nothing is pushed, tagged or merged without asking.
 - Cellpose mask quality on the test image is not brought to the user (brief R8).
 
@@ -28,6 +29,7 @@ Where the work stands, for whoever picks it up next. Updated 23 Nov 2026. Detail
 
 - **OMERO on the real server, on a later day:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) to see both images finish, the "rejoining" line if the connection drops, and no session key or `WARNING:` lines in the terminal. Not on 23 Nov 2026: the VPN stays off.
 - **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
+- **Manual checks of the Phase 2 review** (devlog 2.8): Cellpose on the test kit, a look at a full-size run folder, and the "choices the spec does not settle" in 2.1, 2.3 and 2.4.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.
 
 ## Files outside the repository (this laptop)
