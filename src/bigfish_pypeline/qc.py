@@ -658,14 +658,27 @@ def _stretch_for_detection(image):
     return (np.clip((image - low) / (high - low), 0, 1) * 255).astype(np.uint8)
 
 
-def _show_levels(axes, levels):
+def _interpolation(levels, shown_width_px):
+    """
+    How a picture is fitted to the width it is shown at, in pixels of the
+    file. A picture shown larger than its own size keeps its pixels as they
+    are ("nearest"), which stays sharp and makes a smaller file. A picture
+    shown smaller is smoothed down, matplotlib's own choice (None).
+    """
+    return "nearest" if levels.shape[1] < shown_width_px else None
+
+
+def _show_levels(axes, levels, shown_width_px):
     """
     Show 8-bit levels in matplotlib's default colours, as big-fish draws the
     picture. Smoothing the picture to the size it is shown at is done on the
     8-bit levels, which takes far less memory than doing it on colours.
+
+    shown_width_px: the width of the picture in the file, in pixels.
     """
     axes.imshow(
-        levels, cmap=DETECTION_COLOUR_MAP, vmin=0, vmax=255, interpolation_stage="data"
+        levels, cmap=DETECTION_COLOUR_MAP, vmin=0, vmax=255, interpolation_stage="data",
+        interpolation=_interpolation(levels, shown_width_px),
     )
 
 
@@ -743,15 +756,15 @@ def draw_detection_plot(image, spots, image_name, channel, spot_radius_px, clust
 
     if n_spots == 0:
         axes = figure.add_subplot()
-        _show_levels(axes, shown)
+        _show_levels(axes, shown, DETECTION_FIGURE_WIDTH / 2 * DETECTION_FIGURE_DPI)
         axes.set_title("Image, contrast stretched for display", fontsize=10)
         axes.axis("off")
         return figure
 
     left, right = figure.subplots(1, 2, sharex=True, sharey=True)
-    _show_levels(left, shown)
+    _show_levels(left, shown, DETECTION_FIGURE_WIDTH / 2 * DETECTION_FIGURE_DPI)
     left.set_title("Image, contrast stretched for display", fontsize=10)
-    _show_levels(right, shown)
+    _show_levels(right, shown, DETECTION_FIGURE_WIDTH / 2 * DETECTION_FIGURE_DPI)
     legend = "orange circles: spots"
     if n_clusters is not None:
         legend += "; cyan shapes: clusters"
@@ -1125,8 +1138,10 @@ def draw_final_qc(picture, spots, clusters, cells, labels, image_name, channel,
     )
     FigureCanvasAgg(figure)
     axes = figure.add_subplot()
+    levels = _grey_levels(view.picture)
     axes.imshow(
-        _grey_levels(view.picture), cmap="gray", vmin=0, vmax=255, interpolation_stage="data"
+        levels, cmap="gray", vmin=0, vmax=255, interpolation_stage="data",
+        interpolation=_interpolation(levels, FINAL_FIGURE_WIDTH * FINAL_FIGURE_DPI),
     )
     axes.axis("off")
     figure.suptitle(
