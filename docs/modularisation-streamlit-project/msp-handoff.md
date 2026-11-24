@@ -5,16 +5,15 @@ Where the work stands, for whoever picks it up next. Updated 24 Nov 2026. Detail
 ## State
 
 - **Phases 0, 1 and 2:** done, signed off, merged into `main` and pushed. Phase 2 was signed off and merged on 24 Nov 2026 (devlog 2.8).
-- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0) and two more on the QC files (devlog 3.5, at its end). Tasks 3.1 to 3.8 are done and committed (devlog 3.1–3.8). Task 3.9 (time and memory with the QC outputs on, Opus 5.5) is with its executor since 24 Nov 2026; it writes to `~/bigfish-testdata/benchmarks/phase3/` and changes nothing in the repository.
+- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0) and two more on the QC files (devlog 3.5, at its end). Tasks 3.1 to 3.9 are done and committed (devlog 3.1–3.9); the `workers: auto` figures stand. The samples of 3.10 are made (devlog 3.10) and wait for the user's review. Task 3.11 (phase review) is left.
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
 - 1,054 tests pass in `bigfish-msp` without the full-size image (9 min 40 s). A foreground command is cut off after 10 minutes: run the suite in the background, or in two halves.
 - The Phase 3 plan and devlog 3.0 are committed on `msp` and not pushed.
 
 ## Next step
 
-1. When the executor of 3.9 reports: check a sample of its numbers against its logs, write the devlog entry, and bring a change to the `workers: auto` estimate to the user only if there is one.
-2. Task 3.10: samples for the user in `~/bigfish-testdata/phase3/` (test kit and full-size image, label files and Cellpose), the crop's QC images copied to `docs/modularisation-streamlit-project/figures/phase3/` and linked from the devlog; the user reviews the QC images, `run.log` and `run_info.yaml`.
-3. Task 3.11 (phase review). To raise there: running the tests in parallel with `pytest-xdist` (the suite takes 9 min 40 s).
+1. The user reviews the samples listed in devlog 3.10 (QC images, `run.log`, `run_info.yaml`); changes they ask for are made before the phase review.
+2. Task 3.11 (phase review): the whole suite in a fresh shell with the full-size image and without the `cellpose` tests (in parts: one command is cut off after 10 minutes), the v1 imports in the main env, the review entry with deviations and manual checks, then the user's sign-off. To raise there: running the tests in parallel with `pytest-xdist` (the suite takes 9 min 40 s).
 
 ## How the work is run
 
@@ -38,6 +37,8 @@ Where the work stands, for whoever picks it up next. Updated 24 Nov 2026. Detail
 | `~/bigfish-testdata/reference_v1/` | v1 reference results for the full-size image |
 | `~/bigfish-testdata/benchmarks/phase0/` | Phase 0 benchmark scripts and numbers, the pattern for task 2.7 |
 | `~/bigfish-testdata/benchmarks/phase2/` | Benchmark scripts, logs and numbers of task 2.7 |
+| `~/bigfish-testdata/benchmarks/phase3/` | Benchmark scripts, logs and numbers of task 3.9, and a full-size run folder with every output |
+| `~/bigfish-testdata/phase3/samples/` | Sample run folders for the user's review (task 3.10), with the script that makes them |
 | `~/bigfish-testdata/phase1/` | Full-size runs of Phase 1 and the v1 scripts run in the new env |
 | `~/bigfish-testdata/phase2/` | Scripts, tables and logs of the rolling ball comparison (task 2.6) |
 | `~/bigfish-testdata/phase2/omero/` | Config and run folder of the real OMERO batch |

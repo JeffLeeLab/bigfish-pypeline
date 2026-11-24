@@ -1626,3 +1626,26 @@ Checked by the orchestrator against the logs: time and peak of the worker with t
 
 **Enlarged pictures.** Seen by the orchestrator on the test kit: with the detection plot at 2,000 px, the 384 px crop was enlarged by a factor that is not a whole number and smoothed, which made the file 2.3 MB and soft. A picture shown larger than its own size now keeps its pixels as they are: the crop's detection plot is 0.7 MB. Images of 1,000 px or more across are drawn as before.
 
+### 3.10 Samples for the user (24 Nov 2026)
+
+Run folders made with the real command and every output on, for the user to look at the QC images, `run.log` and `run_info.yaml`. The four small ones are in `~/bigfish-testdata/phase3/samples/` (made by `make_samples.py` in that folder); each has its `settings.yaml`, an `input/` folder, the text the terminal showed (`terminal.txt`) and the run folder.
+
+| Sample | Folder | Shows |
+|---|---|---|
+| Test kit with its label file | `samples/kit_label_files_png/` | elbow plot, detection plot, reference spot, final QC as PNG (44 cells, numbered), `.npz` file |
+| The same with the final QC as HTML | `samples/kit_label_files_html/` | the interactive page (5.5 MB) |
+| Test kit with Cellpose | `samples/kit_cellpose/` | the Cellpose QC figure and the final QC with the cells of the run's own labels (43 cells; masks not judged) |
+| Calibrated threshold, four small images | `samples/calibrated_four_images/` | `calibration.csv` and the calibration plot (values 13, 14, 13, 13; median 13) |
+| Full-size image with Cellpose, three copies | `~/bigfish-testdata/benchmarks/phase3/runs/2026-11-24_0342_batch_gpu_1w_all/` | the QC images at full size (1,287 cells, no numbers on the cells), `run_info.yaml` of a longer run |
+| Full-size image, final QC as HTML | `~/bigfish-testdata/benchmarks/phase3/runs/w_c/qc/` | the interactive page of a full-size image (11.9 MB) |
+
+The three extra images of the calibrated sample are 384 × 384 px regions of the full-size image; they stay on the laptop.
+
+The crop's QC images: [elbow plot](figures/phase3/crop_ch2_elbow.png), [detection plot](figures/phase3/crop_ch2_detection.png), [final QC](figures/phase3/crop_ch2_final.png); and the [calibration plot](figures/phase3/calibration_four_images.png) of the four small images.
+
+Looked at by the orchestrator: every sample finished without a warning; the test kit gives 692 spots and 6 clusters in each, with 44 cells from the label file and 43 from Cellpose; the calibration plot; the full-size final QC.
+
+Seen on the full-size final QC: the picture does not use the full width of the figure, because the figure's height is limited to its width and the title and legend take part of it. Left as it is unless the user wants it changed.
+
+Waiting for the user's review of the samples.
+
