@@ -5,15 +5,16 @@ Where the work stands, for whoever picks it up next. Updated 24 Nov 2026. Detail
 ## State
 
 - **Phases 0, 1 and 2:** done, signed off, merged into `main` and pushed. Phase 2 was signed off and merged on 24 Nov 2026 (devlog 2.8).
-- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0). Task 3.3 (elbow and calibration plots) is done and committed (devlog 3.3). Tasks 3.1 (run record, Opus 5.5) and 3.4 (detection plot and reference spot, Sonnet 5.5) are with their executors since 24 Nov 2026. Uncommitted changes in `outputs.py`, `batch.py`, `cli.py` and their tests belong to 3.1; those in `qc.py` and `tests/test_qc.py` to 3.4.
+- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0). Tasks 3.1 (run record), 3.3 (elbow and calibration plots) and 3.4 (detection plot and reference spot) are done and committed (devlog 3.1, 3.3, 3.4). Tasks 3.2 (log, `.npz` files and terminal, Opus 5.5) and 3.5 (final QC, Sonnet 5.5) are with their executors since 24 Nov 2026. Uncommitted changes in `outputs.py`, `batch.py`, `cli.py` and their tests belong to 3.2; those in `qc.py` and `tests/test_qc.py` to 3.5.
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
-- 778 tests pass in `bigfish-msp` with the full-size image (about 8 minutes), 775 without it (about 5 min 40 s) and 769 without the Cellpose model.
+- 866 tests pass in `bigfish-msp` without the full-size image (about 6 minutes) after tasks 3.1, 3.3 and 3.4.
 - The Phase 3 plan and devlog 3.0 are committed on `msp` and not pushed.
 
 ## Next step
 
-1. Review the changes of 3.1 and 3.4 when their executors report, run the suite, commit each, and write the devlog entries.
-2. Then 3.2 (follows 3.1) and 3.5 (follows 3.4); the order of the other tasks is in the plan.
+1. Review the changes of 3.2 and 3.5 when their executors report, run the suite, commit each, and write the devlog entries.
+2. Show the user the crop's final QC from `~/bigfish-testdata/phase3/samples_3.5/`, with the file sizes of the HTML page with the plotly script shared in the `qc` folder and inside each page, and ask which of the two should be the default (check-in after 3.5).
+3. Then 3.6 (QC outputs in the batch runner, Opus 5.5), which needs 3.2 and 3.5; the order of the other tasks is in the plan.
 
 ## How the work is run
 
