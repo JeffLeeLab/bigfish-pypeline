@@ -1315,3 +1315,15 @@ Phase 7 (Windows and Linux):
 
 **Sign-off (24 Nov 2026):** the user signed off Phase 2 and asked for `msp` to be merged into `main` and pushed. The manual checks of this review stay open and do not hold up Phase 3: the OMERO fix on the real server, Cellpose on the test kit, and the image for the Cellpose mask review (before Phase 8).
 
+## Phase 3: Outputs, logs and QC
+
+### 3.0 Decisions (24 Nov 2026)
+
+The user agreed the three proposals in the plan before any task started:
+
+1. **Elbow plot in every threshold mode.** It is written whenever `outputs.qc.elbow_plot` is on. With a manual or calibrated threshold it shows the threshold used and, as a second line, the value the elbow method would have chosen. v1 wrote it in automatic mode only.
+2. **Text on the cells in the final QC.** The PNG shows each cell's index and number of spots; the other counts are in `cells.csv` and on hover in the HTML version. Above 300 cells the PNG leaves the text out and says so in its title. The spec asked for the index and all counts on every cell.
+3. **Size of the HTML final QC.** The image inside the file is the maximum projection in 8-bit with automatic contrast, at full size up to 2048 × 2048 px and reduced above that. The file size on the full-size image is measured in 3.5 and brought to the user if it is over 5 MB.
+
+`msp` with the Phase 3 plan is not pushed.
+

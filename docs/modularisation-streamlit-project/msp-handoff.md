@@ -5,15 +5,15 @@ Where the work stands, for whoever picks it up next. Updated 24 Nov 2026. Detail
 ## State
 
 - **Phases 0, 1 and 2:** done, signed off, merged into `main` and pushed. Phase 2 was signed off and merged on 24 Nov 2026 (devlog 2.8).
-- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026. No task has started; the user has not yet answered the three decisions in the plan.
+- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0). Tasks 3.1 (run record, Opus 5.5) and 3.3 (elbow and calibration plots, Sonnet 5.5) were given to their executors on 24 Nov 2026. Uncommitted changes in `outputs.py`, `batch.py`, `cli.py` and their tests belong to 3.1; those in `qc.py` and `tests/test_qc.py` to 3.3.
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
 - 778 tests pass in `bigfish-msp` with the full-size image (about 8 minutes), 775 without it (about 5 min 40 s) and 769 without the Cellpose model.
-- The Phase 3 plan is committed on `msp` and not pushed.
+- The Phase 3 plan and devlog 3.0 are committed on `msp` and not pushed.
 
 ## Next step
 
-1. The user answers the three decisions of the Phase 3 plan (elbow plot in every threshold mode, text on the cells in the final QC, size of the HTML final QC). The answers go into the devlog as entry 3.0.
-2. Tasks 3.1 (run record, Opus 5.5) and 3.3 (elbow and calibration plots, Sonnet 5.5) start together; the order of the other tasks is in the plan.
+1. Review the changes of 3.1 and 3.3 when their executors report, run the suite, commit each, and write the devlog entries.
+2. Then 3.2 (follows 3.1) and 3.4 → 3.5 (follow 3.3); the order of the other tasks is in the plan.
 
 ## How the work is run
 
@@ -26,7 +26,6 @@ Where the work stands, for whoever picks it up next. Updated 24 Nov 2026. Detail
 
 - **OMERO on the real server, on a day with a stable VPN:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) to see both images finish, the "rejoining" line if the connection drops, and no session key or `WARNING:` lines in the terminal.
 - **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
-- **The three decisions of the Phase 3 plan.**
 - **Manual checks of the Phase 2 review** (devlog 2.8): Cellpose on the test kit, a look at a full-size run folder, and the "choices the spec does not settle" in 2.1, 2.3 and 2.4.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.
 
