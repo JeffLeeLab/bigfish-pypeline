@@ -1313,3 +1313,5 @@ Phase 7 (Windows and Linux):
 - `tests/data/` holds about 10 MB.
 - `msp` is about 30 commits ahead of GitHub: none of the Phase 2 work has been pushed.
 
+**Sign-off (24 Nov 2026):** the user signed off Phase 2 and asked for `msp` to be merged into `main` and pushed. The manual checks of this review stay open and do not hold up Phase 3: the OMERO fix on the real server, Cellpose on the test kit, and the image for the Cellpose mask review (before Phase 8).
+
