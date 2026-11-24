@@ -1,9 +1,11 @@
 """Tests for the command line: `bigfish-pypeline batch` and `bigfish-pypeline check`."""
 
+import functools
 import os
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import numpy as np
@@ -12,9 +14,12 @@ import pytest
 import tifffile
 import yaml
 
-from bigfish_pypeline import __version__, cli
+from batch_helpers import fake_process_image
+from bigfish_pypeline import __version__, batch, cli
+from bigfish_pypeline.config import save_config
 from conftest import CROP_NAME
 from synthetic import make_image
+from test_batch_run import KEY, FakeConn, omero_config, omero_info  # noqa: F401  (fixture)
 
 
 # ---------------------------------------------------------------------------
@@ -401,3 +406,78 @@ def test_python_module(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == f"bigfish-pypeline {__version__}"
+
+
+# ---------------------------------------------------------------------------
+# Unexpected problems and warnings in the terminal
+# ---------------------------------------------------------------------------
+
+
+def test_unexpected_problem_gives_a_plain_message(tmp_path, capsys, monkeypatch, omero_info):  # noqa: F811
+    """A problem whose text holds the OMERO session key: a plain message without
+    the key and without a Python error report, and exit code 1."""
+    def broken(*args, **kwargs):
+        raise RuntimeError(f"session {KEY} refused")
+
+    conn = FakeConn([(123, "a.tif"), (124, "b.tif")])
+    monkeypatch.setattr(cli, "run_batch", functools.partial(
+        batch.run_batch, omero_conn=conn, image_function=fake_process_image))
+    monkeypatch.setattr(batch.outputs, "combine_tables", broken)
+    settings = tmp_path / "settings.yaml"
+    save_config(omero_config(tmp_path / "out", dataset_id=5), settings)
+
+    code, out, err = run_command(capsys, "batch", settings)
+    assert code == cli.EXIT_PROBLEM
+    run_folder = run_folder_from(out)
+    assert err.splitlines() == [
+        "The run stopped because of an unexpected problem: RuntimeError: session [hidden] refused",
+        f"The details are in run.log in the run folder: {run_folder}",
+    ]
+    assert out.splitlines()[-1] == f"Run folder: {run_folder}"
+    assert KEY not in out + err
+    assert "Traceback" not in out + err
+    for path in run_folder.rglob("*"):
+        if path.is_file():
+            assert KEY not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_mean_intensity_warning_not_in_the_terminal(crop_config_path, tmp_path):
+    """A real run of the test kit, from the command and from Python with a worker
+    that gives another warning: big-fish's FutureWarning about `mean_intensity` is
+    not shown, the other warning is."""
+    script = tmp_path / "script.py"
+    script.write_text(textwrap.dedent(f"""
+        import sys
+        import warnings
+
+        from bigfish_pypeline import batch, cli
+        from bigfish_pypeline.config import load_config
+
+
+        def warning_process_image(*args, **kwargs):
+            warnings.warn("another warning from a worker", UserWarning)
+            return batch.process_image(*args, **kwargs)
+
+
+        def show(text):
+            print(text)
+            if text.endswith(": started"):
+                warnings.warn("another warning from the main process", UserWarning)
+
+
+        if __name__ == "__main__":
+            settings = {str(crop_config_path)!r}
+            assert cli.main(["batch", settings, "--output-folder", "from_command"]) == 0
+            config = cli.apply_overrides(load_config(settings), output_folder="from_python")
+            result = batch.run_batch(config, image_function=warning_process_image, show=show)
+            assert result.status == "finished", result.message
+    """), encoding="utf-8")
+    done = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                          timeout=300, cwd=tmp_path)
+    terminal = done.stdout + done.stderr
+    assert done.returncode == 0, terminal
+    assert terminal.count("sypN_DAPI_Phal_jim-exon_crop, channel 2: done, threshold 18, 692 spots") == 2
+    assert "RegionProperties.mean_intensity" not in terminal
+    assert "FutureWarning" not in terminal
+    assert "UserWarning: another warning from a worker" in done.stderr
+    assert "UserWarning: another warning from the main process" in done.stderr

@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import traceback
 from pathlib import Path
 from datetime import datetime
 from types import SimpleNamespace
@@ -299,6 +300,179 @@ def test_corrupt_image_and_list_order(tmp_path):
     text = log_text(result.run_folder)
     assert "c_corrupt: failed: c_corrupt.tif: the file is damaged or incomplete" in text
     assert "channels: 8 done, 2 failed, 0 skipped" in text
+
+
+# ---------------------------------------------------------------------------
+# What run.log holds (spec 8.4)
+# ---------------------------------------------------------------------------
+
+
+def test_log_holds_every_item(tmp_path):
+    """A run with a finished, a failed and a skipped channel, a missing label file,
+    a voxel size that differs from the file, and an image that cannot be read."""
+    folder = tmp_path / "input"
+    folder.mkdir()
+    few = make_image((8, 64, 64), n_spots=8, seed=2)[0].astype(np.float32)
+    broken = few.copy()
+    broken[3, 20, 20] = np.nan
+    many = make_image((8, 64, 64), n_spots=30, min_spacing=5, seed=1)[0].astype(np.float32)
+    array = np.stack([few, broken, many], axis=1)
+    tifffile.imwrite(folder / "a_mixed.tif", array, imagej=True, metadata={"axes": "ZCYX", "unit": "um", "spacing": 0.3},
+                     resolution=(1 / 0.065, 1 / 0.065))
+    generated_image(folder / "b_corrupt.tif", n_channels=3)
+    corrupt = folder / "b_corrupt.tif"
+    corrupt.write_bytes(corrupt.read_bytes()[:3000])
+    labels = tmp_path / "labels"
+    labels.mkdir()
+    channels = [
+        {"index": 0, "name": "exon"},
+        {"index": 1},
+        {"index": 2, "bailout": {"enabled": True, "max_spots": 20},
+         "threshold": {"mode": "auto", "lower_limit": 30}},
+    ]
+    config = with_changes(local_config(folder, tmp_path / "out", channels=channels), lambda data: data[
+        "segmentation"].update(enabled=True, source="label_files", label_folder=str(labels)))
+    settings = tmp_path / "settings.yaml"
+    result = batch.run_batch(config, config_file=settings)
+    assert result.status == "finished", result.message
+    text = log_text(result.run_folder)
+    images = read_table(result.run_folder, "images")
+    threshold_2 = images.loc[(images["image"] == "a_mixed") & (images["channel"] == 2), "threshold"].iloc[0]
+
+    for expected in (
+        # config file used and image list
+        f"Config file: {settings}",
+        "2 image(s):\n",
+        "  a_mixed.tif\n",
+        "  b_corrupt.tif\n",
+        # settings of each channel
+        "FISH channel 0 (exon): manual threshold 50",
+        "FISH channel 1: manual threshold 50",
+        "FISH channel 2: automatic threshold, found for each image, never below 30",
+        # each image started, finished or failed, and each channel done, failed or skipped
+        "a_mixed: started",
+        "a_mixed: finished",
+        "b_corrupt: started",
+        "b_corrupt: failed: b_corrupt.tif: the file is damaged or incomplete",
+        # threshold used for each image and channel
+        "a_mixed, channel 0: done, threshold 50, 8 spots, 0 clusters",
+        "a_mixed, channel 1: failed, threshold none (a_mixed.tif: channel 1 contains NaN or infinite values)",
+        f"a_mixed, channel 2: skipped, threshold {threshold_2:g} (bailout: 30 spots detected, above the limit of 20)",
+        "b_corrupt, channel 0: failed, threshold none (b_corrupt.tif: the file is damaged or incomplete",
+        # warnings, each naming its image
+        "a_mixed: warning: a_mixed.tif: voxel sizes differ (Z 300 nm in the file, 200 nm in the config)",
+        "a_mixed: warning: no cell results: Label file not found",
+        # summary
+        "Summary: 2 of 2 image(s) finished, 0 not processed; channels: 1 done, 4 failed, 1 skipped. Total time ",
+        "Images in which every channel failed: b_corrupt",
+        "The run finished: 2 image(s) processed.",
+    ):
+        assert expected in text, expected
+    assert "Images not processed" not in text
+    # each line of the log starts with the date and time, apart from the lines that continue one
+    for line in text.splitlines():
+        assert re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d  \S| {21}", line), line
+    # every warning line names its image
+    for line in text.splitlines():
+        if ": warning: " in line:
+            assert re.match(r"\S+ \S+  (a_mixed|b_corrupt)(, channel \d)?: warning: ", line), line
+
+
+def test_log_without_a_config_file(tmp_path):
+    folder = tiny_images(tmp_path / "input", ["a"])
+    result = run_fake(local_config(folder, tmp_path / "out"))
+    assert "Config file: none (the settings were passed from Python)" in log_text(result.run_folder)
+
+
+# ---------------------------------------------------------------------------
+# .npz files of cancelled and stopped runs
+# ---------------------------------------------------------------------------
+
+
+def npz_process_image(config, image_name, image_source, run_folder, **arguments):
+    """`fake_process_image` that also leaves `.npz` files, finished and temporary,
+    before the image's worker is stopped or the run cancelled, and writes the
+    `.npz` files of a finished image."""
+    folder = Path(run_folder) / outputs.NPZ_FOLDER_NAME
+    folder.mkdir(exist_ok=True)
+    if any(word in image_name for word in ("slow", "cancel", "crash")):
+        for channel in config.channels:
+            path = outputs.npz_path(run_folder, image_name, channel.index)
+            np.savez(path, spots=np.zeros((1, 3), dtype=np.int64))
+            path.with_name(path.name + ".tmp").write_bytes(b"")
+    result = fake_process_image(config, image_name, image_source, run_folder, **arguments)
+    for channel in config.channels:
+        np.savez(outputs.npz_path(run_folder, image_name, channel.index), spots=np.ones((1, 3), dtype=np.int64))
+    return result
+
+
+def npz_files(run_folder):
+    return sorted(path.name for path in (run_folder / "npz").iterdir())
+
+
+@pytest.mark.parametrize("names, workers, status, kept", [
+    (["a", "b_slow", "c_cancel", "d"], 2, "cancelled", ["a"]),
+    (["a", "b_crash_always", "c"], 1, "stopped", ["a"]),
+    (["a", "b_crash_once", "c", "d"], 2, "finished", ["a", "b_crash_once", "c", "d"]),
+])
+def test_npz_files_of_finished_images_only(tmp_path, names, workers, status, kept):
+    folder = tiny_images(tmp_path / "input", names)
+    config = with_changes(local_config(folder, tmp_path / "out", workers=workers),
+                          lambda data: data["outputs"].update(npz=True))
+    result = batch.run_batch(config, image_function=npz_process_image)
+    assert result.status == status, result.message
+    assert npz_files(result.run_folder) == [f"{name}_ch{channel}.npz" for name in kept for channel in (0, 1)]
+    for name in kept:
+        with np.load(result.run_folder / "npz" / f"{name}_ch0.npz") as saved:
+            assert saved["spots"].tolist() == [[1, 1, 1]]
+    if status == "cancelled":
+        assert "Images not processed: b_slow, c_cancel, d" in log_text(result.run_folder)
+
+
+# ---------------------------------------------------------------------------
+# Unexpected problems during a run
+# ---------------------------------------------------------------------------
+
+
+def key_error(*args, **kwargs):
+    raise RuntimeError(f"session {KEY} refused")
+
+
+@pytest.mark.parametrize("where", ["run_config", "pool", "end"])
+def test_unexpected_problem_hides_the_session_key(tmp_path, omero_info, monkeypatch, where):
+    """An unexpected problem whose text holds the session key: the error raised,
+    its printed form and every file of the run folder are free of the key."""
+    if where == "run_config":
+        monkeypatch.setattr(batch.outputs, "write_run_config", key_error)
+    elif where == "pool":
+        # before the run is set up, so before run.log has any line
+        monkeypatch.setattr(batch._WorkerPool, "__init__", key_error)
+    else:
+        monkeypatch.setattr(batch.outputs, "combine_tables", key_error)
+    conn = FakeConn([(123, "a.tif"), (124, "b.tif")])
+    shown = []
+    with pytest.raises(batch.RunStoppedError) as raised:
+        run_fake(omero_config(tmp_path / "out", dataset_id=5), omero_conn=conn, show=shown.append)
+    error = raised.value
+    [run_folder] = (tmp_path / "out").iterdir()
+    assert error.run_folder == run_folder
+    assert error.reason == "RuntimeError: session [hidden] refused"
+    assert str(error) == (
+        "The run stopped because of an unexpected problem: RuntimeError: session [hidden] refused\n"
+        f"The details are in run.log in the run folder: {run_folder}"
+    )
+    assert error.__context__ is None and error.__cause__ is None
+    printed = "".join(traceback.format_exception(error))
+    assert KEY not in printed
+    assert KEY not in "\n".join(shown)
+    for path in run_folder.rglob("*"):
+        if path.is_file():
+            assert KEY not in path.read_text(encoding="utf-8"), path.name
+    text = log_text(run_folder)
+    assert "The run stopped because of an unexpected problem: RuntimeError: session [hidden] refused" in text
+    assert "Traceback" in text
+    info = run_info(run_folder, "stopped")
+    assert info["message"] == "The run stopped because of an unexpected problem: RuntimeError: session [hidden] refused"
 
 
 # ---------------------------------------------------------------------------
@@ -622,7 +796,7 @@ def test_run_info_after_an_error_in_the_run(tmp_path, monkeypatch):
         raise RuntimeError("the disk is full")
 
     monkeypatch.setattr(batch.outputs, "write_run_config", broken)
-    with pytest.raises(RuntimeError, match="the disk is full"):
+    with pytest.raises(batch.RunStoppedError, match="the disk is full"):
         run_fake(local_config(folder, tmp_path / "out"))
     [run_folder] = (tmp_path / "out").iterdir()
     info = run_info(run_folder, "stopped")
@@ -645,7 +819,7 @@ def test_run_info_of_an_omero_run(tmp_path, omero_info, monkeypatch):
         raise RuntimeError(f"session {KEY} refused")
 
     monkeypatch.setattr(batch.outputs, "write_run_config", broken)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(batch.RunStoppedError):
         run_fake(omero_config(tmp_path / "again", dataset_id=5, username="omero_user_name"), omero_conn=conn)
     [run_folder] = (tmp_path / "again").iterdir()
     text = (run_folder / "run_info.yaml").read_text(encoding="utf-8")

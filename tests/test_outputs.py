@@ -394,6 +394,74 @@ def test_failure_while_renaming_leaves_nothing(tmp_path, monkeypatch):
     assert not image_is_complete(tmp_path, "a")
 
 
+NPZ_ARRAYS = {
+    2: {"spots_post_clustering": np.array([[1, 2, 3, 0], [4, 5, 6, -1]], dtype=np.int64),
+        "clusters": np.array([[1, 2, 3, 2, 0]], dtype=np.int64)},
+    3: {"spots": np.array([[1.5, 2.25, 3.0]], dtype=np.float64)},
+}
+
+
+def test_write_image_tables_with_npz_files(tmp_path):
+    (tmp_path / "per_image").mkdir()
+    tables = _image_tables("a", 4, with_cells=False)
+    written = write_image_tables(tmp_path, "a", tables["images"], spots=tables["spots"], arrays=NPZ_ARRAYS)
+    assert sorted(path.name for path in (tmp_path / "npz").iterdir()) == ["a_ch2.npz", "a_ch3.npz"]
+    assert outputs.npz_path(tmp_path, "a", 2) == tmp_path / "npz" / "a_ch2.npz"
+    # the images table is still renamed last
+    assert [path.name for path in written] == ["a_spots.csv", "a_ch2.npz", "a_ch3.npz", "a_images.csv"]
+    assert _leftovers(tmp_path) == []
+    for channel, named in NPZ_ARRAYS.items():
+        with np.load(tmp_path / "npz" / f"a_ch{channel}.npz") as saved:
+            assert saved.files == list(named)
+            for name, array in named.items():
+                assert saved[name].dtype == array.dtype
+                np.testing.assert_array_equal(saved[name], array)
+
+
+def test_no_npz_folder_without_arrays(tmp_path):
+    (tmp_path / "per_image").mkdir()
+    tables = _image_tables("a", 4, with_cells=False)
+    _write(tmp_path, "a", tables)
+    write_image_tables(tmp_path, "b", tables["images"], arrays={})
+    assert not (tmp_path / "npz").exists()
+
+
+@pytest.mark.parametrize("fail_at", ["write", "rename"])
+def test_failure_with_npz_files_leaves_nothing(tmp_path, monkeypatch, fail_at):
+    (tmp_path / "per_image").mkdir()
+    tables = _image_tables("a", 4, with_cells=False)
+    if fail_at == "write":
+        def failing_savez(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(outputs.np, "savez", failing_savez)
+    else:
+        original = os.replace
+
+        def failing_replace(source, destination):
+            if str(destination).endswith("a_ch3.npz"):
+                raise OSError("no space")
+            original(source, destination)
+
+        monkeypatch.setattr(outputs.os, "replace", failing_replace)
+    with pytest.raises(OutputError, match="The .npz files of image `a`"):
+        write_image_tables(tmp_path, "a", tables["images"], spots=tables["spots"], arrays=NPZ_ARRAYS)
+    assert list((tmp_path / "per_image").iterdir()) == []
+    assert list((tmp_path / "npz").iterdir()) == []
+
+
+def test_remove_image_files(tmp_path):
+    (tmp_path / "per_image").mkdir()
+    tables = _image_tables("a", 4, with_cells=False)
+    write_image_tables(tmp_path, "a", tables["images"], spots=tables["spots"], arrays=NPZ_ARRAYS)
+    write_image_tables(tmp_path, "a_ch2", tables["images"], arrays=NPZ_ARRAYS)
+    (tmp_path / "npz" / "a_ch2.npz.tmp").write_bytes(b"")
+    (tmp_path / "per_image" / "a_cells.csv.tmp").write_text("", encoding="utf-8")
+    outputs.remove_image_files(tmp_path, "a", [2, 3])
+    assert sorted(path.name for path in (tmp_path / "per_image").iterdir()) == ["a_ch2_images.csv"]
+    assert sorted(path.name for path in (tmp_path / "npz").iterdir()) == ["a_ch2_ch2.npz", "a_ch2_ch3.npz"]
+
+
 def test_combine_three_images(tmp_path):
     (tmp_path / "per_image").mkdir()
     # written out of order, combined in run order

@@ -256,6 +256,69 @@ def test_kit_subpixel_on(manual18_run, crop_config_path, crop_path, test_kit_fol
     )
 
 
+def with_npz(config):
+    """Copy of a config with `outputs.npz` switched on."""
+    data = config.to_dict()
+    data["outputs"]["npz"] = True
+    return parse_config(data, config.config_folder)
+
+
+def read_npz(path):
+    with np.load(path) as saved:
+        return {name: saved[name] for name in saved.files}
+
+
+@pytest.mark.parametrize("reference, changes", [
+    ("reference_v1/general_manual18_subpixel-off", {}),
+    ("reference_v1/hcr_manual18_subpixel-off", {"decomposition__enabled": False, "clusters__enabled": False}),
+    ("reference_v1_new_env/general_manual18_subpixel-on", {"subpixel__enabled": True}),
+    ("reference_v1_new_env/hcr_manual18_subpixel-on",
+     {"decomposition__enabled": False, "clusters__enabled": False, "subpixel__enabled": True}),
+])
+def test_kit_npz_files_as_v1(crop_config_path, crop_path, test_kit_folder, tmp_path, reference, changes):
+    config = with_npz(crop_config(crop_config_path, **changes))
+    run_crop(config, tmp_path, crop_path)
+    assert sorted(path.name for path in (tmp_path / "npz").iterdir()) == [f"{CROP_NAME}_ch{FISH_CHANNEL}.npz"]
+    saved = read_npz(tmp_path / "npz" / f"{CROP_NAME}_ch{FISH_CHANNEL}.npz")
+    expected = read_npz(next((test_kit_folder / reference).glob("*_bfoutput.npz")))
+    assert list(saved) == list(expected)
+    for name, array in expected.items():
+        assert saved[name].dtype == array.dtype, name
+        assert saved[name].shape == array.shape, name
+        np.testing.assert_array_equal(saved[name], array, err_msg=name)
+
+
+def test_no_npz_folder_when_switched_off(tmp_path):
+    image = make_image((8, 64, 64), n_spots=8, seed=2)[0]
+    path = write_image(tmp_path / "off.tif", stack_channels([image, image]), "ZCYX")
+    config = synthetic_config(channels=[{"index": 0}, {"index": 1}])
+    assert config.outputs.npz is False
+    summary = batch.process_image(config, "off", path, tmp_path / "run")
+    assert [row["status"] for row in summary["rows"]] == ["done", "done"]
+    assert sorted(path.name for path in (tmp_path / "run").iterdir()) == ["per_image"]
+
+
+def test_npz_files_of_done_channels_only(tmp_path):
+    many = make_image((8, 64, 64), n_spots=30, min_spacing=5, seed=1)[0].astype(np.float32)
+    few = make_image((8, 64, 64), n_spots=8, seed=2)[0].astype(np.float32)
+    broken = few.copy()
+    broken[3, 20, 20] = np.nan
+    path = write_image(tmp_path / "mixed.tif", stack_channels([few, broken, many]), "ZCYX")
+    bailout = {"enabled": True, "max_spots": 20}
+    config = with_npz(synthetic_config(channels=[
+        {"index": 0, "clusters": {"enabled": False}},
+        {"index": 1},
+        {"index": 2, "bailout": bailout},
+    ]))
+    summary = batch.process_image(config, "mixed", path, tmp_path / "run")
+    assert [row["status"] for row in summary["rows"]] == ["done", "failed", "skipped"]
+    assert sorted(path.name for path in (tmp_path / "run" / "npz").iterdir()) == ["mixed_ch0.npz"]
+    saved = read_npz(tmp_path / "run" / "npz" / "mixed_ch0.npz")
+    assert list(saved) == ["spots"]
+    assert saved["spots"].shape == (8, 3)
+    assert saved["spots"].dtype == np.int64
+
+
 def test_kit_measurements(crop_config_path, crop_path, tmp_path):
     config = crop_config(crop_config_path, measurements__snr=True, measurements__intensity=True)
     summary, tables = run_crop(config, tmp_path, crop_path)

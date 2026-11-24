@@ -19,6 +19,7 @@ import signal
 import threading
 import time
 import traceback
+import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
@@ -50,6 +51,15 @@ from bigfish_pypeline.subpixel import fit_subpixel
 PASS_THROUGH = (io.OmeroSessionEnded, KeyboardInterrupt, MemoryError)
 
 NO_AUTO_THRESHOLD_REASON = "no automatic threshold (too few candidate spots)"
+
+# Start of the FutureWarning that scikit-image gives each time big-fish's
+# decomposition reads `mean_intensity`; it says nothing the user can act on.
+MEAN_INTENSITY_WARNING = r"`RegionProperties\.mean_intensity` is deprecated"
+
+
+def hide_mean_intensity_warning():
+    """Hide scikit-image's FutureWarning about `mean_intensity`, and only that warning."""
+    warnings.filterwarnings("ignore", message=MEAN_INTENSITY_WARNING, category=FutureWarning)
 
 
 class ChannelError(Exception):
@@ -252,6 +262,8 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
 
     Returns a dict with the status ("done" or "skipped"), the reason, the
     counts, the warnings, and the channel's spots, clusters and cells tables.
+    With `outputs.npz` on, a channel that is done also has "arrays": the
+    arrays of its `.npz` file, by name.
     """
     ndim = get_ndim(config)
     voxel_size = get_voxel_size(config)
@@ -340,6 +352,7 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
 
     # step 7: clusters, on the subpixel positions when there are any
     clusters = None
+    spots_post_clustering = None
     cluster_id = np.full(len(spots_post_decomposition), -1, dtype=np.int64)
     if channel.clusters.enabled:
         positions = spots_subpixel if spots_subpixel is not None else spots_post_decomposition
@@ -389,6 +402,14 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
         image_name, index, channel.name, clusters, ndim, voxel_size_yx, voxel_size_z,
         cell_id=cluster_cell_id,
     )
+    if config.outputs.npz:
+        # the arrays and names of the v1 scripts: the general script with
+        # clusters, the HCRv3 script without
+        if channel.clusters.enabled:
+            result["arrays"] = {"spots_post_clustering": spots_post_clustering, "clusters": clusters}
+        else:
+            final_spots = spots_subpixel if spots_subpixel is not None else spots_post_decomposition
+            result["arrays"] = {"spots": final_spots}
     result["status"] = "done"
     result["reason"] = ""
     result["n_spots"] = len(spots_post_decomposition)
@@ -415,7 +436,8 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
         in its `resolved` block.
     image_name: the image's output name, used in the tables and file names.
     image_source: the file path for local input, or the image ID for OMERO.
-    run_folder: the run folder; the tables go to its `per_image/` folder.
+    run_folder: the run folder; the tables go to its `per_image/` folder and,
+        with `outputs.npz` on, the `.npz` files to its `npz/` folder.
     label_folder: folder holding `<image>_seglabels.tif`, or None when there
         are no cell results to make.
     omero_host, omero_port, omero_key: the OMERO server and the session key to
@@ -521,6 +543,7 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
     # steps 2–8 and 10, one channel at a time
     spot_columns = run_spot_columns(config)
     spot_tables, cluster_tables, cell_tables = [], [], []
+    arrays = {}
     for channel in channels:
         channel_start = time.perf_counter()
         found = {"threshold": None, "n_spots_detected": None}
@@ -557,6 +580,8 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
         for tables, kind in ((spot_tables, "spots"), (cluster_tables, "clusters"), (cell_tables, "cells")):
             if result[kind] is not None:
                 tables.append(result[kind])
+        if result.get("arrays") is not None:
+            arrays[channel.index] = result["arrays"]
         rows.append(outputs.image_row(
             image_name, channel.index, channel.name, result["status"],
             reason=result["reason"],
@@ -583,7 +608,7 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
         cells_table = outputs.join_tables(cell_tables, columns=outputs.CELLS_TABLE_COLUMNS)
     outputs.write_image_tables(
         run_folder, image_name, outputs.make_images_table(rows),
-        spots=spots_table, clusters=clusters_table, cells=cells_table,
+        spots=spots_table, clusters=clusters_table, cells=cells_table, arrays=arrays or None,
     )
     return {"image": image_name, "rows": rows, "log_lines": log_lines}
 
@@ -694,6 +719,7 @@ CHECK_INTERVAL_S = 1
 PROGRESS_INTERVAL_S = 10
 THREAD_VARIABLES = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
 WORKER_STOPPED_REASON = "worker stopped unexpectedly, probably out of memory"
+UNEXPECTED_PROBLEM_TEXT = "The run stopped because of an unexpected problem"
 OMERO_SESSION_ENDED_MESSAGE = (
     "The OMERO session has ended, so no more images can be read. "
     "Log in again and start a new run."
@@ -702,6 +728,22 @@ OMERO_SESSION_ENDED_MESSAGE = (
 
 class BatchError(Exception):
     """A problem found before any image is processed, with a plain message."""
+
+
+class RunStoppedError(Exception):
+    """A run that stopped because of an unexpected problem, after its run folder was made.
+
+    run_folder: the run folder; its `run.log` holds the full details.
+    reason: the problem in one line, with any OMERO session key hidden.
+    """
+
+    def __init__(self, run_folder, reason):
+        self.run_folder = Path(run_folder)
+        self.reason = reason
+        super().__init__(
+            f"{UNEXPECTED_PROBLEM_TEXT}: {reason}\n"
+            f"The details are in {LOG_NAME} in the run folder: {self.run_folder}"
+        )
 
 
 @dataclass
@@ -861,9 +903,11 @@ def _voxels_per_channel(shape, axes):
 def _start_worker():
     """Run in each worker process as it starts: Ctrl+C is left to the main
     process, the OMERO session is left when the process ends, and omero-py
-    can neither print its own messages nor set up logging for the process."""
+    can neither print its own messages nor set up logging for the process, and
+    scikit-image's warning about `mean_intensity` is hidden."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     io.start_plain_logging()
+    hide_mean_intensity_warning()
     atexit.register(close_omero_connection)
 
 
@@ -1318,6 +1362,16 @@ def _duration(seconds):
     return f"{hours} h {minutes} min"
 
 
+def _write_log(run_folder, text):
+    """Add a line (or several) to the run folder's run.log, with the time in front."""
+    text = str(text).rstrip()
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = text.splitlines() or [""]
+    written = [f"{stamp}  {lines[0]}"] + [" " * (len(stamp) + 2) + line for line in lines[1:]]
+    with open(Path(run_folder) / LOG_NAME, "a", encoding="utf-8", newline="\n") as log_file:
+        log_file.write("\n".join(written) + "\n")
+
+
 def _threshold_text(value):
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return "none"
@@ -1360,6 +1414,8 @@ class _Run:
         self.message = "The run has started."
         self.in_progress = []
         self.finished = set()
+        # images in which every channel failed, in the order they ended
+        self.failed_images = []
         self.channel_counts = {"done": 0, "failed": 0, "skipped": 0}
         self.calibration_total = 0
         self.calibration_finished = 0
@@ -1379,11 +1435,7 @@ class _Run:
     def log(self, text, details=False):
         """Add a line (or several) to run.log, and show it unless it is details."""
         text = self.hide(text).rstrip()
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        lines = text.splitlines() or [""]
-        written = [f"{stamp}  {lines[0]}"] + [" " * (len(stamp) + 2) + line for line in lines[1:]]
-        with open(self.run_folder / LOG_NAME, "a", encoding="utf-8", newline="\n") as log_file:
-            log_file.write("\n".join(written) + "\n")
+        _write_log(self.run_folder, text)
         if self.show is not None and not details:
             self.show(text)
 
@@ -1420,14 +1472,10 @@ class _Run:
     # -- per-image files -----------------------------------------------------
 
     def remove_image_files(self, image):
-        """Remove every file of an image from `per_image/`, finished or not."""
-        for kind in outputs.TABLE_KINDS:
-            path = outputs.per_image_path(self.run_folder, image.name, kind)
-            for candidate in (path, path.with_name(path.name + outputs.TEMPORARY_SUFFIX)):
-                try:
-                    candidate.unlink()
-                except FileNotFoundError:
-                    pass
+        """Remove every file of an image from `per_image/` and `npz/`, finished or not."""
+        outputs.remove_image_files(
+            self.run_folder, image.name, [channel.index for channel in self.config.channels]
+        )
 
     def remove_segmentation_files(self, image):
         """Remove an image's label file and Cellpose QC figure made in this run."""
@@ -1769,6 +1817,7 @@ class _Run:
                 text += f" ({row['reason']})"
             self.log(text)
         if rows and all(row["status"] == "failed" for row in rows):
+            self.failed_images.append(image.name)
             self.log(f"{image.name}: failed: {rows[0]['reason']}")
         else:
             self.log(f"{image.name}: finished")
@@ -1847,6 +1896,14 @@ class _Run:
 
     # -- end -----------------------------------------------------------------
 
+    def log_image_lists(self, finished):
+        """Log the images in which every channel failed, and the images not processed."""
+        if self.failed_images:
+            self.log(f"Images in which every channel failed: {', '.join(self.failed_images)}")
+        missing = [image.name for image in self.images if image.name not in finished]
+        if missing:
+            self.log(f"Images not processed: {', '.join(missing)}")
+
     def finish(self, status):
         """Combine the finished images, tidy `per_image/`, log the summary and set the final status."""
         self.step = "end"
@@ -1855,11 +1912,21 @@ class _Run:
             if image.name in self.finished and outputs.image_is_complete(self.run_folder, image.name)
         ]
         outputs.combine_tables(self.run_folder, finished)
-        for leftover in (self.run_folder / outputs.PER_IMAGE_FOLDER_NAME).glob("*" + outputs.TEMPORARY_SUFFIX):
-            try:
-                leftover.unlink()
-            except OSError:
-                pass
+        for folder in (outputs.PER_IMAGE_FOLDER_NAME, outputs.NPZ_FOLDER_NAME):
+            for leftover in (self.run_folder / folder).glob("*" + outputs.TEMPORARY_SUFFIX):
+                try:
+                    leftover.unlink()
+                except OSError:
+                    pass
+        # .npz files are kept only for finished images
+        channels = [channel.index for channel in self.config.channels]
+        for image in self.images:
+            if image.name not in finished:
+                for channel in channels:
+                    try:
+                        outputs.npz_path(self.run_folder, image.name, channel).unlink()
+                    except OSError:
+                        pass
         # Label files and Cellpose QC figures are kept only for finished images.
         for image in self.images:
             if image.name not in finished:
@@ -1880,6 +1947,7 @@ class _Run:
             f"{not_processed} not processed; channels: {counts}. "
             f"Total time {_duration(time.monotonic() - self.start)}."
         )
+        self.log_image_lists(finished)
         if status != "stopped":
             self.log(self.message)
         self.write_progress()
@@ -1969,9 +2037,11 @@ class _RunRecord:
             status, message = run.status, run.message
         elif isinstance(error, KeyboardInterrupt):
             status, message = "cancelled", "The run was cancelled (Ctrl+C was pressed)."
+        elif isinstance(error, BatchError):
+            status, message = "stopped", str(error)
         elif error is not None:
             status = "stopped"
-            message = f"The run stopped because of an unexpected problem: {_one_line(error)}"
+            message = f"{UNEXPECTED_PROBLEM_TEXT}: {_one_line(error)}"
         else:
             status, message = "stopped", "The run ended before any image was processed."
         self.info.update(
@@ -2137,15 +2207,24 @@ def run_batch(config, config_file=None, omero_conn=None, show=None,
     once, before the run folder is made; the model is let go at the end.
 
     Problems found before any image is processed raise BatchError with a
-    plain message, and no run folder is made.
+    plain message, and no run folder is made. If the folder for the label
+    images of a Cellpose run cannot be made, BatchError is raised too; the
+    run folder is then left with its run.log and run_info.yaml saying so.
+
+    An unexpected problem during the run raises RunStoppedError, whose
+    message gives the problem in one line, with any OMERO session key
+    hidden; the full details are in run.log. Ctrl+C outside the run itself
+    raises KeyboardInterrupt.
 
     Returns a BatchResult with the run folder, the final status
     ("finished", "cancelled" or "stopped") and a plain message.
 
     While the run is in progress, omero-py cannot set up logging for the whole
-    program (see io.start_plain_logging).
+    program (see io.start_plain_logging), and scikit-image's warning about
+    `mean_intensity` is hidden.
     """
-    with io.plain_logging():
+    with io.plain_logging(), warnings.catch_warnings():
+        hide_mean_intensity_warning()
         return _run_batch(config, config_file, omero_conn, show, image_function,
                           calibration_function, device_chooser, model_loader, command)
 
@@ -2187,12 +2266,22 @@ def _run_batch(config, config_file, omero_conn, show, image_function, calibratio
             raise BatchError(str(error)) from None
 
         ending = None
+        stopped = None
         try:
             label_folder = plan.label_folder
             if cellpose is not None:
                 name = LABEL_FOLDER_NAME if config.outputs.label_images else TEMPORARY_LABEL_FOLDER_NAME
                 label_folder = run_folder / name
-                label_folder.mkdir()
+                try:
+                    label_folder.mkdir()
+                except OSError as error:
+                    message = (
+                        f"The folder for the label images, {label_folder}, could not be made "
+                        f"({error}), so the run stopped before any image was processed. Check that "
+                        "the output folder can be written to and has free space, then run again."
+                    )
+                    _write_log(run_folder, _hide_session_key(message, plan.omero["key"]))
+                    raise BatchError(message) from None
 
             thresholds = dict(config.resolved.thresholds) if config.resolved is not None else {}
             run_config = config.with_full_paths().with_resolved([image.listed for image in plan.images], thresholds)
@@ -2202,9 +2291,14 @@ def _run_batch(config, config_file, omero_conn, show, image_function, calibratio
             return _run(run, config_file, workers_reason, plan.workers_warning)
         except BaseException as error:
             ending = error
-            raise
+            if not isinstance(error, Exception) or isinstance(error, BatchError):
+                raise
+            stopped = _unexpected_problem(error, run_folder, run, plan.omero["key"])
         finally:
             record.complete(run, ending)
+        # raised here, outside the error handling, so that the original error
+        # and its text do not travel with it
+        raise stopped
     finally:
         if run is not None and run.omero_conn is not plan.omero_conn:
             # The main process rejoined the session after a drop. Its login
@@ -2222,6 +2316,27 @@ def _run_batch(config, config_file, omero_conn, show, image_function, calibratio
         plan.close()
 
 
+def _unexpected_problem(error, run_folder, run, key):
+    """RunStoppedError for an unexpected problem in a run, with any OMERO session key hidden.
+
+    When the problem came before the run was set up, it is written to run.log
+    here; otherwise `_run` has written it already.
+    """
+    reason = _one_line(error)
+    if key is not None:
+        reason = _hide_session_key(reason, key)
+    if run is None:
+        try:
+            details = "".join(traceback.format_exception(error))
+            if key is not None:
+                details = _hide_session_key(details, key)
+            _write_log(run_folder, f"{UNEXPECTED_PROBLEM_TEXT}: {reason}")
+            _write_log(run_folder, details)
+        except Exception:
+            pass
+    return RunStoppedError(run_folder, reason)
+
+
 def _run(run, config_file, workers_reason, workers_warning):
     """Carry out a run whose folder has been made; returns a BatchResult."""
     config = run.config
@@ -2233,6 +2348,8 @@ def _run(run, config_file, workers_reason, workers_warning):
         run.log(f"Run folder: {run.run_folder}")
         if config_file is not None:
             run.log(f"Config file: {config_file}")
+        else:
+            run.log("Config file: none (the settings were passed from Python)")
         if config.run.input.source == "omero":
             settings = config.run.input.omero
             where = (f"dataset {settings.dataset_id}" if settings.dataset_id is not None
@@ -2249,6 +2366,8 @@ def _run(run, config_file, workers_reason, workers_warning):
         run.log(f"Workers: {workers_reason}.")
         if workers_warning:
             run.log(f"Warning: {workers_warning}")
+        for channel in config.channels:
+            run.log(f"FISH channel {_channel_label(channel)}: {_threshold_setting(channel)}")
         for index, value in sorted(run.thresholds.items()):
             run.log(f"Channel {index}: calibrated threshold {_threshold_text(value)}, from the config (not calibrated again)")
         run.write_progress()
@@ -2263,10 +2382,17 @@ def _run(run, config_file, workers_reason, workers_warning):
     except BaseException as error:
         run.pool.stop_now()
         run.status = "stopped"
-        run.message = f"The run stopped because of an unexpected problem: {_one_line(error)}"
+        run.message = run.hide(f"{UNEXPECTED_PROBLEM_TEXT}: {_one_line(error)}")
         try:
-            run.log(run.message)
+            # not shown: the caller is told through the error raised
+            run.log(run.message, details=True)
             run.log("".join(traceback.format_exception(error)), details=True)
+            run.log(
+                f"Summary: {len(run.finished)} of {len(run.images)} image(s) finished before the "
+                f"run stopped; channels: {', '.join(f'{n} {name}' for name, n in run.channel_counts.items())}. "
+                f"Total time {_duration(time.monotonic() - run.start)}.",
+                details=True,
+            )
             run.write_progress()
         except Exception:
             pass
@@ -2277,7 +2403,24 @@ def _run(run, config_file, workers_reason, workers_warning):
         _restore_variables(old_variables)
         if old_handler is not None:
             signal.signal(signal.SIGINT, old_handler)
-    return BatchResult(run.run_folder, run.status, run.message)
+    return BatchResult(run.run_folder, run.status, run.hide(run.message))
+
+
+def _channel_label(channel):
+    return f"{channel.index} ({channel.name})" if channel.name else str(channel.index)
+
+
+def _threshold_setting(channel):
+    """The threshold setting of a channel, in words, for the log."""
+    threshold = channel.threshold
+    if threshold.mode == "manual":
+        return f"manual threshold {_threshold_text(threshold.value)}"
+    if threshold.mode == "auto":
+        text = "automatic threshold, found for each image"
+        if threshold.lower_limit is not None:
+            text += f", never below {_threshold_text(threshold.lower_limit)}"
+        return text
+    return f"calibrated threshold, from the images whose names contain `{threshold.calibration_filter}`"
 
 
 def _log_cellpose(run):

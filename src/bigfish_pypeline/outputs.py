@@ -25,6 +25,7 @@ from .config import load_config, save_config
 
 RESULTS_FOLDER_NAME = "bigfish_results"
 PER_IMAGE_FOLDER_NAME = "per_image"
+NPZ_FOLDER_NAME = "npz"
 RUN_CONFIG_NAME = "run_config.yaml"
 RUN_INFO_NAME = "run_info.yaml"
 CALIBRATION_NAME = "calibration.csv"
@@ -353,13 +354,23 @@ def per_image_path(run_folder, image, kind):
     return Path(run_folder) / PER_IMAGE_FOLDER_NAME / f"{image}_{kind}.csv"
 
 
-def write_image_tables(run_folder, image, images, spots=None, clusters=None, cells=None):
-    """Write one image's tables to the run folder's `per_image/` folder.
+def npz_path(run_folder, image, channel):
+    """Path of one image and channel's `.npz` file, e.g. `npz/<image>_ch2.npz`."""
+    return Path(run_folder) / NPZ_FOLDER_NAME / f"{image}_ch{channel}.npz"
+
+
+def write_image_tables(run_folder, image, images, spots=None, clusters=None, cells=None, arrays=None):
+    """Write one image's tables to the run folder's `per_image/` folder, and its
+    `.npz` files to `npz/`.
 
     Each table holds the rows of all the image's channels; a list of tables
     (one per channel) is joined first. `images` is required. A table given as
     None is not written: `cells` is None when the image has no cell results,
     `spots` and `clusters` are None for an image that failed as a whole.
+
+    arrays: None, or for each channel index the arrays of its `.npz` file
+        (name to array), written with numpy's `savez` under these names.
+        The `npz/` folder is made when there is a file to write.
 
     The files are written under temporary names and renamed once all are
     written, `_images.csv` last. If anything fails, no file of the image is
@@ -377,13 +388,26 @@ def write_image_tables(run_folder, image, images, spots=None, clusters=None, cel
         if isinstance(table, (list, tuple)):
             table = join_tables(table)
         final = per_image_path(run_folder, image, kind)
-        to_write.append((table, _temporary_path(final), final))
+        to_write.append((_csv_writer(table), _temporary_path(final), final))
+    # the .npz files go before `_images.csv`, which is renamed last
+    npz_files = [
+        (_npz_writer(named), _temporary_path(npz_path(run_folder, image, channel)),
+         npz_path(run_folder, image, channel))
+        for channel, named in (arrays or {}).items()
+    ]
+    to_write[-1:-1] = npz_files
 
     renamed = []
+    current = None
     try:
-        for table, temporary, _ in to_write:
-            _write_csv(table, temporary)
+        if npz_files:
+            current = npz_files[0][2]
+            current.parent.mkdir(parents=True, exist_ok=True)
+        for write, temporary, final in to_write:
+            current = final
+            write(temporary)
         for _, temporary, final in to_write:
+            current = final
             os.replace(temporary, final)
             renamed.append(final)
     except BaseException as error:
@@ -392,12 +416,30 @@ def write_image_tables(run_folder, image, images, spots=None, clusters=None, cel
         for final in renamed:
             _remove_quietly(final)
         if isinstance(error, OSError):
+            if current is not None and current.suffix == ".npz":
+                raise OutputError(
+                    f"The .npz files of image `{image}` could not be written to "
+                    f"{Path(run_folder) / NPZ_FOLDER_NAME}: {error}"
+                ) from error
             raise OutputError(
                 f"The tables of image `{image}` could not be written to "
                 f"{Path(run_folder) / PER_IMAGE_FOLDER_NAME}: {error}"
             ) from error
         raise
     return [final for _, _, final in to_write]
+
+
+def remove_image_files(run_folder, image, channels=()):
+    """Remove every file of an image from `per_image/` and `npz/`, finished or not,
+    temporary names included.
+
+    channels: the channel indices of the run, whose `.npz` files are removed.
+    """
+    paths = [per_image_path(run_folder, image, kind) for kind in TABLE_KINDS]
+    paths += [npz_path(run_folder, image, channel) for channel in channels]
+    for path in paths:
+        _remove_quietly(path)
+        _remove_quietly(_temporary_path(path))
 
 
 def image_is_complete(run_folder, image):
@@ -797,6 +839,18 @@ def _in_column_order(table, columns, n, what):
 def _temporary_path(path):
     path = Path(path)
     return path.with_name(path.name + TEMPORARY_SUFFIX)
+
+
+def _csv_writer(table):
+    return lambda path: _write_csv(table, path)
+
+
+def _npz_writer(named):
+    def write(path):
+        # written through an open file, so that numpy does not add `.npz` to the name
+        with open(path, "wb") as npz_file:
+            np.savez(npz_file, **named)
+    return write
 
 
 def _write_csv(table, path):

@@ -827,3 +827,37 @@ def test_kit_with_the_real_model(kit, tmp_path):
     assert "Cellpose runs on " in text
     assert f"{CROP_NAME}: segmented with Cellpose in " in text
     assert not [warning for warning in caught if "Sparse invariant checks" in str(warning.message)]
+
+
+# ---------------------------------------------------------------------------
+# Label folder that cannot be made
+# ---------------------------------------------------------------------------
+
+
+def test_label_folder_that_cannot_be_made(tmp_path, monkeypatch, capsys):
+    # a folder inside a folder that does not exist cannot be made
+    monkeypatch.setattr(batch, "LABEL_FOLDER_NAME", "missing/labels")
+    folder = tiny_images(tmp_path / "input", ["a"])
+    config = with_cellpose(local_config(folder, tmp_path / "out"))
+    with pytest.raises(batch.BatchError, match="The folder for the label images") as raised:
+        run_cellpose(config, StandInModel(), image_function=fake_process_image)
+    assert raised.value.__context__ is None or raised.value.__suppress_context__
+    [run_folder] = (tmp_path / "out").iterdir()
+    assert str(run_folder / "missing" / "labels") in str(raised.value)
+    text = log_text(run_folder)
+    assert "The folder for the label images" in text
+    assert "so the run stopped before any image was processed" in text
+    info = run_info(run_folder, "stopped")
+    assert info["message"] == str(raised.value)
+
+    # from the command: a plain message, no Python error report
+    settings = tmp_path / "settings.yaml"
+    save_config(with_cellpose(local_config(folder, tmp_path / "again")), settings)
+    monkeypatch.setattr(cli, "run_batch", lambda config, **arguments: run_cellpose(
+        config, StandInModel(), image_function=fake_process_image, **arguments))
+    assert cli.main(["batch", str(settings)]) == cli.EXIT_PROBLEM
+    captured = capsys.readouterr()
+    assert "Problem: The folder for the label images" in captured.err
+    assert "Traceback" not in captured.out + captured.err
+    [run_folder] = (tmp_path / "again").iterdir()
+    assert sorted(path.name for path in run_folder.iterdir()) == ["per_image", "run.log", "run_info.yaml"]

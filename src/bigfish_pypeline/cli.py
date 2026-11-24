@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from bigfish_pypeline import __version__, io, outputs
-from bigfish_pypeline.batch import BatchError, plan_run, run_batch
+from bigfish_pypeline.batch import BatchError, RunStoppedError, plan_run, run_batch
 from bigfish_pypeline.config import ConfigError, apply_overrides, load_config
 
 PROGRAM = "bigfish-pypeline"
@@ -304,6 +304,10 @@ def main(argv=None):
             return COMMANDS[arguments.command](arguments)
     except (ConfigError, BatchError) as error:
         _complain(error)
+        return EXIT_PROBLEM
+    except RunStoppedError as error:
+        print(str(error), file=sys.stderr, flush=True)
+        _say(f"Run folder: {error.run_folder}")
         return EXIT_PROBLEM
     except KeyboardInterrupt:
         print("Cancelled.", file=sys.stderr, flush=True)
