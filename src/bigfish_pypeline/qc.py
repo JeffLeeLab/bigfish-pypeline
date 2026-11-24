@@ -13,8 +13,11 @@ import textwrap
 from pathlib import Path
 
 import numpy as np
+import tifffile
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.collections import EllipseCollection, PatchCollection
 from matplotlib.figure import Figure
+from matplotlib.patches import RegularPolygon
 from matplotlib.ticker import MaxNLocator
 
 QC_FOLDER_NAME = "qc"
@@ -54,6 +57,26 @@ CALIBRATION_PANEL_HEIGHT = 3.8
 # Room, in inches, for the legend beside each panel.
 CALIBRATION_LEGEND_WIDTH = 3.2
 CALIBRATION_LEFT_OUT_COLOUR = "#7f7f7f"
+
+# Detection plot and reference spot
+DETECTION_SUFFIX = "_detection"
+REFERENCE_SPOT_SUFFIX = "_referencespot"
+REFERENCE_SPOT_EXTENSION = ".tif"
+# Width of the detection plot in inches, as in v1 (20 inches for two pictures).
+# Its height follows the shape of the image, and is never more than v1's 16 inches.
+DETECTION_FIGURE_WIDTH = 20
+DETECTION_MAX_HEIGHT = 16
+# Height of the figure outside the pictures (title and picture names), in inches.
+DETECTION_FIGURE_MARGIN = 1.2
+DETECTION_COLOUR_MAP = "viridis"
+SPOT_COLOUR = "orange"
+SPOT_LINE_WIDTH = 1
+CLUSTER_COLOUR = "cyan"
+CLUSTER_LINE_WIDTH = 2
+# Clusters are drawn as pentagons.
+CLUSTER_SHAPE_SIDES = 5
+# Pixels brighter than this percentile are all shown in the brightest colour.
+DETECTION_CONTRAST_PERCENTILE = 99.9
 
 
 # Cellpose QC figure
@@ -524,4 +547,252 @@ def write_calibration_plot(run_folder, calibration, thresholds, lower_limits=Non
         return None
     path = calibration_path(run_folder)
     _save_figure(figure, path)
+    return path
+
+
+# Detection plot
+
+def detection_path(run_folder, image_name, channel):
+    """Path of an image's detection plot: `qc/<image>_ch<index>_detection.png` in the run folder."""
+    return (
+        Path(run_folder) / QC_FOLDER_NAME
+        / f"{image_name}_ch{channel}{DETECTION_SUFFIX}{QC_EXTENSION}"
+    )
+
+
+def project_for_detection(channel_image):
+    """
+    The 2D picture a detection plot is drawn on: the maximum projection of a
+    3D channel (z, y, x), or the channel itself when it is 2D (y, x).
+    """
+    channel_image = np.asarray(channel_image)
+    if channel_image.ndim == 2:
+        return channel_image
+    if channel_image.ndim == 3:
+        return channel_image.max(axis=0)
+    raise ValueError(
+        f"The channel must have 2 or 3 dimensions (y, x or z, y, x); got {channel_image.ndim}."
+    )
+
+
+def detection_title(image_name, channel, n_spots, n_clusters=None, channel_name=None):
+    """
+    The title of the detection plot, for example
+    "slide 3 | channel 2 (jim-exon) | 692 spots | 6 clusters".
+
+    channel: the channel's number.
+    channel_name: the channel's name, shown after the number when given.
+    n_spots: number of spots drawn. With none, the title ends with
+        "no spots found" and says nothing about clusters.
+    n_clusters: number of clusters drawn, or None when cluster detection is off.
+
+    A title longer than TITLE_LINE_WIDTH characters is continued on a new line.
+    """
+    channel_text = f"channel {channel}"
+    if channel_name:
+        channel_text += f" ({channel_name})"
+    items = [str(image_name), channel_text]
+    if n_spots == 0:
+        items.append("no spots found")
+    else:
+        items.append(f"{n_spots} spot" if n_spots == 1 else f"{n_spots} spots")
+        if n_clusters is not None:
+            items.append(f"{n_clusters} cluster" if n_clusters == 1 else f"{n_clusters} clusters")
+    return _wrap_items(items, TITLE_LINE_WIDTH)
+
+
+def _stretch_for_detection(image):
+    """
+    The image as 8-bit levels (y, x) for display, from 0 to 255: the lowest
+    value is 0 and the DETECTION_CONTRAST_PERCENTILE-th percentile and above
+    is 255. Only the picture changes; the image given is left as it is.
+    """
+    image = np.asarray(image, dtype=np.float32)
+    low = float(image.min())
+    high = float(np.percentile(image, DETECTION_CONTRAST_PERCENTILE))
+    if high <= low:
+        high = float(image.max())
+    if high <= low:
+        return np.zeros(image.shape, dtype=np.uint8)
+    return (np.clip((image - low) / (high - low), 0, 1) * 255).astype(np.uint8)
+
+
+def _show_levels(axes, levels):
+    """
+    Show 8-bit levels in matplotlib's default colours, as big-fish draws the
+    picture. Smoothing the picture to the size it is shown at is done on the
+    8-bit levels, which takes far less memory than doing it on colours.
+    """
+    axes.imshow(
+        levels, cmap=DETECTION_COLOUR_MAP, vmin=0, vmax=255, interpolation_stage="data"
+    )
+
+
+def _yx_positions(positions, name):
+    """The y and x columns (the last two) of 2D or 3D positions, as an array of floats (n, 2)."""
+    positions = np.asarray(positions, dtype=float)
+    if positions.size == 0:
+        return np.zeros((0, 2))
+    if positions.ndim != 2 or positions.shape[1] not in (2, 3):
+        raise ValueError(
+            f"{name} needs one row for each position with two columns (y, x) or "
+            f"three columns (z, y, x); got shape {positions.shape}."
+        )
+    return positions[:, -2:]
+
+
+def draw_detection_plot(image, spots, image_name, channel, spot_radius_px, clusters=None,
+                        cluster_radius_px=None, channel_name=None):
+    """
+    Draw the detection plot of one image and channel and return it, without
+    showing or saving it.
+
+    image: the 2D picture to draw on (y, x): the maximum projection of a 3D
+        channel (see `project_for_detection`), or the channel itself when it is 2D.
+    spots: final spot positions in pixels, one row for each spot, with two
+        columns (y, x) or three (z, y, x). The last two columns are used.
+    image_name, channel, channel_name: the image's name and the channel's
+        number and name; they make the title (see `detection_title`).
+    spot_radius_px: radius of the circle drawn for each spot, in pixels: one
+        number, or the (z, y, x) or (y, x) values from `get_spot_radius_px`,
+        of which the last is used.
+    clusters: cluster positions in pixels, in the same form as `spots`, or
+        None when cluster detection is off. A cluster is drawn as a filled
+        cyan shape.
+    cluster_radius_px: radius of the cluster shape in pixels (the cluster
+        radius in nm divided by the pixel size); needed when clusters are given.
+
+    The picture on the left is the image with its contrast stretched for
+    display (as big-fish does for `plot_detection`); the picture on the right
+    has the detections on it, as orange circles for the spots and cyan shapes
+    for the clusters. Without any spot only the image is drawn, and the title
+    says that no spots were found.
+
+    Returns a matplotlib `Figure` that is not tied to `matplotlib.pyplot`.
+    """
+    image = np.asarray(image)
+    if image.ndim != 2:
+        raise ValueError(
+            f"The detection plot is drawn on a 2D image (y, x); got {image.ndim} dimensions. "
+            "Use project_for_detection to make a 3D channel into one."
+        )
+    spot_positions = _yx_positions(spots, "spots")
+    cluster_positions = None if clusters is None else _yx_positions(clusters, "clusters")
+    if cluster_positions is not None and len(cluster_positions) and cluster_radius_px is None:
+        raise ValueError("cluster_radius_px is needed to draw clusters.")
+    n_spots = len(spot_positions)
+    n_clusters = None if cluster_positions is None else len(cluster_positions)
+
+    shown = _stretch_for_detection(image)
+    # Each picture is half the figure's width, or all of it when only the image is drawn.
+    figure_width = DETECTION_FIGURE_WIDTH if n_spots else DETECTION_FIGURE_WIDTH / 2
+    picture_width = DETECTION_FIGURE_WIDTH / 2
+    figure_height = float(np.clip(
+        picture_width * image.shape[0] / image.shape[1] + DETECTION_FIGURE_MARGIN,
+        3, DETECTION_MAX_HEIGHT,
+    ))
+    figure = Figure(figsize=(figure_width, figure_height), dpi=FIGURE_DPI, layout="constrained")
+    FigureCanvasAgg(figure)
+    figure.suptitle(
+        detection_title(image_name, channel, n_spots, n_clusters, channel_name),
+        fontsize=11, fontweight="bold",
+    )
+
+    if n_spots == 0:
+        axes = figure.add_subplot()
+        _show_levels(axes, shown)
+        axes.set_title("Image, contrast stretched for display", fontsize=10)
+        axes.axis("off")
+        return figure
+
+    left, right = figure.subplots(1, 2, sharex=True, sharey=True)
+    _show_levels(left, shown)
+    left.set_title("Image, contrast stretched for display", fontsize=10)
+    _show_levels(right, shown)
+    legend = "orange circles: spots"
+    if n_clusters is not None:
+        legend += "; cyan shapes: clusters"
+    right.set_title(f"Detection results ({legend})", fontsize=10)
+
+    # One collection for all the circles keeps a picture with tens of thousands of spots quick.
+    radius = float(np.ravel(spot_radius_px)[-1])
+    diameters = np.full(n_spots, 2 * radius)
+    circles = EllipseCollection(
+        diameters, diameters, np.zeros(n_spots), units="xy",
+        offsets=spot_positions[:, ::-1], offset_transform=right.transData,
+        facecolors="none", edgecolors=SPOT_COLOUR, linewidths=SPOT_LINE_WIDTH,
+    )
+    right.add_collection(circles, autolim=False)
+    if n_clusters:
+        cluster_radius = float(cluster_radius_px)
+        shapes = PatchCollection(
+            [
+                RegularPolygon((x, y), CLUSTER_SHAPE_SIDES, radius=cluster_radius)
+                for y, x in cluster_positions
+            ],
+            facecolors=CLUSTER_COLOUR, edgecolors=CLUSTER_COLOUR, linewidths=CLUSTER_LINE_WIDTH,
+        )
+        right.add_collection(shapes, autolim=False)
+    left.axis("off")
+    right.axis("off")
+    return figure
+
+
+def write_detection_plot(run_folder, image_name, image, spots, channel, spot_radius_px,
+                         clusters=None, cluster_radius_px=None, channel_name=None):
+    """
+    Write an image's detection plot as `qc/<image>_ch<index>_detection.png` in the run folder.
+
+    The other arguments are those of `draw_detection_plot`, with the run
+    folder and the image's name first. The figure is first written under a
+    temporary name and then renamed. The `qc` folder is made when it does not
+    exist. Works from any thread and needs no screen.
+
+    Returns the path of the figure.
+    """
+    figure = draw_detection_plot(
+        image, spots, image_name, channel, spot_radius_px, clusters, cluster_radius_px,
+        channel_name,
+    )
+    path = detection_path(run_folder, image_name, channel)
+    _save_figure(figure, path)
+    return path
+
+
+# Reference spot
+
+def reference_spot_path(run_folder, image_name, channel):
+    """Path of an image's reference spot: `qc/<image>_ch<index>_referencespot.tif` in the run folder."""
+    return (
+        Path(run_folder) / QC_FOLDER_NAME
+        / f"{image_name}_ch{channel}{REFERENCE_SPOT_SUFFIX}{REFERENCE_SPOT_EXTENSION}"
+    )
+
+
+def write_reference_spot(run_folder, image_name, channel, reference_spot):
+    """
+    Write an image's reference spot as `qc/<image>_ch<index>_referencespot.tif` in the run folder.
+
+    reference_spot: the "reference_spot" array that `decompose_dense_regions`
+        returns, with its values and data type kept. None when
+        decomposition is off or was skipped: nothing is written then.
+
+    The file is first written under a temporary name and then renamed. The
+    `qc` folder is made when it does not exist. A file from an earlier run is
+    left as it is when nothing is written.
+
+    Returns the path of the file, or None when nothing was written.
+    """
+    if reference_spot is None:
+        return None
+    path = reference_spot_path(run_folder, image_name, channel)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = temporary_qc_path(path)
+    try:
+        with open(temporary, "wb") as file:
+            tifffile.imwrite(file, np.asarray(reference_spot))
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
     return path
