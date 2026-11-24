@@ -1347,3 +1347,25 @@ Choices the spec does not settle:
 - The vertical axis keeps big-fish's label "Number of mRNAs detected (log scale)" and its numbers, which are natural logarithms of the counts, as in v1.
 - The elbow plot is 6.5 × 5 inches at 150 dots per inch.
 
+### 3.4 Detection plot and reference spot (24 Nov 2026)
+
+Drawing and writing functions in `qc.py`; the batch runner calls them from task 3.6 on.
+
+- **Detection plot**, `qc/<image>_ch<index>_detection.png`: `write_detection_plot(run_folder, image_name, image, spots, channel, spot_radius_px, clusters=None, cluster_radius_px=None, channel_name=None)`, with `draw_detection_plot` for the figure alone, `detection_path`, and `project_for_detection` for the maximum projection of a 3D channel.
+  - The v1 picture: the image on the left and the same image with the detections on the right, in matplotlib's default colours, with orange circles of the spot radius for the spots and filled cyan pentagons of the cluster radius for the clusters. The contrast runs from the lowest value to the 99.9th percentile, as big-fish's `contrast=True` does.
+  - Title, e.g. "sypN_DAPI_Phal_jim-exon_crop | channel 2 (jim-exon) | 692 spots | 6 clusters". With no spots the image alone is drawn and the title ends "no spots found".
+  - Positions are given in pixels with two columns (y, x) or three (z, y, x). `clusters=None` means cluster detection is off; an empty array means it is on and found none.
+- **Reference spot**, `qc/<image>_ch<index>_referencespot.tif`: `write_reference_spot(run_folder, image_name, channel, reference_spot)` and `reference_spot_path`. The array is written as it is, with its values and data type. Without a reference spot (decomposition off or skipped) nothing is written.
+- Both are written under a temporary name and renamed.
+- Checks: 50 new tests (101 pass in `tests/test_qc.py`). On the crop with the v1 reference settings, the reference spot file equals the v1 reference file in values, shape and data type.
+- On the full-size image (36,867 spots, 265 clusters), drawing and saving the plot took 1.0 to 1.2 s and added about 0.1 GB to the process's peak. All circles are drawn as one object; the image is shown in 8-bit, which took the peak of the drawing from about 335 MB to about 73 MB.
+- Looked at by the orchestrator: the crop's plot with clusters. Samples in `~/bigfish-testdata/phase3/samples_3.4/`.
+
+Where the picture differs from v1's:
+
+- The figure's height follows the shape of the image (v1: always 20 × 16 inches, with white bands above and below), and the file is 3,000 px wide (v1: 2,000 px).
+- The figure has a title and a name above each picture.
+- The file is named `_detection.png` (v1: `_finaldetection.png`), as in spec 8.3.
+
+For 3.6: the runner chooses the image to draw on (v1 used the channel after background subtraction) and passes the final spot positions (subpixel when on) and the cluster positions without their other columns; the cluster radius is passed in pixels.
+
