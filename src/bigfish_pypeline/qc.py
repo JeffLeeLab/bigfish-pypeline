@@ -72,6 +72,8 @@ REFERENCE_SPOT_EXTENSION = ".tif"
 # Width of the detection plot in inches, as in v1 (20 inches for two pictures).
 # Its height follows the shape of the image, and is never more than v1's 16 inches.
 DETECTION_FIGURE_WIDTH = 20
+# Dots per inch of the detection plot: the file is 2,000 pixels wide, as in v1.
+DETECTION_FIGURE_DPI = 100
 DETECTION_MAX_HEIGHT = 16
 # Height of the figure outside the pictures (title and picture names), in inches.
 DETECTION_FIGURE_MARGIN = 1.2
@@ -91,6 +93,8 @@ HTML_EXTENSION = ".html"
 # Above this number of cells the PNG leaves the text on the cells out.
 FINAL_MAX_LABELLED_CELLS = 300
 FINAL_FIGURE_WIDTH = 16
+# Dots per inch of the final QC figure: the file is 2,000 pixels wide.
+FINAL_FIGURE_DPI = 125
 # Height of the figure outside the picture (title and legend), in inches.
 FINAL_FIGURE_MARGIN = 1.9
 FINAL_MAX_HEIGHT = 16
@@ -126,17 +130,20 @@ def temporary_qc_path(path):
     return path.with_name(path.name + ".tmp")
 
 
-def _save_figure(figure, path):
+def _save_figure(figure, path, dpi=FIGURE_DPI):
     """
     Write a figure as a PNG file under a temporary name, then rename it, so a
     half-written figure never has the final name. The folder is made when it
     does not exist.
+
+    dpi: dots per inch of the file; with the figure's width in inches it
+        sets the width of the picture in pixels.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = temporary_qc_path(path)
     try:
-        figure.savefig(temporary, format="png", dpi=FIGURE_DPI)
+        figure.savefig(temporary, format="png", dpi=dpi)
         os.replace(temporary, path)
     finally:
         if temporary.exists():
@@ -725,7 +732,9 @@ def draw_detection_plot(image, spots, image_name, channel, spot_radius_px, clust
         picture_width * image.shape[0] / image.shape[1] + DETECTION_FIGURE_MARGIN,
         3, DETECTION_MAX_HEIGHT,
     ))
-    figure = Figure(figsize=(figure_width, figure_height), dpi=FIGURE_DPI, layout="constrained")
+    figure = Figure(
+        figsize=(figure_width, figure_height), dpi=DETECTION_FIGURE_DPI, layout="constrained"
+    )
     FigureCanvasAgg(figure)
     figure.suptitle(
         detection_title(image_name, channel, n_spots, n_clusters, channel_name),
@@ -789,7 +798,7 @@ def write_detection_plot(run_folder, image_name, image, spots, channel, spot_rad
         channel_name,
     )
     path = detection_path(run_folder, image_name, channel)
-    _save_figure(figure, path)
+    _save_figure(figure, path, DETECTION_FIGURE_DPI)
     return path
 
 
@@ -853,6 +862,22 @@ def final_html_path(run_folder, image_name, channel):
 def plotly_script_path(run_folder):
     """Path of the copy of plotly's script that the pages of a run share: `qc/plotly.min.js`."""
     return Path(run_folder) / QC_FOLDER_NAME / PLOTLY_SCRIPT_NAME
+
+
+def channel_qc_paths(run_folder, image_name, channel):
+    """
+    Paths of every QC file that one image and channel can have in the run
+    folder: the elbow plot, the detection plot, the reference spot and both
+    forms of the final QC. The Cellpose QC figure (one per image) is not
+    among them.
+    """
+    return [
+        elbow_path(run_folder, image_name, channel),
+        detection_path(run_folder, image_name, channel),
+        reference_spot_path(run_folder, image_name, channel),
+        final_png_path(run_folder, image_name, channel),
+        final_html_path(run_folder, image_name, channel),
+    ]
 
 
 def final_title(image_name, channel, n_spots, n_clusters=None, n_cells=None,
@@ -1096,7 +1121,7 @@ def draw_final_qc(picture, spots, clusters, cells, labels, image_name, channel,
         FINAL_FIGURE_WIDTH * height / width + FINAL_FIGURE_MARGIN, 3, FINAL_MAX_HEIGHT
     ))
     figure = Figure(
-        figsize=(FINAL_FIGURE_WIDTH, figure_height), dpi=FIGURE_DPI, layout="constrained"
+        figsize=(FINAL_FIGURE_WIDTH, figure_height), dpi=FINAL_FIGURE_DPI, layout="constrained"
     )
     FigureCanvasAgg(figure)
     axes = figure.add_subplot()
@@ -1205,7 +1230,7 @@ def write_final_qc(run_folder, image_name, picture, spots, clusters, cells, labe
         picture, spots, clusters, cells, labels, image_name, channel, channel_name
     )
     path = final_png_path(run_folder, image_name, channel)
-    _save_figure(figure, path)
+    _save_figure(figure, path, FINAL_FIGURE_DPI)
     return path
 
 
@@ -1478,7 +1503,7 @@ def _write_plotly_script(run_folder):
 
 
 def write_final_html(run_folder, image_name, picture, spots, clusters, cells, labels, channel,
-                     channel_name=None, plotly_script=PLOTLY_SHARED):
+                     channel_name=None, plotly_script=PLOTLY_EMBEDDED):
     """
     Write an image's interactive final QC as `qc/<image>_ch<index>_final.html`
     in the run folder.
@@ -1487,11 +1512,11 @@ def write_final_html(run_folder, image_name, picture, spots, clusters, cells, la
     and the image's name first.
     plotly_script: how the page gets plotly's script, so that it opens without
         an internet connection.
-        "shared" (the default): one copy, `qc/plotly.min.js` (about 4.5 MB),
-        is used by every page of the `qc` folder. Pages are small, and must
-        stay in the folder with the script.
-        "embedded": the script is inside the page, which is then about 4.5 MB
-        larger and can be sent on its own.
+        "embedded" (the default): the script is inside the page, which can be
+        sent on its own and is about 4.8 MB larger for it.
+        "shared": one copy, `qc/plotly.min.js` (about 4.8 MB), is used by
+        every page of the `qc` folder. Pages are small, and must stay in the
+        folder with the script.
     The page is first written under a temporary name and then renamed; the
     shared script too, under a name that is the writing process's own. The
     `qc` folder is made when it does not exist. Works from any thread and

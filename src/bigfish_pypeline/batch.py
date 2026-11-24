@@ -34,7 +34,7 @@ from bigfish_pypeline import outputs
 from bigfish_pypeline import segmentation
 from bigfish_pypeline.cells import assign_cells
 from bigfish_pypeline.clusters import detect_clusters
-from bigfish_pypeline.decomposition import decompose_dense_regions, get_seed
+from bigfish_pypeline.decomposition import NO_SPOT_MODEL_WARNING, decompose_dense_regions, get_seed
 from bigfish_pypeline.detection import (
     calibrate_threshold,
     detect_spots,
@@ -51,6 +51,16 @@ from bigfish_pypeline.subpixel import fit_subpixel
 PASS_THROUGH = (io.OmeroSessionEnded, KeyboardInterrupt, MemoryError)
 
 NO_AUTO_THRESHOLD_REASON = "no automatic threshold (too few candidate spots)"
+
+# The QC files of an image are drawn in a folder of their own,
+# `qc_temporary/<image>/qc/` in the run folder, and moved into `qc/` just
+# before the image's tables are written.
+QC_TEMPORARY_FOLDER_NAME = "qc_temporary"
+# How each interactive final QC page gets plotly's script (see
+# qc.write_final_html): "embedded" puts the script inside each page, so that
+# a page opens on its own, without an internet connection.
+FINAL_HTML_PLOTLY_SCRIPT = "embedded"
+NO_ELBOW_PLOT_WARNING = "no elbow plot: too few candidate spots in this channel to draw one"
 
 # Start of the FutureWarning that scikit-image gives each time big-fish's
 # decomposition reads `mean_intensity`; it says nothing the user can act on.
@@ -102,6 +112,13 @@ def run_spot_columns(config):
 def run_has_clusters(config):
     """True when any channel has cluster detection switched on."""
     return any(channel.clusters.enabled for channel in config.channels)
+
+
+def channel_qc_wanted(config):
+    """True when any QC file of a channel is switched on in `outputs.qc`: the
+    elbow plot, the detection plot, the reference spot or the final QC."""
+    settings = config.outputs.qc
+    return settings.elbow_plot or settings.detection or settings.reference_spot or settings.final != "none"
 
 
 def close_omero_connection():
@@ -263,7 +280,10 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
     Returns a dict with the status ("done" or "skipped"), the reason, the
     counts, the warnings, and the channel's spots, clusters and cells tables.
     With `outputs.npz` on, a channel that is done also has "arrays": the
-    arrays of its `.npz` file, by name.
+    arrays of its `.npz` file, by name. With a QC file of the channel
+    switched on, a channel that is done also has "qc": what the QC files are
+    drawn from (see _write_channel_qc). The pictures in it are 2D maximum
+    projections, made once, so that no second copy of the 3D channel is kept.
     """
     ndim = get_ndim(config)
     voxel_size = get_voxel_size(config)
@@ -272,11 +292,16 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
     microscope = config.microscope
     index = channel.index
     warnings = []
+    qc_settings = config.outputs.qc
+    material = {} if channel_qc_wanted(config) else None
 
     threshold, lower_limit = _threshold_settings(config, channel)
 
     # step 1: read the channel
     image = read_channel(index)
+    if material is not None and qc_settings.final != "none":
+        # the final QC is drawn on the channel as read
+        material["picture"] = _projection(image)
 
     # step 2: spot radius
     spot_radius_px = get_spot_radius_px(
@@ -303,7 +328,7 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
         threshold_mode=channel.threshold.mode,
         threshold=threshold,
         lower_limit=lower_limit,
-        elbow=False,
+        elbow=material is not None and qc_settings.elbow_plot,
     )
     spots = detected["spots"]
     threshold = detected["threshold"]
@@ -311,6 +336,12 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
     found["n_spots_detected"] = len(spots)
     if detected["warning"]:
         warnings.append(detected["warning"])
+    if material is not None and qc_settings.elbow_plot:
+        material["elbow"] = {
+            key: detected[key]
+            for key in ("elbow_thresholds", "elbow_counts", "threshold", "auto_threshold")
+        }
+    del detected
 
     result = {
         "threshold": threshold,
@@ -341,6 +372,9 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
         spots_post_decomposition = decomposed["spots_post_decomposition"]
         if decomposed["warning"]:
             warnings.append(decomposed["warning"])
+        if material is not None and NO_SPOT_MODEL_WARNING not in (decomposed["warning"] or ""):
+            # None when decomposition was skipped for want of spots or of a reference spot
+            material["reference_spot"] = decomposed["reference_spot"]
         del decomposed
     else:
         spots_post_decomposition = spots
@@ -371,6 +405,9 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
             snr=channel.measurements.snr,
             intensity=channel.measurements.intensity,
         )
+    if material is not None and qc_settings.detection:
+        # the detection plot is drawn on the channel after background subtraction, as in v1
+        material["detection_picture"] = _projection(rna)
     del rna, rna_log
 
     # step 10: cell assignment, at the pixel positions
@@ -410,11 +447,158 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
         else:
             final_spots = spots_subpixel if spots_subpixel is not None else spots_post_decomposition
             result["arrays"] = {"spots": final_spots}
+    if material is not None:
+        material["spots"] = spots_subpixel if spots_subpixel is not None else spots_post_decomposition
+        material["clusters"] = None if clusters is None else clusters[:, :ndim]
+        material["spot_radius_px"] = spot_radius_px
+        material["cluster_radius_px"] = (
+            channel.clusters.radius_nm / voxel_size_yx if channel.clusters.enabled else None
+        )
+        result["qc"] = material
     result["status"] = "done"
     result["reason"] = ""
     result["n_spots"] = len(spots_post_decomposition)
     result["n_clusters"] = 0 if clusters is None else len(clusters)
     return result
+
+
+# ---------------------------------------------------------------------------
+# QC files of one channel
+# ---------------------------------------------------------------------------
+
+
+def _projection(image):
+    """Maximum projection of a 3D channel (z, y, x); a 2D channel (y, x) as it is."""
+    return image.max(axis=0) if image.ndim == 3 else image
+
+
+def _qc_problem(name, error):
+    """Warning for a QC file that could not be written, naming the file."""
+    return f"the QC file {name} could not be written: {_one_line(error)}"
+
+
+def _write_channel_qc(config, channel, image_name, staging, result, labels, staged):
+    """
+    Draw the QC files of one channel that is done, as `outputs.qc` asks, into
+    `staging`: a folder that stands in for the run folder until the image's
+    tables are written (see _move_qc_files).
+
+    result: what _process_channel returned; its "qc" entry holds what the
+        files are drawn from, and its tables are used for the final QC.
+    labels: the label image (y, x) of the cells, or None.
+    staged: a list to which (channel index, path) of each file written is added.
+
+    Each file is written inside its own error handling: a file that cannot
+    be written gives a warning naming it, and never fails the channel. Each
+    figure is let go as soon as it is saved.
+
+    Returns (warnings, details): warnings for the channel, and the full
+    details of each problem for the log.
+    """
+    settings = config.outputs.qc
+    material = result["qc"]
+    index, name = channel.index, channel.name
+    warnings, details = [], []
+    try:
+        from bigfish_pypeline import qc
+    except PASS_THROUGH:
+        raise
+    except Exception as error:
+        return ([f"the QC files of this channel could not be written: {_one_line(error)}"],
+                [traceback.format_exc().rstrip()])
+
+    def attempt(path, write):
+        try:
+            written = write()
+        except PASS_THROUGH:
+            raise
+        except Exception as error:
+            warnings.append(_qc_problem(path.name, error))
+            details.append(traceback.format_exc().rstrip())
+        else:
+            if written is not None:
+                staged.append((index, Path(written)))
+        finally:
+            gc.collect()
+
+    if settings.elbow_plot:
+        # the lower limit has no effect on a manual threshold
+        lower_limit = channel.threshold.lower_limit if channel.threshold.mode != "manual" else None
+
+        def write_elbow():
+            path = qc.write_elbow_plot(
+                staging, image_name, material.pop("elbow"), index, channel.threshold.mode,
+                lower_limit=lower_limit, channel_name=name,
+            )
+            if path is None:
+                warnings.append(NO_ELBOW_PLOT_WARNING)
+            return path
+
+        attempt(qc.elbow_path(staging, image_name, index), write_elbow)
+
+    if settings.detection:
+        attempt(qc.detection_path(staging, image_name, index), lambda: qc.write_detection_plot(
+            staging, image_name, material.pop("detection_picture"), material["spots"], index,
+            material["spot_radius_px"], clusters=material["clusters"],
+            cluster_radius_px=material["cluster_radius_px"], channel_name=name,
+        ))
+
+    if settings.reference_spot and material.get("reference_spot") is not None:
+        attempt(qc.reference_spot_path(staging, image_name, index), lambda: qc.write_reference_spot(
+            staging, image_name, index, material.pop("reference_spot"),
+        ))
+
+    clusters = result["clusters"] if channel.clusters.enabled else None
+    if settings.final == "png":
+        attempt(qc.final_png_path(staging, image_name, index), lambda: qc.write_final_qc(
+            staging, image_name, material.pop("picture"), result["spots"], clusters,
+            result["cells"], labels, index, channel_name=name,
+        ))
+    elif settings.final == "html":
+        attempt(qc.final_html_path(staging, image_name, index), lambda: qc.write_final_html(
+            staging, image_name, material.pop("picture"), result["spots"], clusters,
+            result["cells"], labels, index, channel_name=name,
+            plotly_script=FINAL_HTML_PLOTLY_SCRIPT,
+        ))
+    return warnings, details
+
+
+def _move_qc_files(staged, run_folder):
+    """
+    Move the QC files of an image, drawn in the folder that stands in for the
+    run folder, into the run folder's `qc/` folder.
+
+    staged: (channel index, path) of each file drawn.
+
+    Returns (moved, problems): the paths of the files now in `qc/`, and
+    (channel index, file name, error) for each file that could not be moved.
+    """
+    qc_folder = Path(run_folder) / outputs.QC_FOLDER_NAME
+    moved, problems = [], []
+    try:
+        qc_folder.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # each file below then gives its own warning
+        pass
+
+    for channel, path in staged:
+        final = qc_folder / path.name
+        try:
+            os.replace(path, final)
+            moved.append(final)
+        except OSError as error:
+            problems.append((channel, final.name, error))
+    return moved, problems
+
+
+def _remove_staging(staging):
+    """Remove an image's folder of QC files being drawn, and the folder holding
+    it when no other image's folder is left in it."""
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        staging.parent.rmdir()
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -436,8 +620,9 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
         in its `resolved` block.
     image_name: the image's output name, used in the tables and file names.
     image_source: the file path for local input, or the image ID for OMERO.
-    run_folder: the run folder; the tables go to its `per_image/` folder and,
-        with `outputs.npz` on, the `.npz` files to its `npz/` folder.
+    run_folder: the run folder; the tables go to its `per_image/` folder,
+        the `.npz` files (with `outputs.npz` on) to its `npz/` folder, and
+        the QC files switched on in `outputs.qc` to its `qc/` folder.
     label_folder: folder holding `<image>_seglabels.tif`, or None when there
         are no cell results to make.
     omero_host, omero_port, omero_key: the OMERO server and the session key to
@@ -540,10 +725,35 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
     for warning in image_warnings:
         log_lines.append(f"{image_name}: warning: {hide(warning)}")
 
-    # steps 2–8 and 10, one channel at a time
+    staging = run_folder / QC_TEMPORARY_FOLDER_NAME / image_name
+    try:
+        return _process_channels(
+            config, image_name, run_folder, read_channel, masks, staging, segmentation_source,
+            segmentation_status, noted, image_warnings, rows, log_lines, add_notes, hide,
+        )
+    finally:
+        if channel_qc_wanted(config):
+            _remove_staging(staging)
+
+
+def _process_channels(config, image_name, run_folder, read_channel, masks, staging,
+                      segmentation_source, segmentation_status, noted, image_warnings, rows,
+                      log_lines, add_notes, hide):
+    """
+    Steps 2–8 and 10 for each channel of an image that could be opened, then
+    the image's QC files and tables (see process_image).
+
+    The QC files of each channel are drawn in `staging` as soon as the
+    channel is done. Once every channel is done they are moved into `qc/`,
+    and then the tables are written, `_images.csv` last, so the image counts
+    as finished only once all its files are there. If the tables cannot be
+    written, the image's QC files are removed again.
+    """
+    channels = config.channels
     spot_columns = run_spot_columns(config)
     spot_tables, cluster_tables, cell_tables = [], [], []
     arrays = {}
+    staged = []
     for channel in channels:
         channel_start = time.perf_counter()
         found = {"threshold": None, "n_spots_detected": None}
@@ -573,8 +783,16 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
             continue
 
         add_notes()
+        qc_details = []
+        if result.get("qc") is not None:
+            qc_warnings, qc_details = _write_channel_qc(
+                config, channel, image_name, staging, result, masks, staged
+            )
+            result["warnings"].extend(qc_warnings)
+            del result["qc"]
         for warning in result["warnings"]:
             log_lines.append(f"{label}: warning: {hide(warning)}")
+        log_lines.extend(hide(text) for text in qc_details)
         if result["status"] == "skipped":
             log_lines.append(f"{label}: skipped: {result['reason']}")
         for tables, kind in ((spot_tables, "spots"), (cluster_tables, "clusters"), (cell_tables, "cells")):
@@ -606,10 +824,28 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
     cells_table = None
     if masks is not None:
         cells_table = outputs.join_tables(cell_tables, columns=outputs.CELLS_TABLE_COLUMNS)
-    outputs.write_image_tables(
-        run_folder, image_name, outputs.make_images_table(rows),
-        spots=spots_table, clusters=clusters_table, cells=cells_table, arrays=arrays or None,
-    )
+
+    moved = []
+    if staged:
+        moved, problems = _move_qc_files(staged, run_folder)
+        for channel_index, name, error in problems:
+            warning = _qc_problem(name, error)
+            log_lines.append(f"{image_name}, channel {channel_index}: warning: {hide(warning)}")
+            for row in rows:
+                if row["channel"] == channel_index:
+                    row["warnings"] = "; ".join(text for text in (row["warnings"], hide(warning)) if text)
+    try:
+        outputs.write_image_tables(
+            run_folder, image_name, outputs.make_images_table(rows),
+            spots=spots_table, clusters=clusters_table, cells=cells_table, arrays=arrays or None,
+        )
+    except BaseException:
+        for path in moved:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise
     return {"image": image_name, "rows": rows, "log_lines": log_lines}
 
 
@@ -1472,10 +1708,51 @@ class _Run:
     # -- per-image files -----------------------------------------------------
 
     def remove_image_files(self, image):
-        """Remove every file of an image from `per_image/` and `npz/`, finished or not."""
+        """Remove every file of an image from `per_image/`, `npz/` and `qc/`, finished
+        or not (its Cellpose QC figure apart; see remove_segmentation_files)."""
         outputs.remove_image_files(
             self.run_folder, image.name, [channel.index for channel in self.config.channels]
         )
+        self.remove_qc_files(image)
+
+    def remove_qc_files(self, image):
+        """Remove the QC files of an image's channels from `qc/`, and the folder
+        they are drawn in."""
+        if not channel_qc_wanted(self.config):
+            return
+        shutil.rmtree(self.run_folder / QC_TEMPORARY_FOLDER_NAME / image.name, ignore_errors=True)
+        from bigfish_pypeline import qc
+
+        for channel in self.config.channels:
+            for path in qc.channel_qc_paths(self.run_folder, image.name, channel.index):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def tidy_qc_folder(self, finished):
+        """
+        Keep in `qc/` the QC files of finished images only, with no temporary
+        file. Remove the folder the QC files are drawn in, and `qc/` itself
+        when it is empty.
+        """
+        shutil.rmtree(self.run_folder / QC_TEMPORARY_FOLDER_NAME, ignore_errors=True)
+        qc_folder = self.run_folder / outputs.QC_FOLDER_NAME
+        if not qc_folder.is_dir():
+            return
+        for image in self.images:
+            if image.name not in finished:
+                self.remove_qc_files(image)
+        for leftover in qc_folder.glob("*" + outputs.TEMPORARY_SUFFIX):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
+        try:
+            qc_folder.rmdir()
+        except OSError:
+            # the folder is not empty
+            pass
 
     def remove_segmentation_files(self, image):
         """Remove an image's label file and Cellpose QC figure made in this run."""
@@ -1781,6 +2058,8 @@ class _Run:
                     f"(median of {n_used} image(s); {len(table) - n_used} left out)"
                 )
         outputs.write_calibration(self.run_folder, rows)
+        if self.config.outputs.qc.elbow_plot:
+            self.write_calibration_plot(rows)
         if unusable:
             channels = ", ".join(str(index) for index in unusable)
             self.message = (
@@ -1793,6 +2072,26 @@ class _Run:
         outputs.add_thresholds_to_run_config(self.run_folder, self.thresholds)
         self.config = self.config.with_resolved([image.listed for image in self.images], self.thresholds)
         return None
+
+    def write_calibration_plot(self, rows):
+        """Write `qc/calibration.png` from the rows of calibration.csv. A plot
+        that cannot be written gives a warning in the log; the run goes on."""
+        channels = [channel for channel in self.config.channels if channel.index in self.subsets]
+        thresholds = {channel.index: self.thresholds[channel.index]
+                      for channel in channels if channel.index in self.thresholds}
+        lower_limits = {channel.index: channel.threshold.lower_limit for channel in channels}
+        names = {channel.index: channel.name for channel in channels if channel.name}
+        try:
+            from bigfish_pypeline import qc
+
+            qc.write_calibration_plot(
+                self.run_folder, outputs.make_calibration_table(rows), thresholds, lower_limits, names
+            )
+        except Exception as error:
+            self.log(f"Warning: {_qc_problem('calibration.png', error)}")
+            self.log(traceback.format_exc(), details=True)
+        finally:
+            gc.collect()
 
     # -- main pass -----------------------------------------------------------
 
@@ -1931,6 +2230,7 @@ class _Run:
         for image in self.images:
             if image.name not in finished:
                 self.remove_segmentation_files(image)
+        self.tidy_qc_folder(finished)
 
         not_processed = len(self.images) - len(finished)
         counts = ", ".join(f"{n} {name}" for name, n in self.channel_counts.items())
@@ -2366,6 +2666,7 @@ def _run(run, config_file, workers_reason, workers_warning):
         run.log(f"Workers: {workers_reason}.")
         if workers_warning:
             run.log(f"Warning: {workers_warning}")
+        run.log(f"QC images: {_qc_images_text(config, bool(run.subsets), run.cellpose is not None)}")
         for channel in config.channels:
             run.log(f"FISH channel {_channel_label(channel)}: {_threshold_setting(channel)}")
         for index, value in sorted(run.thresholds.items()):
@@ -2404,6 +2705,26 @@ def _run(run, config_file, workers_reason, workers_warning):
         if old_handler is not None:
             signal.signal(signal.SIGINT, old_handler)
     return BatchResult(run.run_folder, run.status, run.hide(run.message))
+
+
+def _qc_images_text(config, calibrates, cellpose):
+    """The QC images a run makes, in words, for the log: those switched on in
+    `outputs.qc` that apply to the run."""
+    settings = config.outputs.qc
+    names = []
+    if settings.elbow_plot:
+        names.append("elbow plot")
+        if calibrates:
+            names.append("calibration plot")
+    if settings.detection:
+        names.append("detection plot")
+    if settings.reference_spot and any(channel.decomposition.enabled for channel in config.channels):
+        names.append("reference spot")
+    if settings.final != "none":
+        names.append(f"final QC ({settings.final.upper()})")
+    if settings.cellpose and cellpose:
+        names.append("Cellpose QC figure")
+    return ", ".join(names) if names else "none"
 
 
 def _channel_label(channel):

@@ -29,13 +29,18 @@ from test_batch_cellpose import (
     TEMPORARY_LABELS,
     image_rows,
     label_files,
-    qc_files,
+    qc_files as all_qc_files,
     run_cellpose,
     with_cellpose,
 )
 from test_batch_run import generated_image, local_config, log_text, progress, read_table, with_changes, write_image
 from test_end_to_end import batch as start_batch
 from test_end_to_end import sorted_tables_equal
+
+def qc_files(run_folder):
+    """The Cellpose QC figures in the run's `qc/` folder."""
+    return [name for name in all_qc_files(run_folder) if name.endswith("_cellpose_qc.png")]
+
 
 DEVICE_LINE = re.compile(r"Cellpose runs on (the Apple GPU \(mps\)|the NVIDIA GPU \(cuda\)|the CPU)")
 

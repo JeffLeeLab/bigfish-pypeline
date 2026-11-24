@@ -295,7 +295,7 @@ def test_no_npz_folder_when_switched_off(tmp_path):
     assert config.outputs.npz is False
     summary = batch.process_image(config, "off", path, tmp_path / "run")
     assert [row["status"] for row in summary["rows"]] == ["done", "done"]
-    assert sorted(path.name for path in (tmp_path / "run").iterdir()) == ["per_image"]
+    assert sorted(path.name for path in (tmp_path / "run").iterdir()) == ["per_image", "qc"]
 
 
 def test_npz_files_of_done_channels_only(tmp_path):
@@ -819,7 +819,7 @@ def omero_image(config, image_id, run_folder):
 def assert_no_key_in_files(folder):
     for path in folder.rglob("*"):
         if path.is_file():
-            assert KEY not in path.read_text(encoding="utf-8"), path.name
+            assert KEY.encode() not in path.read_bytes(), path.name
 
 
 def test_omero_drop_while_reading_information(tmp_path, fake_omero):
@@ -940,3 +940,257 @@ def test_omero_calibration_drop(tmp_path, fake_omero):
     fake_omero["ended"] = True
     with pytest.raises(io.OmeroSessionEnded):
         batch.calibration_threshold(config, "125_x", 125, 1, **arguments)
+
+
+# ---------------------------------------------------------------------------
+# QC files
+# ---------------------------------------------------------------------------
+
+QC_OFF = {"elbow_plot": False, "detection": False, "reference_spot": False, "cellpose": False,
+          "final": "none"}
+
+
+def with_qc(config, **switches):
+    """Copy of a config with every QC file switched off, then `switches` switched on."""
+    data = config.to_dict()
+    data["outputs"]["qc"] = {**QC_OFF, **switches}
+    return parse_config(data, config.config_folder)
+
+
+def qc_files(run_folder):
+    folder = run_folder / "qc"
+    return sorted(path.name for path in folder.iterdir()) if folder.is_dir() else []
+
+
+def spotty_image(tmp_path, name="qc", n_channels=2):
+    """A generated image with spots in each channel; the config of a test may use only the first."""
+    channels = [make_image((8, 64, 64), n_spots=12, seed=seed)[0] for seed in range(n_channels)]
+    return write_image(tmp_path / f"{name}.tif", stack_channels(channels), "ZCYX")
+
+
+ALL_QC = dict(elbow_plot=True, detection=True, reference_spot=True, cellpose=True, final="png")
+
+
+@pytest.mark.parametrize("switch, value, names", [
+    ("elbow_plot", True, ["qc_ch0_elbow.png"]),
+    ("detection", True, ["qc_ch0_detection.png"]),
+    ("reference_spot", True, ["qc_ch0_referencespot.tif"]),
+    ("final", "png", ["qc_ch0_final.png"]),
+    ("final", "html", ["qc_ch0_final.html"]),
+    ("cellpose", True, []),
+])
+def test_each_qc_switch_alone(tmp_path, switch, value, names):
+    path = spotty_image(tmp_path)
+    config = with_qc(synthetic_config(), **{switch: value})
+    summary = batch.process_image(config, "qc", path, tmp_path / "run")
+    row = row_of(summary, 0)
+    assert row["status"] == "done"
+    assert "QC file" not in row["warnings"]
+    assert qc_files(tmp_path / "run") == names
+    assert not (tmp_path / "run" / batch.QC_TEMPORARY_FOLDER_NAME).exists()
+
+
+def test_tables_equal_with_qc_on_and_off(tmp_path):
+    path = spotty_image(tmp_path, n_channels=2)
+    base = synthetic_config(channels=[{"index": 0, "subpixel": {"enabled": True}}, {"index": 1}])
+    tables = {}
+    for name, config in (("on", with_qc(base, **ALL_QC)), ("off", with_qc(base))):
+        summary = batch.process_image(config, "qc", path, tmp_path / name)
+        assert [row["status"] for row in summary["rows"]] == ["done", "done"]
+        tables[name] = read_tables(tmp_path / name, "qc")
+    for kind in ("spots", "clusters", "images"):
+        on, off = tables["on"][kind], tables["off"][kind]
+        if kind == "images":
+            on, off = on.drop(columns="runtime_s"), off.drop(columns="runtime_s")
+        pd.testing.assert_frame_equal(on, off)
+    assert qc_files(tmp_path / "off") == []
+    assert not (tmp_path / "off" / "qc").exists()
+    assert qc_files(tmp_path / "on") == [
+        f"qc_ch{channel}_{kind}" for channel in (0, 1)
+        for kind in ("detection.png", "elbow.png", "final.png", "referencespot.tif")
+    ]
+
+
+@pytest.mark.parametrize("threshold", [
+    {"mode": "manual", "value": 50},
+    {"mode": "auto"},
+    {"mode": "auto", "lower_limit": 400},
+    {"mode": "calibrated", "calibration_filter": "cal"},
+])
+def test_elbow_plot_in_each_threshold_mode(tmp_path, threshold, monkeypatch):
+    from bigfish_pypeline import qc
+
+    drawn = []
+    original = qc.draw_elbow_plot
+
+    def keep(detected, image_name, channel, threshold_mode, lower_limit=None, channel_name=None):
+        drawn.append((detected, threshold_mode, lower_limit))
+        return original(detected, image_name, channel, threshold_mode, lower_limit, channel_name)
+
+    monkeypatch.setattr(qc, "draw_elbow_plot", keep)
+    path = spotty_image(tmp_path)
+    config = with_qc(synthetic_config(channels=[{"index": 0, "threshold": threshold}]), elbow_plot=True)
+    if threshold["mode"] == "calibrated":
+        config = config.with_resolved(["qc.tif"], {0: 60})
+    summary = batch.process_image(config, "qc", path, tmp_path / "run")
+    row = row_of(summary, 0)
+    assert row["status"] == "done"
+    assert "QC file" not in row["warnings"] and batch.NO_ELBOW_PLOT_WARNING not in row["warnings"]
+    assert qc_files(tmp_path / "run") == ["qc_ch0_elbow.png"]
+    [(detected, mode, lower_limit)] = drawn
+    assert mode == threshold["mode"]
+    assert lower_limit == threshold.get("lower_limit")
+    assert detected["threshold"] == row["threshold"]
+    assert len(detected["elbow_thresholds"]) > 0
+
+
+def test_no_candidate_spots_gives_no_elbow_plot(tmp_path):
+    blank = make_image((8, 64, 64), blank=True)[0]
+    path = write_image(tmp_path / "blank.tif", stack_channels([blank, blank]), "ZCYX")
+    config = with_qc(synthetic_config(channels=[{"index": 0, "threshold": {"mode": "auto"}}]),
+                     elbow_plot=True)
+    summary = batch.process_image(config, "blank", path, tmp_path / "run")
+    row = row_of(summary, 0)
+    assert row["status"] == "done"
+    assert batch.NO_ELBOW_PLOT_WARNING in row["warnings"]
+    assert f"blank, channel 0: warning: {batch.NO_ELBOW_PLOT_WARNING}" in summary["log_lines"]
+    assert qc_files(tmp_path / "run") == []
+
+
+def test_no_reference_spot_when_decomposition_off_or_skipped(tmp_path):
+    spots = make_image((8, 64, 64), n_spots=12, seed=0)[0]
+    blank = make_image((8, 64, 64), blank=True)[0]
+    path = write_image(tmp_path / "qc.tif", stack_channels([spots, spots, blank]), "ZCYX")
+    config = with_qc(synthetic_config(channels=[
+        {"index": 0},
+        {"index": 1, "decomposition": {"enabled": False}},
+        {"index": 2},
+    ]), reference_spot=True)
+    summary = batch.process_image(config, "qc", path, tmp_path / "run")
+    assert [row["status"] for row in summary["rows"]] == ["done", "done", "done"]
+    assert NO_SPOTS_WARNING in row_of(summary, 2)["warnings"]
+    assert qc_files(tmp_path / "run") == ["qc_ch0_referencespot.tif"]
+    reference = tifffile.imread(tmp_path / "run" / "qc" / "qc_ch0_referencespot.tif")
+    assert reference.ndim == 3
+
+
+def test_failed_and_skipped_channels_write_no_qc_files(tmp_path):
+    many = make_image((8, 64, 64), n_spots=30, min_spacing=5, seed=1)[0].astype(np.float32)
+    few = make_image((8, 64, 64), n_spots=8, seed=2)[0].astype(np.float32)
+    broken = few.copy()
+    broken[3, 20, 20] = np.nan
+    path = write_image(tmp_path / "mixed.tif", stack_channels([few, broken, many]), "ZCYX")
+    config = with_qc(synthetic_config(channels=[
+        {"index": 0}, {"index": 1}, {"index": 2, "bailout": {"enabled": True, "max_spots": 20}},
+    ]), **ALL_QC)
+    summary = batch.process_image(config, "mixed", path, tmp_path / "run")
+    assert [row["status"] for row in summary["rows"]] == ["done", "failed", "skipped"]
+    assert all(name.startswith("mixed_ch0_") for name in qc_files(tmp_path / "run"))
+    assert len(qc_files(tmp_path / "run")) == 4
+
+
+def test_qc_files_of_a_2d_image_with_labels(tmp_path):
+    image = make_image((96, 96), n_spots=12, seed=3)[0]
+    path = write_image(tmp_path / "flat.tif", image, "YX")
+    labels = np.zeros((96, 96), dtype=np.uint16)
+    labels[:48] = 1
+    labels[48:] = 2
+    tifffile.imwrite(tmp_path / "flat_seglabels.tif", labels)
+    config = with_qc(synthetic_config(axes="YX", channels=[{"index": 0, "subpixel": {"enabled": True}}]),
+                     elbow_plot=True, detection=True, reference_spot=True, final="html")
+    summary = batch.process_image(config, "flat", path, tmp_path / "run", label_folder=tmp_path)
+    row = row_of(summary, 0)
+    assert row["status"] == "done" and "QC file" not in row["warnings"]
+    assert qc_files(tmp_path / "run") == [
+        "flat_ch0_detection.png", "flat_ch0_elbow.png", "flat_ch0_final.html",
+        "flat_ch0_referencespot.tif",
+    ]
+    page = (tmp_path / "run" / "qc" / "flat_ch0_final.html").read_text(encoding="utf-8")
+    assert "2 cells" in page and "12 spots" in page
+
+
+def test_qc_file_that_fails_leaves_the_channel_done(tmp_path, monkeypatch):
+    from bigfish_pypeline import qc
+
+    def broken(*args, **kwargs):
+        raise OSError("no space left on the disk")
+
+    monkeypatch.setattr(qc, "write_detection_plot", broken)
+    path = spotty_image(tmp_path)
+    config = with_qc(synthetic_config(), **ALL_QC)
+    summary = batch.process_image(config, "qc", path, tmp_path / "run")
+    row = row_of(summary, 0)
+    warning = "the QC file qc_ch0_detection.png could not be written: OSError: no space left on the disk"
+    assert row["status"] == "done"
+    assert row["warnings"].endswith(warning)
+    assert f"qc, channel 0: warning: {warning}" in summary["log_lines"]
+    assert any(line.startswith("Traceback") and "no space left" in line for line in summary["log_lines"])
+    assert read_tables(tmp_path / "run", "qc")["images"]["warnings"][0] == row["warnings"]
+    assert qc_files(tmp_path / "run") == ["qc_ch0_elbow.png", "qc_ch0_final.png", "qc_ch0_referencespot.tif"]
+    assert not (tmp_path / "run" / batch.QC_TEMPORARY_FOLDER_NAME).exists()
+
+
+def test_qc_files_that_cannot_be_moved_leave_the_channel_done(tmp_path):
+    path = spotty_image(tmp_path)
+    run_folder = tmp_path / "run"
+    run_folder.mkdir()
+    # a file where the `qc` folder should be
+    (run_folder / "qc").write_text("", encoding="utf-8")
+    config = with_qc(synthetic_config(), elbow_plot=True, final="html")
+    summary = batch.process_image(config, "qc", path, run_folder)
+    row = row_of(summary, 0)
+    assert row["status"] == "done"
+    for name in ("qc_ch0_elbow.png", "qc_ch0_final.html"):
+        assert f"the QC file {name} could not be written: " in row["warnings"]
+    images = read_tables(run_folder, "qc")["images"]
+    assert images["warnings"][0] == row["warnings"]
+    assert not (run_folder / batch.QC_TEMPORARY_FOLDER_NAME).exists()
+
+
+def test_qc_files_removed_when_the_tables_cannot_be_written(tmp_path, monkeypatch):
+    from bigfish_pypeline import outputs
+
+    def broken(*args, **kwargs):
+        raise outputs.OutputError("the tables could not be written")
+
+    monkeypatch.setattr(outputs, "write_image_tables", broken)
+    path = spotty_image(tmp_path)
+    with pytest.raises(outputs.OutputError):
+        batch.process_image(with_qc(synthetic_config(), **ALL_QC), "qc", path, tmp_path / "run")
+    assert qc_files(tmp_path / "run") == []
+    assert not (tmp_path / "run" / batch.QC_TEMPORARY_FOLDER_NAME).exists()
+
+
+def test_kit_qc_files(crop_config_path, crop_path, tmp_path, monkeypatch):
+    """The crop's detection plot and final QC are drawn on the channel's maximum
+    projection, after background subtraction and as read."""
+    from bigfish_pypeline import qc
+
+    pictures = {}
+    for name in ("draw_detection_plot", "draw_final_qc"):
+        original = getattr(qc, name)
+
+        def keep(picture, *args, _name=name, _original=original, **kwargs):
+            pictures[_name] = (picture, args, kwargs)
+            return _original(picture, *args, **kwargs)
+
+        monkeypatch.setattr(qc, name, keep)
+    config = crop_config(crop_config_path)
+    summary, tables = run_crop(config, tmp_path, crop_path)
+    assert row_of(summary, FISH_CHANNEL)["warnings"] == ""
+    assert qc_files(tmp_path) == [
+        f"{CROP_NAME}_ch{FISH_CHANNEL}_{kind}"
+        for kind in ("detection.png", "elbow.png", "final.png", "referencespot.tif")
+    ]
+    raw = io.read_channel(crop_path, "ZCYX", FISH_CHANNEL)
+    np.testing.assert_array_equal(pictures["draw_final_qc"][0], raw.max(axis=0))
+    spot_radius_px = detection.get_spot_radius_px(VOXEL_SIZE, 570, 610, 1.45, 1.45, "confocal")
+    rna = detection.filter_channel(raw, spot_radius_px, bg_radius=5, bg_method="tophat")["rna"]
+    np.testing.assert_array_equal(pictures["draw_detection_plot"][0], rna.max(axis=0))
+    spots, image_name, channel, radius, clusters, cluster_radius = pictures["draw_detection_plot"][1][:6]
+    np.testing.assert_array_equal(spots, tables["spots"][["z_px", "y_px", "x_px"]].to_numpy())
+    np.testing.assert_array_equal(clusters, tables["clusters"][["z_px", "y_px", "x_px"]].to_numpy())
+    assert cluster_radius == pytest.approx(600 / 65)
+    final_args = pictures["draw_final_qc"][1]
+    assert len(final_args[2]) == 44  # cells table
+    assert final_args[3].max() == 44  # label image

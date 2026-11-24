@@ -1015,7 +1015,7 @@ def test_omero_dropped_connection_in_a_worker(tmp_path, omero_info):
     assert "3_c: connection 3 after 3 join(s)" in text
     for path in result.run_folder.rglob("*"):
         if path.is_file():
-            assert KEY not in path.read_text(encoding="utf-8"), path.name
+            assert KEY.encode() not in path.read_bytes(), path.name
 
 
 def test_omero_messages_not_in_the_terminal(tmp_path):
@@ -1076,3 +1076,222 @@ def test_omero_messages_not_in_the_terminal(tmp_path):
     # the run's own message about the dropped connection is shown, in plain words
     assert "1_a drop_once: OMERO image 1: lost the connection to OMERO" in done.stdout
     assert "rejoining the session and trying again" in done.stdout
+
+
+# ---------------------------------------------------------------------------
+# QC files
+# ---------------------------------------------------------------------------
+
+QC_OFF = {"elbow_plot": False, "detection": False, "reference_spot": False, "cellpose": False,
+          "final": "none"}
+QC_ON = {"elbow_plot": True, "detection": True, "reference_spot": True, "cellpose": True}
+
+
+def qc_files(run_folder):
+    folder = run_folder / "qc"
+    return sorted(path.name for path in folder.iterdir()) if folder.is_dir() else []
+
+
+def no_qc_leftovers(run_folder):
+    assert not (run_folder / batch.QC_TEMPORARY_FOLDER_NAME).exists()
+    assert not [name for name in qc_files(run_folder) if name.endswith(".tmp")]
+
+
+@pytest.fixture(scope="module")
+def qc_kit_runs(crop_config_path, test_kit_folder, tmp_path_factory):
+    """The test kit run with every output on (final QC as PNG and as HTML) and with every QC file off."""
+    folder = tmp_path_factory.mktemp("qc_kit_input")
+    shutil.copy(test_kit_folder / f"{CROP_NAME}.tif", folder)
+    shutil.copy(test_kit_folder / f"{CROP_NAME}_seglabels.tif", folder)
+    generated_image(folder / "zz_generated.tif", n_channels=3)
+    output = tmp_path_factory.mktemp("qc_kit_output")
+
+    def change(data):
+        data["run"]["input"].update(folder=str(folder), filter="")
+        data["run"].update(output_folder=str(output), workers=2)
+        data["segmentation"]["label_folder"] = str(folder)
+        data["outputs"].update(npz=True, label_images=True)
+
+    config = with_changes(load_config(crop_config_path), change)
+    runs = {}
+    for name, qc in (("png", {**QC_ON, "final": "png"}), ("html", {**QC_ON, "final": "html"}),
+                     ("off", QC_OFF)):
+        runs[name] = batch.run_batch(with_changes(config, lambda data: data["outputs"]["qc"].update(qc)))
+    return runs
+
+
+def expected_kit_qc_files(final):
+    files = []
+    for image in (CROP_NAME, "zz_generated"):
+        files += [f"{image}_ch2_{kind}" for kind in
+                  ("detection.png", "elbow.png", f"final.{final}", "referencespot.tif")]
+    return sorted(files)
+
+
+def test_kit_every_output(qc_kit_runs):
+    for final in ("png", "html"):
+        result = qc_kit_runs[final]
+        assert result.status == "finished", result.message
+        folder = result.run_folder
+        # spec 8.1, apart from `labels/` (made by Cellpose runs only) and
+        # `calibration.csv` (calibrated thresholds only)
+        for name in ("run_config.yaml", "run_info.yaml", "run.log", "progress.json", "images.csv",
+                     "spots.csv", "clusters.csv", "cells.csv", "per_image", "qc", "npz"):
+            assert (folder / name).exists(), name
+        assert sorted(path.name for path in (folder / "npz").iterdir()) == [
+            f"{CROP_NAME}_ch2.npz", "zz_generated_ch2.npz"]
+        assert qc_files(folder) == expected_kit_qc_files(final), final
+        no_qc_leftovers(folder)
+        images = read_table(folder, "images")
+        assert not images["warnings"].fillna("").str.contains("QC file").any()
+        text = log_text(folder)
+        assert f"QC images: elbow plot, detection plot, reference spot, final QC ({final.upper()})" in text
+        assert text.index("QC images:") < text.index(f"{CROP_NAME}: started")
+    page = (qc_kit_runs["html"].run_folder / "qc" / f"{CROP_NAME}_ch2_final.html").read_text(encoding="utf-8")
+    assert "44 cells" in page and "692 spots" in page and "6 clusters" in page
+    # plotly's script is inside the page, so that it opens on its own
+    assert 'src="plotly.min.js"' not in page and "plotly.js v" in page
+
+
+def test_kit_tables_equal_with_qc_on_and_off(qc_kit_runs, crop_reference_folder):
+    off = qc_kit_runs["off"]
+    assert off.status == "finished", off.message
+    assert not (off.run_folder / "qc").exists()
+    no_qc_leftovers(off.run_folder)
+    assert "QC images: none" in log_text(off.run_folder)
+    for final in ("png", "html"):
+        same_tables(qc_kit_runs[final].run_folder, off.run_folder)
+    reference = np.load(next((crop_reference_folder / "general_manual18_subpixel-off").glob("*_bfoutput.npz")))
+    spots = read_table(qc_kit_runs["html"].run_folder, "spots")
+    spots = spots[spots["image"] == CROP_NAME]
+    np.testing.assert_array_equal(
+        spots[["z_px", "y_px", "x_px", "cluster_id"]].to_numpy(), reference["spots_post_clustering"]
+    )
+
+
+def test_kit_repeat_with_qc_off(qc_kit_runs):
+    """`run_config.yaml` of a run with the QC files on, repeated with them off, gives the same tables."""
+    first = qc_kit_runs["html"].run_folder
+    config = with_changes(load_config(first / "run_config.yaml"),
+                          lambda data: data["outputs"]["qc"].update(QC_OFF))
+    result = batch.run_batch(config)
+    assert result.status == "finished", result.message
+    same_tables(first, result.run_folder)
+    assert not (result.run_folder / "qc").exists()
+
+
+def test_calibration_plot(calibrated_run, tmp_path):
+    _, _, first = calibrated_run
+    assert (first.run_folder / "qc" / "calibration.png").is_file()
+    assert "QC images: elbow plot, calibration plot, detection plot" in log_text(first.run_folder)
+    no_qc_leftovers(first.run_folder)
+
+    # the repeated run takes its thresholds from run_config.yaml and does not calibrate
+    result = batch.run_batch(load_config(first.run_folder / "run_config.yaml"))
+    assert result.status == "finished", result.message
+    files = qc_files(result.run_folder)
+    assert "calibration.png" not in files
+    assert "cal_1_ch0_elbow.png" in files
+    assert "calibration plot" not in log_text(result.run_folder)
+
+
+def test_calibration_plot_switched_off_with_the_elbow_plot(tmp_path):
+    folder = tmp_path / "input"
+    folder.mkdir()
+    generated_image(folder / "cal_1.tif", seed=10, amplitude=400)
+    config = with_changes(calibrated_config(folder, tmp_path / "out"),
+                          lambda data: data["outputs"]["qc"].update(QC_OFF, detection=True))
+    result = batch.run_batch(config)
+    assert result.status == "finished", result.message
+    assert (result.run_folder / "calibration.csv").is_file()
+    assert qc_files(result.run_folder) == ["cal_1_ch0_detection.png", "cal_1_ch1_detection.png"]
+
+
+def test_calibration_plot_that_fails(tmp_path, monkeypatch):
+    from bigfish_pypeline import qc
+
+    def broken(*args, **kwargs):
+        raise OSError("no space left on the disk")
+
+    monkeypatch.setattr(qc, "write_calibration_plot", broken)
+    folder = tmp_path / "input"
+    folder.mkdir()
+    generated_image(folder / "cal_1.tif", seed=10, amplitude=400)
+    result = batch.run_batch(calibrated_config(folder, tmp_path / "out"))
+    assert result.status == "finished", result.message
+    assert ("Warning: the QC file calibration.png could not be written: OSError: no space left on the disk"
+            in log_text(result.run_folder))
+    assert "calibration.png" not in qc_files(result.run_folder)
+
+
+def failing_qc_process_image(config, image_name, image_source, run_folder, **arguments):
+    """`process_image` in which every elbow plot fails to be written."""
+    from bigfish_pypeline import qc
+
+    def broken(*args, **kwargs):
+        raise OSError("no space left on the disk")
+
+    qc.write_elbow_plot = broken
+    return batch.process_image(config, image_name, image_source, run_folder, **arguments)
+
+
+def test_qc_file_that_fails_in_a_run(tmp_path):
+    folder = tmp_path / "input"
+    folder.mkdir()
+    generated_image(folder / "a.tif")
+    result = batch.run_batch(local_config(folder, tmp_path / "out"), image_function=failing_qc_process_image)
+    assert result.status == "finished", result.message
+    images = read_table(result.run_folder, "images")
+    assert list(images["status"]) == ["done", "done"]
+    text = log_text(result.run_folder)
+    for channel in (0, 1):
+        warning = f"the QC file a_ch{channel}_elbow.png could not be written: OSError: no space left on the disk"
+        assert images["warnings"][channel].endswith(warning)
+        assert f"a, channel {channel}: warning: {warning}" in text
+    assert qc_files(result.run_folder) == [
+        f"a_ch{channel}_{kind}" for channel in (0, 1)
+        for kind in ("detection.png", "final.png", "referencespot.tif")
+    ]
+
+
+def qc_process_image(config, image_name, image_source, run_folder, **arguments):
+    """`fake_process_image` that also leaves QC files, with their final names, in
+    the folder they are drawn in and under temporary names, before the image's
+    worker is stopped or the run cancelled, and writes the QC files of a
+    finished image (with a final QC page when its name holds `page`)."""
+    run_folder = Path(run_folder)
+    qc_folder = run_folder / "qc"
+    qc_folder.mkdir(exist_ok=True)
+    stops = any(word in image_name for word in ("slow", "cancel", "crash_always"))
+    if "crash_once" in image_name and not (run_folder.parent / f"{image_name}.crashed").exists():
+        stops = True
+    if stops:
+        staging = run_folder / batch.QC_TEMPORARY_FOLDER_NAME / image_name / "qc"
+        staging.mkdir(parents=True, exist_ok=True)
+        (staging / f"{image_name}_ch0_detection.png").write_bytes(b"png")
+        (qc_folder / f"{image_name}_ch0_elbow.png").write_bytes(b"png")
+        (qc_folder / f"{image_name}_ch1_final.html").write_text("page", encoding="utf-8")
+        (qc_folder / f"{image_name}_ch1_detection.png.tmp").write_bytes(b"")
+    result = fake_process_image(config, image_name, image_source, run_folder, **arguments)
+    for channel in config.channels:
+        (qc_folder / f"{image_name}_ch{channel.index}_elbow.png").write_bytes(b"png")
+    if "page" in image_name:
+        (qc_folder / f"{image_name}_ch0_final.html").write_text("page", encoding="utf-8")
+    return result
+
+
+@pytest.mark.parametrize("names, workers, status, kept", [
+    (["a", "b_slow", "c_cancel", "d"], 2, "cancelled", ["a"]),
+    (["a_page", "b_slow", "c_cancel"], 2, "cancelled", ["a_page"]),
+    (["a", "b_crash_always", "c"], 1, "stopped", ["a"]),
+    (["a", "b_crash_once", "c", "d"], 2, "finished", ["a", "b_crash_once", "c", "d"]),
+])
+def test_qc_files_of_finished_images_only(tmp_path, names, workers, status, kept):
+    folder = tiny_images(tmp_path / "input", names)
+    result = batch.run_batch(local_config(folder, tmp_path / "out", workers=workers),
+                             image_function=qc_process_image)
+    assert result.status == status, result.message
+    expected = [f"{name}_ch{channel}_elbow.png" for name in kept for channel in (0, 1)]
+    expected += [f"{name}_ch0_final.html" for name in kept if "page" in name]
+    assert qc_files(result.run_folder) == sorted(expected)
+    no_qc_leftovers(result.run_folder)

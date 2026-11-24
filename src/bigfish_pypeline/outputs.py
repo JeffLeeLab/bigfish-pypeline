@@ -26,6 +26,7 @@ from .config import load_config, save_config
 RESULTS_FOLDER_NAME = "bigfish_results"
 PER_IMAGE_FOLDER_NAME = "per_image"
 NPZ_FOLDER_NAME = "npz"
+QC_FOLDER_NAME = "qc"
 RUN_CONFIG_NAME = "run_config.yaml"
 RUN_INFO_NAME = "run_info.yaml"
 CALIBRATION_NAME = "calibration.csv"

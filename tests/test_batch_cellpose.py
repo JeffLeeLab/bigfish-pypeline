@@ -135,7 +135,8 @@ def test_kit_one_and_two_workers(kit_runs):
         for name in ("images.csv", "spots.csv", "clusters.csv", "cells.csv"):
             assert (folder / name).is_file(), name
         assert label_files(folder / LABELS) == [f"{CROP_NAME}_seglabels.tif", "zz_generated_seglabels.tif"]
-        assert qc_files(folder) == [f"{CROP_NAME}_cellpose_qc.png", "zz_generated_cellpose_qc.png"]
+        assert [name for name in qc_files(folder) if name.endswith("_cellpose_qc.png")] == [
+            f"{CROP_NAME}_cellpose_qc.png", "zz_generated_cellpose_qc.png"]
         assert not (folder / TEMPORARY_LABELS).exists()
         assert progress(folder)["status"] == "finished"
         assert progress(folder)["segmenting"] is None
@@ -159,6 +160,27 @@ def test_kit_one_and_two_workers(kit_runs):
     cells = read_table(one.run_folder, "cells")
     assert sorted(cells.loc[cells["image"] == CROP_NAME, "cell_id"]) == [1, 2, 3]
     assert (read_table(one.run_folder, "spots")["cell_id"] > 0).any()
+
+
+def test_kit_final_qc_with_the_runs_own_labels(kit, kit_runs, tmp_path):
+    for name in (f"{CROP_NAME}_ch2_final.png", "zz_generated_ch2_final.png"):
+        assert name in qc_files(kit_runs[1][0].run_folder)
+    config = with_changes(kit, lambda data: (
+        data["outputs"]["qc"].update(final="html"),
+        data["run"].update(output_folder=str(tmp_path / "out")),
+    ))
+    result = run_cellpose(config, StandInModel(n_cells=3))
+    assert result.status == "finished", result.message
+    files = qc_files(result.run_folder)
+    assert f"{CROP_NAME}_ch2_final.html" in files and "plotly.min.js" not in files
+    assert not any(name.endswith("_final.png") for name in files)
+    page = (result.run_folder / "qc" / f"{CROP_NAME}_ch2_final.html").read_text(encoding="utf-8")
+    # the three cells of the stand-in model's label image, and their counts from cells.csv
+    assert "3 cells" in page and "692 spots" in page
+    assert "Spots in clusters: %{customdata[2]:.0f}" in page
+    cells = read_table(result.run_folder, "cells")
+    assert sorted(cells.loc[cells["image"] == CROP_NAME, "cell_id"]) == [1, 2, 3]
+    assert "Cellpose QC figure" in log_text(result.run_folder)
 
 
 def test_kit_labels_reused_as_label_files(kit_runs, tmp_path):
@@ -534,6 +556,54 @@ def test_cellpose_and_torch_not_loaded_without_cellpose(tmp_path):
         assert info["package_versions"][name] != "not available"
 
 
+QC_OFF = {"elbow_plot": False, "detection": False, "reference_spot": False, "cellpose": False,
+          "final": "none"}
+
+WORKER_MODULES_SCRIPT = """
+    import sys
+    from bigfish_pypeline import batch
+    from bigfish_pypeline.config import load_config
+
+    MODULES = ("cellpose", "torch", "matplotlib", "plotly")
+
+    def process_image(config, image_name, image_source, run_folder, **arguments):
+        # the real function, then the packages loaded in the worker, as a log line
+        result = batch.process_image(config, image_name, image_source, run_folder, **arguments)
+        loaded = [name for name in MODULES if name in sys.modules]
+        result["log_lines"].append(f"{image_name}: worker loaded {loaded}")
+        return result
+
+    if __name__ == "__main__":
+        import script
+        result = batch.run_batch(load_config(sys.argv[1]), image_function=script.process_image)
+        assert result.status == "finished", result.message
+        print(result.run_folder)
+"""
+
+
+@pytest.mark.parametrize("qc, loaded", [
+    ({"elbow_plot": True, "detection": True, "reference_spot": True, "final": "html"},
+     ["matplotlib", "plotly"]),
+    (QC_OFF, []),
+])
+def test_workers_with_qc_files_load_neither_cellpose_nor_torch(tmp_path, qc, loaded):
+    folder = tmp_path / "input"
+    folder.mkdir()
+    generated_image(folder / "a.tif")
+    labels = tmp_path / "labels"
+    labels.mkdir()
+    tifffile.imwrite(labels / "a_seglabels.tif", np.ones((64, 64), dtype=np.uint16))
+    config = with_changes(local_config(folder, tmp_path / "out"), lambda data: (
+        data["segmentation"].update(enabled=True, source="label_files", label_folder=str(labels)),
+        data["outputs"]["qc"].update(qc),
+    ))
+    save_config(config, tmp_path / "settings.yaml")
+    output = run_script(tmp_path, WORKER_MODULES_SCRIPT, "settings.yaml")
+    run_folder = Path(output.strip().splitlines()[-1])
+    assert f"a: worker loaded {loaded}" in log_text(run_folder)
+    assert bool(qc_files(run_folder)) == bool(loaded)
+
+
 # ---------------------------------------------------------------------------
 # Threads and memory
 # ---------------------------------------------------------------------------
@@ -815,7 +885,7 @@ def test_kit_with_the_real_model(kit, tmp_path):
     labels = tifffile.imread(run_folder / LABELS / f"{CROP_NAME}_seglabels.tif")
     assert labels.shape == (384, 384)
     assert labels.dtype == np.uint32
-    assert qc_files(run_folder) == [f"{CROP_NAME}_cellpose_qc.png"]
+    assert f"{CROP_NAME}_cellpose_qc.png" in qc_files(run_folder)
     for name in ("images.csv", "spots.csv", "clusters.csv", "cells.csv"):
         assert (run_folder / name).is_file(), name
     images = read_table(run_folder, "images")

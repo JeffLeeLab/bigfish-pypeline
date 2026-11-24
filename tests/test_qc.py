@@ -945,14 +945,14 @@ def test_detection_plot_is_written_as_a_png(tmp_path, clusters):
     path = _write_detection(tmp_path, **({} if clusters else dict(clusters=None)))
 
     assert path == tmp_path / "qc" / f"{IMAGE}_ch2_detection.png"
-    assert _png_size(path) == (3000, int(np.clip(10 * 60 / 80 + 1.2, 3, 16) * 150))
+    assert _png_size(path) == (2000, round(float(np.clip(10 * 60 / 80 + 1.2, 3, 16)) * 100))
     assert sorted(file.name for file in (tmp_path / "qc").iterdir()) == [path.name]
 
 
 def test_detection_plot_with_no_spots_is_written(tmp_path):
     path = _write_detection(tmp_path, spots=np.zeros((0, 2)), clusters=None)
 
-    assert _png_size(path)[0] == 1500
+    assert _png_size(path)[0] == 1000
 
 
 def test_a_second_detection_plot_replaces_the_first(tmp_path):
@@ -1232,6 +1232,7 @@ def _html_figure(data, **kwargs):
 
 def _write_html(folder, data, **kwargs):
     picture, spots, clusters, cells, labels = data
+    kwargs.setdefault("plotly_script", "shared")
     return qc.write_final_html(folder, FINAL_IMAGE, picture, spots, clusters, cells, labels, 2, **kwargs)
 
 
@@ -1527,12 +1528,12 @@ def test_final_png_is_written(tmp_path, variant):
 
     assert path == tmp_path / "qc" / f"{FINAL_IMAGE}_ch2_final.png"
     width, height = _png_size(path)
-    assert width == 2400 and 600 <= height <= 2400
+    assert width == 2000 and 500 <= height <= 2000
 
 
 def test_final_png_with_more_than_300_cells_is_written(tmp_path):
     path = _write_png(tmp_path, _final_data(n_cells=320, n_spots=500, shape=(300, 300)))
-    assert _png_size(path)[0] == 2400
+    assert _png_size(path)[0] == 2000
 
 
 def test_final_png_is_written_without_loading_plotly(tmp_path):
@@ -1792,12 +1793,19 @@ def test_final_page_is_written(tmp_path, variant, script):
     assert "Plotly.newPlot" in text
 
 
+def test_a_page_holds_the_script_itself_unless_told_otherwise(tmp_path):
+    picture, spots, clusters, cells, labels = _final_data()
+    path = qc.write_final_html(tmp_path, FINAL_IMAGE, picture, spots, clusters, cells, labels, 2)
+    assert [file.name for file in (tmp_path / "qc").iterdir()] == [path.name]
+    assert path.stat().st_size > 4_000_000
+
+
 def test_the_shared_script_is_one_copy_used_by_every_page_of_the_folder(tmp_path):
     from plotly.offline import get_plotlyjs
 
     first = _write_html(tmp_path, _final_data())
     second = qc.write_final_html(
-        tmp_path, "other", *_final_data()[:1], None, None, None, None, 2
+        tmp_path, "other", *_final_data()[:1], None, None, None, None, 2, plotly_script="shared"
     )
     script = tmp_path / "qc" / "plotly.min.js"
 
@@ -1810,9 +1818,9 @@ def test_the_shared_script_is_one_copy_used_by_every_page_of_the_folder(tmp_path
         assert len(text) < 1_000_000
 
 
-def test_shared_is_the_default():
+def test_embedded_is_the_default():
     import inspect
-    assert inspect.signature(qc.write_final_html).parameters["plotly_script"].default == "shared"
+    assert inspect.signature(qc.write_final_html).parameters["plotly_script"].default == "embedded"
 
 
 def test_the_embedded_script_is_in_the_page_and_no_script_file_is_written(tmp_path):
@@ -1873,7 +1881,7 @@ def test_two_processes_writing_pages_into_one_folder_leave_a_whole_script(tmp_pa
         while time.time() < start:
             pass
         qc.write_final_html({str(tmp_path / "run")!r}, "image" + sys.argv[2], data[0], data[1],
-                            data[2], data[3], data[4], 2)
+                            data[2], data[3], data[4], 2, plotly_script="shared")
         print("ok")
     """
     import time
@@ -2023,3 +2031,16 @@ def test_a_full_size_view_is_drawn_with_one_outline_trace_and_webgl_spots():
     assert {t.type for t in figure.data} == {"scattergl"}
     assert len([t for t in figure.data if t.mode == "lines"]) == 1
     assert sum(len(t.x) for t in figure.data if t.name.startswith("Spots")) == 37000
+
+
+# Paths of an image's QC files
+
+
+def test_channel_qc_paths(tmp_path):
+    paths = qc.channel_qc_paths(tmp_path, "slide 3", 2)
+    assert [path.name for path in paths] == [
+        "slide 3_ch2_elbow.png", "slide 3_ch2_detection.png", "slide 3_ch2_referencespot.tif",
+        "slide 3_ch2_final.png", "slide 3_ch2_final.html",
+    ]
+    assert all(path.parent == tmp_path / qc.QC_FOLDER_NAME for path in paths)
+    assert outputs.QC_FOLDER_NAME == qc.QC_FOLDER_NAME
