@@ -8,16 +8,23 @@ backend a notebook or app has chosen. `cellpose` and `torch` are imported only
 inside the function that needs them, so importing this module never loads them.
 """
 
+import base64
+import html
+import io
 import os
 import textwrap
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import tifffile
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.collections import EllipseCollection, PatchCollection
+from matplotlib.collections import EllipseCollection, LineCollection, PatchCollection
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from matplotlib.patches import RegularPolygon
+from matplotlib.patheffects import withStroke
 from matplotlib.ticker import MaxNLocator
 
 QC_FOLDER_NAME = "qc"
@@ -77,6 +84,33 @@ CLUSTER_LINE_WIDTH = 2
 CLUSTER_SHAPE_SIDES = 5
 # Pixels brighter than this percentile are all shown in the brightest colour.
 DETECTION_CONTRAST_PERCENTILE = 99.9
+
+# Final QC
+FINAL_SUFFIX = "_final"
+HTML_EXTENSION = ".html"
+# Above this number of cells the PNG leaves the text on the cells out.
+FINAL_MAX_LABELLED_CELLS = 300
+FINAL_FIGURE_WIDTH = 16
+# Height of the figure outside the picture (title and legend), in inches.
+FINAL_FIGURE_MARGIN = 1.9
+FINAL_MAX_HEIGHT = 16
+FINAL_SPOT_COLOUR = "#ff9f0a"
+FINAL_OUTSIDE_SPOT_COLOUR = "#ff4fd8"
+FINAL_CLUSTER_COLOUR = "cyan"
+FINAL_OUTLINE_COLOUR = "#3ddc57"
+# Polygons of the cell outlines are simplified until they are this many pixels from the true edge.
+FINAL_OUTLINE_TOLERANCE_PX = 0.5
+
+# The page: the picture is not larger than this many pixels on its longer side.
+HTML_MAX_IMAGE_SIDE = 2048
+PLOTLY_SCRIPT_NAME = "plotly.min.js"
+PLOTLY_SHARED = "shared"
+PLOTLY_EMBEDDED = "embedded"
+# The grid of invisible points that answers a hover on a cell is this far apart
+# (in picture pixels) on a picture 256 pixels wide, and wider on larger pictures.
+HTML_HOVER_GRID_MIN_STEP_PX = 3
+HTML_HOVER_GRID_POINTS_ACROSS = 256
+HTML_HOVER_DISTANCE_PX = 12
 
 
 # Cellpose QC figure
@@ -795,4 +829,696 @@ def write_reference_spot(run_folder, image_name, channel, reference_spot):
     finally:
         if temporary.exists():
             temporary.unlink()
+    return path
+
+
+# Final QC
+
+def final_png_path(run_folder, image_name, channel):
+    """Path of an image's final QC figure: `qc/<image>_ch<index>_final.png` in the run folder."""
+    return (
+        Path(run_folder) / QC_FOLDER_NAME
+        / f"{image_name}_ch{channel}{FINAL_SUFFIX}{QC_EXTENSION}"
+    )
+
+
+def final_html_path(run_folder, image_name, channel):
+    """Path of an image's interactive final QC page: `qc/<image>_ch<index>_final.html` in the run folder."""
+    return (
+        Path(run_folder) / QC_FOLDER_NAME
+        / f"{image_name}_ch{channel}{FINAL_SUFFIX}{HTML_EXTENSION}"
+    )
+
+
+def plotly_script_path(run_folder):
+    """Path of the copy of plotly's script that the pages of a run share: `qc/plotly.min.js`."""
+    return Path(run_folder) / QC_FOLDER_NAME / PLOTLY_SCRIPT_NAME
+
+
+def final_title(image_name, channel, n_spots, n_clusters=None, n_cells=None,
+                channel_name=None, text_left_out=False):
+    """
+    The title of the final QC, for example
+    "slide 3 | channel 2 (jim-exon) | 44 cells | 692 spots | 6 clusters".
+
+    channel: the channel's number.
+    channel_name: the channel's name, shown after the number when given.
+    n_cells: number of cells, or None or 0 when there are none: the title
+        then says "no cells".
+    n_spots: number of spots. With none, the title says "no spots found" and
+        nothing about clusters.
+    n_clusters: number of clusters, or None when cluster detection is off.
+    text_left_out: True when the cell numbers are not written on the cells
+        because there are too many; the title says so.
+
+    A title longer than TITLE_LINE_WIDTH characters is continued on a new line.
+    """
+    channel_text = f"channel {channel}"
+    if channel_name:
+        channel_text += f" ({channel_name})"
+    items = [str(image_name), channel_text]
+    if not n_cells:
+        items.append("no cells")
+    else:
+        cell_text = f"{n_cells} cell" if n_cells == 1 else f"{n_cells} cells"
+        if text_left_out:
+            cell_text += f" (too many to number, over {FINAL_MAX_LABELLED_CELLS})"
+        items.append(cell_text)
+    if n_spots == 0:
+        items.append("no spots found")
+    else:
+        items.append(f"{n_spots} spot" if n_spots == 1 else f"{n_spots} spots")
+        if n_clusters is not None:
+            items.append(f"{n_clusters} cluster" if n_clusters == 1 else f"{n_clusters} clusters")
+    return _wrap_items(items, TITLE_LINE_WIDTH)
+
+
+@dataclass
+class _FinalView:
+    """What both forms of the final QC draw: the picture, the cells, the spots and the clusters."""
+
+    picture: np.ndarray
+    # Cells: their label values (sorted), outlines as polygons of (y, x) points,
+    # the point on each cell where its text goes, and per-cell numbers.
+    ids: np.ndarray
+    outlines: list
+    anchors: np.ndarray
+    cell_values: dict
+    # Spots: positions (y, x), and the cell, cluster, number and other values of each.
+    spot_yx: np.ndarray
+    spot_cell: np.ndarray
+    spot_cluster: np.ndarray
+    spot_table: object
+    # Clusters, or None when cluster detection is off.
+    cluster_yx: np.ndarray
+    cluster_table: object
+    has_clusters: bool
+    labels: object
+
+    @property
+    def has_cells(self):
+        return len(self.ids) > 0
+
+
+def _table_yx(table):
+    """
+    Positions (y, x) in pixels of the rows of a spots or clusters table, as
+    float32 (n, 2). The subpixel columns are used when the table has them (and
+    the plain pixel columns for a row where one is empty).
+    """
+    if table is None or len(table) == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    columns = []
+    for axis in "yx":
+        values = np.asarray(table[f"{axis}_px"], dtype=float)
+        if f"{axis}_sub_px" in table:
+            fitted = np.asarray(table[f"{axis}_sub_px"], dtype=float)
+            values = np.where(np.isnan(fitted), values, fitted)
+        columns.append(values)
+    return np.column_stack(columns).astype(np.float32)
+
+
+def _integer_column(table, name, default, length):
+    """A whole-number column of a table, or `default` for every row when the table has none."""
+    if table is None or length == 0 or name not in table:
+        return np.full(length, default, dtype=np.int64)
+    return np.asarray(table[name], dtype=np.int64)
+
+
+def _cell_shapes(labels):
+    """
+    The cells of a label image: their label values (sorted), the outline of
+    each as a list of polygons (arrays of (y, x) points, simplified to
+    FINAL_OUTLINE_TOLERANCE_PX), and for each cell a point inside it, near its
+    centre, where its text goes.
+    """
+    from scipy import ndimage
+    from skimage import measure
+
+    ids, outlines, anchors = [], [], []
+    for index, region in enumerate(ndimage.find_objects(labels)):
+        if region is None:
+            continue
+        mask = labels[region] == index + 1
+        offset = np.array([region[0].start, region[1].start], dtype=float)
+        padded = np.pad(mask, 1).astype(np.float32)
+        for contour in measure.find_contours(padded, 0.5):
+            polygon = measure.approximate_polygon(contour, FINAL_OUTLINE_TOLERANCE_PX)
+            outlines.append(polygon - 1 + offset)
+        rows, columns = np.nonzero(mask)
+        centre = np.array([rows.mean(), columns.mean()])
+        nearest = np.round(centre).astype(int)
+        if not mask[nearest[0], nearest[1]]:
+            closest = np.argmin((rows - centre[0]) ** 2 + (columns - centre[1]) ** 2)
+            centre = np.array([rows[closest], columns[closest]], dtype=float)
+        ids.append(index + 1)
+        anchors.append(centre + offset)
+    return np.array(ids, dtype=np.int64), outlines, np.array(anchors, dtype=float).reshape(-1, 2)
+
+
+# Numbers of the cells table that the page shows on hover.
+_CELL_VALUE_COLUMNS = (
+    "n_spots", "n_spots_in_clusters", "n_spots_outside_clusters", "n_clusters",
+    "area_px", "area_um2",
+)
+
+
+def _cell_values(cells, ids, spot_cell):
+    """
+    The numbers of each cell, as a dict from column name to an array in the
+    order of `ids` (NaN where unknown). They come from the cells table; the
+    number of spots is counted from the spots' cells when the table has no
+    number for a cell.
+    """
+    values = {}
+    if cells is not None and len(cells) and len(ids):
+        table_ids = np.asarray(cells["cell_id"], dtype=np.int64)
+        order = np.argsort(table_ids)
+        sorted_ids = table_ids[order]
+        position = np.clip(np.searchsorted(sorted_ids, ids), 0, len(sorted_ids) - 1)
+        found = sorted_ids[position] == ids
+        for name in _CELL_VALUE_COLUMNS:
+            if name in cells:
+                column = np.asarray(cells[name], dtype=float)[order][position]
+                values[name] = np.where(found, column, np.nan)
+    if len(ids):
+        inside = spot_cell[spot_cell >= 0]
+        counted = np.bincount(inside, minlength=int(ids.max()) + 1)[ids].astype(float)
+        known = values.get("n_spots")
+        values["n_spots"] = counted if known is None else np.where(np.isnan(known), counted, known)
+    return values
+
+
+def _final_view(picture, spots, clusters, cells, labels):
+    """Check the arguments of the final QC and gather what is drawn (see `draw_final_qc`)."""
+    picture = project_for_detection(picture)
+    if labels is not None:
+        labels = np.asarray(labels)
+        if labels.shape != picture.shape:
+            raise ValueError(
+                f"The label image has shape {labels.shape}, but the picture has shape "
+                f"{picture.shape}."
+            )
+        if not labels.any():
+            labels = None
+    spot_yx = _table_yx(spots)
+    n_spots = len(spot_yx)
+    spot_cluster = _integer_column(spots, "cluster_id", -1, n_spots)
+    if labels is None:
+        spot_cell = np.full(n_spots, -1, dtype=np.int64)
+    elif "cell_id" in (spots if n_spots else ()):
+        spot_cell = _integer_column(spots, "cell_id", -1, n_spots)
+    elif n_spots:
+        rows = np.clip(np.round(spot_yx[:, 0]).astype(int), 0, labels.shape[0] - 1)
+        columns = np.clip(np.round(spot_yx[:, 1]).astype(int), 0, labels.shape[1] - 1)
+        found = labels[rows, columns].astype(np.int64)
+        spot_cell = np.where(found > 0, found, -1)
+    else:
+        spot_cell = np.zeros(0, dtype=np.int64)
+
+    if labels is None:
+        ids, outlines, anchors = np.zeros(0, dtype=np.int64), [], np.zeros((0, 2))
+    else:
+        ids, outlines, anchors = _cell_shapes(labels)
+    return _FinalView(
+        picture=picture, ids=ids, outlines=outlines, anchors=anchors,
+        cell_values=_cell_values(cells, ids, spot_cell),
+        spot_yx=spot_yx, spot_cell=spot_cell, spot_cluster=spot_cluster, spot_table=spots,
+        cluster_yx=_table_yx(clusters), cluster_table=clusters,
+        has_clusters=clusters is not None, labels=labels,
+    )
+
+
+def _final_counts(view):
+    return len(view.ids), len(view.spot_yx), (len(view.cluster_yx) if view.has_clusters else None)
+
+
+def _grey_levels(picture):
+    """The picture as 8-bit grey levels (y, x), with its contrast stretched for display."""
+    return _stretch_for_display(picture)[..., 0]
+
+
+def draw_final_qc(picture, spots, clusters, cells, labels, image_name, channel,
+                  channel_name=None):
+    """
+    Draw the final QC of one image and channel as a figure and return it,
+    without showing or saving it.
+
+    picture: the picture to draw on, (y, x): the maximum projection of the
+        channel. A 3D channel (z, y, x) is projected here.
+    spots: the channel's spots table as written in `per_image/` (the columns
+        of spec 8.2): `y_px` and `x_px`, or `y_sub_px` and `x_sub_px` when the
+        table has them, and `cell_id`. None for no spots.
+    clusters: the clusters table, or None when cluster detection is off.
+    cells: the cells table of the channel, or None. Each cell's number of
+        spots is taken from it.
+    labels: the label image (y, x) of the cells, or None when there is none.
+        Without labels the figure has no outlines and no cell text, and the
+        title says there are no cells.
+    image_name, channel, channel_name: the image's name and the channel's
+        number and name; they make the title (see `final_title`).
+
+    The picture is grey with its contrast stretched for display. Spots in a
+    cell are orange circles and spots outside the cells are pink crosses;
+    clusters are cyan pentagons; cells have green outlines. On each cell the
+    text "12: 34" gives its number and its number of spots. With more than
+    FINAL_MAX_LABELLED_CELLS cells the text is left out and the title says so.
+    A legend below the picture says what each mark is.
+
+    Returns a matplotlib `Figure` that is not tied to `matplotlib.pyplot`.
+    """
+    view = _final_view(picture, spots, clusters, cells, labels)
+    n_cells, n_spots, n_clusters = _final_counts(view)
+    text_left_out = n_cells > FINAL_MAX_LABELLED_CELLS
+    height, width = view.picture.shape
+
+    figure_height = float(np.clip(
+        FINAL_FIGURE_WIDTH * height / width + FINAL_FIGURE_MARGIN, 3, FINAL_MAX_HEIGHT
+    ))
+    figure = Figure(
+        figsize=(FINAL_FIGURE_WIDTH, figure_height), dpi=FIGURE_DPI, layout="constrained"
+    )
+    FigureCanvasAgg(figure)
+    axes = figure.add_subplot()
+    axes.imshow(
+        _grey_levels(view.picture), cmap="gray", vmin=0, vmax=255, interpolation_stage="data"
+    )
+    axes.axis("off")
+    figure.suptitle(
+        final_title(
+            image_name, channel, n_spots, n_clusters, n_cells, channel_name, text_left_out
+        ),
+        fontsize=11, fontweight="bold",
+    )
+
+    legend = []
+    if view.has_cells:
+        axes.add_collection(
+            LineCollection(
+                [polygon[:, ::-1] for polygon in view.outlines],
+                colors=FINAL_OUTLINE_COLOUR, linewidths=0.8,
+            ),
+            autolim=False,
+        )
+        legend.append(Line2D([], [], color=FINAL_OUTLINE_COLOUR, linewidth=1.5, label="Cell outline"))
+
+    inside = view.spot_cell >= 0
+    if inside.any():
+        axes.scatter(
+            view.spot_yx[inside, 1], view.spot_yx[inside, 0], s=12, marker="o",
+            facecolors="none", edgecolors=FINAL_SPOT_COLOUR, linewidths=0.6,
+        )
+        legend.append(Line2D(
+            [], [], linestyle="", marker="o", markerfacecolor="none",
+            markeredgecolor=FINAL_SPOT_COLOUR, label="Spot inside a cell",
+        ))
+    if (~inside).any():
+        axes.scatter(
+            view.spot_yx[~inside, 1], view.spot_yx[~inside, 0], s=12, marker="x",
+            color=FINAL_OUTSIDE_SPOT_COLOUR, linewidths=0.6,
+        )
+        legend.append(Line2D(
+            [], [], linestyle="", marker="x", color=FINAL_OUTSIDE_SPOT_COLOUR,
+            label="Spot outside the cells" if view.has_cells else "Spot",
+        ))
+    if n_clusters:
+        axes.scatter(
+            view.cluster_yx[:, 1], view.cluster_yx[:, 0], s=110, marker="p",
+            facecolors=(0, 1, 1, 0.3), edgecolors=FINAL_CLUSTER_COLOUR, linewidths=1.5,
+        )
+        legend.append(Line2D(
+            [], [], linestyle="", marker="p", markersize=9, markerfacecolor=(0, 1, 1, 0.3),
+            markeredgecolor=FINAL_CLUSTER_COLOUR, label="Cluster of spots",
+        ))
+
+    if view.has_cells and not text_left_out:
+        size = 9 if n_cells <= 60 else 7 if n_cells <= 150 else 5.5
+        counts = view.cell_values["n_spots"]
+        for cell_id, count, (row, column) in zip(view.ids, counts, view.anchors):
+            axes.text(
+                column, row, f"{cell_id}: {int(count)}", color="white", fontsize=size,
+                ha="center", va="center", fontweight="bold",
+                path_effects=[withStroke(linewidth=1.5, foreground="black")],
+            )
+        legend.append(Line2D(
+            [], [], linestyle="", label="On each cell: its number, then its number of spots",
+        ))
+    if legend:
+        axes.legend(
+            handles=legend, loc="upper center", bbox_to_anchor=(0.5, -0.005),
+            ncol=len(legend), frameon=False, fontsize=9, handlelength=1.5, columnspacing=1.5,
+        )
+    return figure
+
+
+def _write_atomically(path, write, temporary=None):
+    """
+    Write a file under a temporary name, then rename it, so that a half-written
+    file never has the final name. `write` is called with the temporary path.
+    The folder is made when it does not exist. A temporary file left by a
+    failure is removed.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = temporary_qc_path(path) if temporary is None else Path(temporary)
+    try:
+        write(temporary)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def write_final_qc(run_folder, image_name, picture, spots, clusters, cells, labels, channel,
+                   channel_name=None):
+    """
+    Write an image's final QC figure as `qc/<image>_ch<index>_final.png` in the run folder.
+
+    The other arguments are those of `draw_final_qc`, with the run folder and
+    the image's name first. The figure is first written under a temporary name
+    and then renamed. The `qc` folder is made when it does not exist. Works
+    from any thread and needs no screen.
+
+    Returns the path of the figure.
+    """
+    figure = draw_final_qc(
+        picture, spots, clusters, cells, labels, image_name, channel, channel_name
+    )
+    path = final_png_path(run_folder, image_name, channel)
+    _save_figure(figure, path)
+    return path
+
+
+# Final QC as a page
+
+def _picture_data_address(picture):
+    """
+    The picture as a PNG of 8-bit grey levels with its contrast stretched, as a
+    text that a web page can show (a `data:` address). A picture with a side
+    longer than HTML_MAX_IMAGE_SIDE is reduced to that side, by averaging.
+    """
+    from PIL import Image
+
+    levels = Image.fromarray(_grey_levels(picture), mode="L")
+    height, width = picture.shape
+    longest = max(height, width)
+    if longest > HTML_MAX_IMAGE_SIDE:
+        scale = HTML_MAX_IMAGE_SIDE / longest
+        levels = levels.resize(
+            (max(1, round(width * scale)), max(1, round(height * scale))), Image.Resampling.BOX
+        )
+    buffer = io.BytesIO()
+    levels.save(buffer, format="PNG", compress_level=6)
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _outline_points(outlines):
+    """All the outlines as one line for plotly: x and y as float32, with a gap (NaN) between polygons."""
+    if not outlines:
+        return np.zeros(0, dtype=np.float32), np.zeros(0, dtype=np.float32)
+    gap = np.full((1, 2), np.nan)
+    points = np.concatenate([part for polygon in outlines for part in (polygon, gap)])
+    return points[:, 1].astype(np.float32), points[:, 0].astype(np.float32)
+
+
+def _cell_hover_points(view):
+    """
+    Invisible points that answer a hover on a cell: one at the text point of
+    each cell and a grid of points over the cells. Returns their (y, x) and
+    the index of their cell in `view.ids`.
+    """
+    height, width = view.picture.shape
+    step = max(HTML_HOVER_GRID_MIN_STEP_PX, round(max(height, width) / HTML_HOVER_GRID_POINTS_ACROSS))
+    rows = np.arange(step // 2, height, step)
+    columns = np.arange(step // 2, width, step)
+    sampled = view.labels[np.ix_(rows, columns)]
+    found_rows, found_columns = np.nonzero(sampled)
+    grid = np.column_stack([rows[found_rows], columns[found_columns]]).astype(float)
+    grid_cells = np.searchsorted(view.ids, sampled[found_rows, found_columns])
+    positions = np.concatenate([view.anchors, grid])
+    cell_index = np.concatenate([np.arange(len(view.ids)), grid_cells])
+    return positions.astype(np.float32), cell_index
+
+
+def _cell_hover_template(view):
+    """The hover text of a cell and the columns it needs, in order, from `view.cell_values`."""
+    columns = ["n_spots", "n_spots_in_clusters", "n_spots_outside_clusters", "n_clusters"]
+    names = {
+        "n_spots": "Spots", "n_spots_in_clusters": "Spots in clusters",
+        "n_spots_outside_clusters": "Spots outside clusters", "n_clusters": "Clusters",
+    }
+    used = [name for name in columns if name in view.cell_values]
+    lines = ["<b>Cell %{customdata[0]:.0f}</b>"]
+    for position, name in enumerate(used, start=1):
+        lines.append(f"{names[name]}: %{{customdata[{position}]:.0f}}")
+    if "area_px" in view.cell_values:
+        position = len(used) + 1
+        used.append("area_px")
+        line = f"Area: %{{customdata[{position}]:,.0f}} px"
+        if "area_um2" in view.cell_values:
+            used.append("area_um2")
+            line += f" (%{{customdata[{position + 1}]:.1f}} µm²)"
+        lines.append(line)
+    return "<br>".join(lines) + "<extra></extra>", used
+
+
+def _spot_traces(go, view):
+    """
+    The traces for the spots: spots in a cell as circles and spots outside the
+    cells as crosses. Each kind is split by whether the spot is in a cluster,
+    only so that the hover text can say it; the pieces of one kind switch on
+    and off together.
+    """
+    traces = []
+    n_spots = len(view.spot_yx)
+    if n_spots == 0:
+        return traces
+    table = view.spot_table
+    spot_ids = _integer_column(table, "spot_id", 0, n_spots)
+    if "spot_id" not in table:
+        spot_ids = np.arange(n_spots)
+    in_cell = view.spot_cell >= 0
+    in_cluster = view.spot_cluster >= 0
+    kinds = (
+        (True, "Spots inside cells", "circle-open", FINAL_SPOT_COLOUR),
+        (False, "Spots outside cells" if view.has_cells else "Spots", "x-thin-open",
+         FINAL_OUTSIDE_SPOT_COLOUR),
+    )
+    for is_inside, name, symbol, colour in kinds:
+        first = True
+        for clustered in (True, False):
+            chosen = (in_cell == is_inside) & (in_cluster == clustered)
+            if not chosen.any():
+                continue
+            fields = [spot_ids[chosen]]
+            lines = ["<b>Spot %{customdata[0]:.0f}</b>"]
+            if view.has_cells:
+                if is_inside:
+                    fields.append(view.spot_cell[chosen])
+                    lines.append(f"Cell: %{{customdata[{len(fields) - 1}]:.0f}}")
+                else:
+                    lines.append("Outside the cells")
+            if view.has_clusters:
+                if clustered:
+                    fields.append(view.spot_cluster[chosen])
+                    lines.append(f"Cluster: %{{customdata[{len(fields) - 1}]:.0f}}")
+                else:
+                    lines.append("Not in a cluster")
+            if "snr" in table:
+                fields.append(np.asarray(table["snr"], dtype=float)[chosen])
+                lines.append(f"SNR: %{{customdata[{len(fields) - 1}]:.2f}}")
+            if "log_intensity" in table:
+                fields.append(np.asarray(table["log_intensity"], dtype=float)[chosen])
+                lines.append(f"Log intensity: %{{customdata[{len(fields) - 1}]:.2f}}")
+            traces.append(go.Scattergl(
+                x=view.spot_yx[chosen, 1], y=view.spot_yx[chosen, 0], mode="markers",
+                name=name, legendgroup=name, showlegend=first,
+                marker=dict(symbol=symbol, size=7, color=colour, line=dict(width=1.2, color=colour)),
+                customdata=np.column_stack(fields).astype(np.float32),
+                hovertemplate="<br>".join(lines) + "<extra></extra>",
+            ))
+            first = False
+    return traces
+
+
+def _cluster_trace(go, view):
+    """The trace for the clusters, or None when there are none."""
+    n_clusters = len(view.cluster_yx)
+    if n_clusters == 0:
+        return None
+    table = view.cluster_table
+    cluster_ids = (
+        np.asarray(table["cluster_id"], dtype=np.int64) if "cluster_id" in table
+        else np.arange(n_clusters)
+    )
+    cluster_cells = _integer_column(table, "cell_id", -1, n_clusters)
+    cluster_sizes = np.asarray(table["n_spots"]) if "n_spots" in table else None
+    texts = []
+    for position in range(n_clusters):
+        lines = [f"<b>Cluster {cluster_ids[position]}</b>"]
+        if cluster_sizes is not None:
+            lines.append(f"{int(cluster_sizes[position])} spots")
+        if view.has_cells:
+            lines.append(
+                f"In cell {cluster_cells[position]}" if cluster_cells[position] >= 0
+                else "Outside the cells"
+            )
+        texts.append("<br>".join(lines))
+    return go.Scattergl(
+        x=view.cluster_yx[:, 1], y=view.cluster_yx[:, 0], mode="markers", name="Clusters",
+        marker=dict(symbol="pentagon", size=14, color="rgba(0,255,255,0.35)",
+                    line=dict(width=2, color=FINAL_CLUSTER_COLOUR)),
+        hovertext=texts, hovertemplate="%{hovertext}<extra></extra>",
+    )
+
+
+def draw_final_html(picture, spots, clusters, cells, labels, image_name, channel,
+                    channel_name=None):
+    """
+    Draw the final QC of one image and channel as an interactive plotly figure
+    and return it, without saving it. The arguments are those of `draw_final_qc`.
+
+    The picture is the maximum projection in 8-bit with its contrast
+    stretched, at full size up to HTML_MAX_IMAGE_SIDE pixels on its longer
+    side and reduced above that; positions stay in the pixels of the picture
+    given. The figure can be zoomed and panned.
+    - Spots inside cells are orange circles, spots outside the cells pink
+      crosses, clusters cyan pentagons and cells have green outlines. Each can
+      be switched on and off by clicking its name in the legend.
+    - Hovering on a cell gives its number and the numbers of the cells table
+      (spots, spots in clusters, spots outside clusters, clusters, area).
+    - Hovering on a spot gives its number, its cell and cluster, and its SNR
+      and log intensity when the table has them.
+    - Hovering on a cluster gives its number, its number of spots and its cell.
+
+    Spots are drawn with plotly's WebGL scatter and all the outlines are one
+    trace, so that a full-size image with tens of thousands of spots and over
+    a thousand cells stays smooth. `plotly` is loaded here and not when the
+    module is imported.
+    """
+    import plotly.graph_objects as go
+
+    view = _final_view(picture, spots, clusters, cells, labels)
+    n_cells, n_spots, n_clusters = _final_counts(view)
+    height, width = view.picture.shape
+
+    figure = go.Figure()
+    if view.has_cells:
+        outline_x, outline_y = _outline_points(view.outlines)
+        figure.add_trace(go.Scattergl(
+            x=outline_x, y=outline_y, mode="lines", name="Cell outlines", legendgroup="cells",
+            line=dict(width=1.5, color=FINAL_OUTLINE_COLOUR), hoverinfo="skip",
+        ))
+    figure.add_traces(_spot_traces(go, view))
+    cluster_trace = _cluster_trace(go, view) if view.has_clusters else None
+    if cluster_trace is not None:
+        figure.add_trace(cluster_trace)
+    if view.has_cells:
+        # Added last and drawn with tiny invisible markers, so that a spot or a
+        # cluster under the pointer is chosen before the cell it lies in.
+        template, columns = _cell_hover_template(view)
+        positions, cell_index = _cell_hover_points(view)
+        values = [view.ids.astype(float)] + [view.cell_values[name] for name in columns]
+        figure.add_trace(go.Scattergl(
+            x=positions[:, 1], y=positions[:, 0], mode="markers", name="Cell outlines",
+            legendgroup="cells", showlegend=False,
+            marker=dict(size=2, color="rgba(0,0,0,0)"),
+            customdata=np.column_stack(values)[cell_index].astype(np.float32),
+            hovertemplate=template,
+        ))
+
+    title = final_title(image_name, channel, n_spots, n_clusters, n_cells, channel_name)
+    figure.update_layout(
+        title=dict(text=html.escape(title).replace("\n", "<br>"), x=0.01, font=dict(size=14)),
+        template="plotly_white",
+        images=[dict(
+            source=_picture_data_address(view.picture), xref="x", yref="y", x=-0.5, y=-0.5,
+            sizex=width, sizey=height, sizing="stretch", layer="below",
+            xanchor="left", yanchor="top",
+        )],
+        xaxis=dict(range=[-0.5, width - 0.5], title="x (pixels)", constrain="domain",
+                   showgrid=False, zeroline=False),
+        yaxis=dict(range=[height - 0.5, -0.5], title="y (pixels)", scaleanchor="x",
+                   scaleratio=1, constrain="domain", showgrid=False, zeroline=False),
+        legend=dict(itemsizing="constant"),
+        hoverdistance=HTML_HOVER_DISTANCE_PX,
+        dragmode="pan",
+        margin=dict(l=60, r=20, t=80, b=50),
+    )
+    return figure
+
+
+def _page_title(image_name, channel, channel_name):
+    channel_text = f"channel {channel}" + (f" ({channel_name})" if channel_name else "")
+    return html.escape(f"{image_name} | {channel_text} | final QC")
+
+
+def _write_plotly_script(run_folder):
+    """
+    Make sure `qc/plotly.min.js` exists in the run folder, whole. Several
+    processes can call this at the same moment: each writes its own temporary
+    file, named by its process and a random part, and renames it, so a half
+    written copy never has the final name. A copy that is already there with
+    the right size is left alone.
+    """
+    from plotly.offline import get_plotlyjs
+
+    data = get_plotlyjs().encode("utf-8")
+    path = plotly_script_path(run_folder)
+    if path.is_file() and path.stat().st_size == len(data):
+        return path
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        _write_atomically(path, lambda target: target.write_bytes(data), temporary)
+    except PermissionError:
+        # Windows does not rename over a file that another process is reading.
+        if not (path.is_file() and path.stat().st_size == len(data)):
+            raise
+    return path
+
+
+def write_final_html(run_folder, image_name, picture, spots, clusters, cells, labels, channel,
+                     channel_name=None, plotly_script=PLOTLY_SHARED):
+    """
+    Write an image's interactive final QC as `qc/<image>_ch<index>_final.html`
+    in the run folder.
+
+    The other arguments are those of `draw_final_html`, with the run folder
+    and the image's name first.
+    plotly_script: how the page gets plotly's script, so that it opens without
+        an internet connection.
+        "shared" (the default): one copy, `qc/plotly.min.js` (about 4.5 MB),
+        is used by every page of the `qc` folder. Pages are small, and must
+        stay in the folder with the script.
+        "embedded": the script is inside the page, which is then about 4.5 MB
+        larger and can be sent on its own.
+    The page is first written under a temporary name and then renamed; the
+    shared script too, under a name that is the writing process's own. The
+    `qc` folder is made when it does not exist. Works from any thread and
+    needs no screen.
+
+    Returns the path of the page.
+    """
+    if plotly_script not in (PLOTLY_SHARED, PLOTLY_EMBEDDED):
+        raise ValueError(
+            f'plotly_script must be "{PLOTLY_SHARED}" or "{PLOTLY_EMBEDDED}"; got {plotly_script!r}.'
+        )
+    figure = draw_final_html(
+        picture, spots, clusters, cells, labels, image_name, channel, channel_name
+    )
+    config = {"scrollZoom": True, "displaylogo": False, "responsive": True}
+    if plotly_script == PLOTLY_SHARED:
+        include = PLOTLY_SCRIPT_NAME
+        _write_plotly_script(run_folder)
+    else:
+        include = True
+    page = figure.to_html(
+        include_plotlyjs=include, full_html=True, config=config,
+        default_width="100%", default_height="92vh",
+    )
+    page = page.replace(
+        "<head>", f"<head><title>{_page_title(image_name, channel, channel_name)}</title>", 1
+    )
+    path = final_html_path(run_folder, image_name, channel)
+    _write_atomically(path, lambda target: target.write_text(page, encoding="utf-8"))
     return path

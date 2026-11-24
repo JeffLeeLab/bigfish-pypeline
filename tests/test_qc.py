@@ -1,6 +1,11 @@
-"""Tests for qc.py: the Cellpose QC figure, the elbow plot, the calibration plot, the detection plot and the reference spot."""
+"""Tests for qc.py: the Cellpose QC figure, the elbow plot, the calibration plot, the detection plot, the reference spot and the final QC."""
 
+import base64
+import hashlib
+import io
+import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -9,9 +14,10 @@ import threading
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import tifffile
-from matplotlib.collections import EllipseCollection, PatchCollection
+from matplotlib.collections import EllipseCollection, LineCollection, PatchCollection
 
 from bigfish_pypeline import decomposition, detection, outputs, qc
 from bigfish_pypeline import segmentation as seg
@@ -283,7 +289,7 @@ def test_importing_the_module_does_not_load_cellpose_or_torch(tmp_path):
     script = """
         import sys
         import bigfish_pypeline.qc
-        loaded = [name for name in ("cellpose", "torch") if name in sys.modules]
+        loaded = [name for name in ("cellpose", "torch", "plotly") if name in sys.modules]
         assert not loaded, loaded
         assert "matplotlib.pyplot" not in sys.modules
         print("ok")
@@ -1134,3 +1140,886 @@ def test_reference_spot_of_the_crop_equals_the_v1_file(crop_path, crop_reference
     assert found.dtype == expected.dtype
     assert found.shape == expected.shape
     assert np.array_equal(found, expected)
+
+
+# ---------------------------------------------------------------------------
+# Final QC
+# ---------------------------------------------------------------------------
+
+FINAL_IMAGE = "slide 3 é"
+VOXEL_UM2 = 0.065 ** 2
+
+
+def _final_data(n_cells=6, n_spots=60, n_clusters=2, shape=(60, 80), ndim=2, subpixel=False,
+                snr=False, intensity=False, seed=3):
+    """
+    Tables and labels as the run folder has them: square cells in a grid, spots
+    placed at random (some on the cells), clusters of some of the spots.
+    Returns (picture, spots, clusters, cells, labels).
+    """
+    rng = np.random.default_rng(seed)
+    height, width = shape
+    labels = np.zeros(shape, dtype=np.uint32)
+    across = int(np.ceil(np.sqrt(max(n_cells, 1))))
+    tile_y, tile_x = height // across, width // across
+    for number in range(n_cells):
+        row, column = divmod(number, across)
+        labels[row * tile_y + 1:(row + 1) * tile_y - 1,
+               column * tile_x + 1:(column + 1) * tile_x - 1] = number + 1
+
+    y = rng.integers(0, height, n_spots)
+    x = rng.integers(0, width, n_spots)
+    cell_id = labels[y, x].astype(np.int64)
+    cell_id[cell_id == 0] = -1
+    cluster_id = np.full(n_spots, -1)
+    cluster_id[: min(n_spots, 4 * n_clusters)] = np.arange(min(n_spots, 4 * n_clusters)) // 4
+    spots = {"image": FINAL_IMAGE, "channel": 2, "channel_name": "jim-exon",
+             "spot_id": np.arange(n_spots)}
+    if ndim == 3:
+        spots["z_px"] = rng.integers(0, 10, n_spots)
+    spots.update({"y_px": y, "x_px": x})
+    if subpixel:
+        spots["y_sub_px"] = y + rng.uniform(-0.4, 0.4, n_spots)
+        spots["x_sub_px"] = x + rng.uniform(-0.4, 0.4, n_spots)
+    spots.update({"cluster_id": cluster_id, "cell_id": cell_id})
+    if snr:
+        spots["snr"] = rng.uniform(1, 5, n_spots)
+    if intensity:
+        spots["log_intensity"] = rng.uniform(5, 9, n_spots)
+    spots = pd.DataFrame(spots)
+
+    cluster_rows = {"image": FINAL_IMAGE, "channel": 2, "channel_name": "jim-exon",
+                    "cluster_id": np.arange(n_clusters)}
+    if ndim == 3:
+        cluster_rows["z_px"] = np.full(n_clusters, 4.5)
+    cluster_rows.update({
+        "y_px": rng.uniform(0, height, n_clusters), "x_px": rng.uniform(0, width, n_clusters),
+        "n_spots": np.full(n_clusters, 4), "cell_id": rng.integers(-1, n_cells + 1, n_clusters),
+    })
+    clusters = pd.DataFrame(cluster_rows)
+
+    ids = np.arange(1, n_cells + 1)
+    in_cluster = np.array([((cell_id == number) & (cluster_id >= 0)).sum() for number in ids], dtype=int)
+    counts = np.array([(cell_id == number).sum() for number in ids], dtype=int)
+    area = np.array([(labels == number).sum() for number in ids], dtype=int)
+    cells = pd.DataFrame({
+        "image": FINAL_IMAGE, "channel": 2, "channel_name": "jim-exon",
+        "cell_id": ids, "area_px": area, "area_um2": area * VOXEL_UM2,
+        "centroid_y_px": 1.0, "centroid_x_px": 1.0, "touches_border": False,
+        "n_spots": counts, "n_spots_in_clusters": in_cluster,
+        "n_spots_outside_clusters": counts - in_cluster,
+        "n_clusters": np.arange(n_cells) % 3, "mean_spots_per_cluster": np.nan,
+    })
+    picture = rng.poisson(40, shape).astype(np.uint16)
+    if ndim == 3:
+        picture = np.stack([picture, picture // 2, picture // 3])
+    return picture, spots, clusters, cells, labels
+
+
+def _png_figure(data, **kwargs):
+    picture, spots, clusters, cells, labels = data
+    return qc.draw_final_qc(picture, spots, clusters, cells, labels, FINAL_IMAGE, 2, **kwargs)
+
+
+def _title(figure):
+    return figure.get_suptitle()
+
+
+def _html_figure(data, **kwargs):
+    picture, spots, clusters, cells, labels = data
+    return qc.draw_final_html(picture, spots, clusters, cells, labels, FINAL_IMAGE, 2, **kwargs)
+
+
+def _write_html(folder, data, **kwargs):
+    picture, spots, clusters, cells, labels = data
+    return qc.write_final_html(folder, FINAL_IMAGE, picture, spots, clusters, cells, labels, 2, **kwargs)
+
+
+def _write_png(folder, data, **kwargs):
+    picture, spots, clusters, cells, labels = data
+    return qc.write_final_qc(folder, FINAL_IMAGE, picture, spots, clusters, cells, labels, 2, **kwargs)
+
+
+def _trace(figure, name, kind=None):
+    found = [t for t in figure.data if t.name == name and (kind is None or t.mode == kind)]
+    assert len(found) == 1, [t.name for t in figure.data]
+    return found[0]
+
+
+def _page_data(path):
+    """The traces written in a page, as dicts, with their typed arrays decoded."""
+    text = Path(path).read_text(encoding="utf-8")
+    start = text.index("Plotly.newPlot(")
+    start = text.index("[", start)
+    traces, _ = json.JSONDecoder().raw_decode(text[start:])
+
+    def decode(value):
+        if isinstance(value, dict) and "bdata" in value:
+            array = np.frombuffer(base64.b64decode(value["bdata"]), dtype=np.dtype(value["dtype"]))
+            if "shape" in value:
+                array = array.reshape([int(n) for n in str(value["shape"]).split(",")])
+            return array
+        if isinstance(value, dict):
+            return {key: decode(item) for key, item in value.items()}
+        return value
+
+    return [decode(trace) for trace in traces]
+
+
+def _without_big_scripts(text):
+    """The page without its script blocks of more than a megabyte (plotly's own)."""
+    return re.sub(
+        r"<script[^>]*>.*?</script>",
+        lambda block: "" if len(block.group(0)) > 1_000_000 else block.group(0),
+        text, flags=re.S,
+    )
+
+
+def test_final_paths_are_in_the_qc_folder_and_use_the_channel_index(tmp_path):
+    assert qc.final_png_path(tmp_path, "img_01", 2) == tmp_path / "qc" / "img_01_ch2_final.png"
+    assert qc.final_html_path(tmp_path, "img_01", 2) == tmp_path / "qc" / "img_01_ch2_final.html"
+    assert qc.plotly_script_path(tmp_path) == tmp_path / "qc" / "plotly.min.js"
+
+
+# The title
+
+def test_final_title_names_the_image_the_channel_and_the_counts():
+    assert qc.final_title("slide 3", 2, 692, 6, 44, "jim-exon") == (
+        "slide 3 | channel 2 (jim-exon) | 44 cells | 692 spots | 6 clusters"
+    )
+    assert qc.final_title("a", 0, 1, 1, 1) == "a | channel 0 | 1 cell | 1 spot | 1 cluster"
+
+
+def test_final_title_without_cells_says_so():
+    for n_cells in (None, 0):
+        assert "no cells" in qc.final_title("a", 2, 5, 1, n_cells)
+
+
+def test_final_title_without_clusters_or_spots():
+    assert qc.final_title("a", 2, 5, None, 3).endswith("3 cells | 5 spots")
+    assert qc.final_title("a", 2, 5, 0, 3).endswith("5 spots | 0 clusters")
+    assert qc.final_title("a", 2, 0, 0, 3).endswith("3 cells | no spots found")
+
+
+def test_final_title_says_when_the_text_on_the_cells_is_left_out():
+    title = qc.final_title("a", 2, 5, 1, 1300, text_left_out=True)
+    assert "1300 cells (too many to number, over 300)" in title
+
+
+def test_final_title_is_continued_on_a_new_line_when_long():
+    title = qc.final_title("x" * 120, 2, 692, 6, 44, "jim-exon")
+    assert "\n" in title
+
+
+# The figure
+
+def test_figure_names_each_mark_in_its_legend():
+    figure = _png_figure(_final_data())
+    labels = [text.get_text() for text in figure.axes[0].get_legend().get_texts()]
+    assert labels == [
+        "Cell outline", "Spot inside a cell", "Spot outside the cells", "Cluster of spots",
+        "On each cell: its number, then its number of spots",
+    ]
+
+
+def test_each_cell_has_its_index_and_the_spot_count_of_the_cells_table():
+    picture, spots, clusters, cells, labels = _final_data(n_cells=6)
+    # The table's number, not a count of the spots, is written on the cell.
+    cells = cells.copy()
+    cells["n_spots"] = [7, 0, 12, 3, 99, 5]
+    figure = qc.draw_final_qc(picture, spots, clusters, cells, labels, FINAL_IMAGE, 2)
+
+    texts = sorted(text.get_text() for text in figure.axes[0].texts)
+    assert texts == sorted(["1: 7", "2: 0", "3: 12", "4: 3", "5: 99", "6: 5"])
+
+
+def test_text_is_inside_its_cell():
+    picture, spots, clusters, cells, labels = _final_data(n_cells=6)
+    figure = qc.draw_final_qc(picture, spots, clusters, cells, labels, FINAL_IMAGE, 2)
+
+    for text in figure.axes[0].texts:
+        x, y = text.get_position()
+        assert labels[int(round(y)), int(round(x))] == int(text.get_text().split(":")[0])
+
+
+def test_text_of_a_curved_cell_stays_inside_it():
+    labels = np.zeros((40, 40), dtype=np.uint32)
+    labels[5:35, 5:12] = 1
+    labels[28:35, 5:35] = 1
+    picture, spots, clusters, cells, _ = _final_data(n_cells=1, shape=(40, 40))
+    figure = qc.draw_final_qc(picture, spots, clusters, cells, labels, FINAL_IMAGE, 2)
+
+    x, y = figure.axes[0].texts[0].get_position()
+    assert labels[int(round(y)), int(round(x))] == 1
+
+
+def test_figure_title_names_the_counts():
+    figure = _png_figure(_final_data(n_cells=6, n_spots=60, n_clusters=2), channel_name="jim-exon")
+    assert _title(figure) == f"{FINAL_IMAGE} | channel 2 (jim-exon) | 6 cells | 60 spots | 2 clusters"
+
+
+def test_spots_in_and_outside_cells_are_drawn_apart():
+    picture, spots, clusters, cells, labels = _final_data()
+    figure = qc.draw_final_qc(picture, spots, clusters, cells, labels, FINAL_IMAGE, 2)
+    inside = spots["cell_id"] >= 0
+    assert inside.any() and (~inside).any()
+
+    spot_sets = [c for c in figure.axes[0].collections if len(c.get_offsets()) in
+                 (inside.sum(), (~inside).sum())]
+    sizes = sorted(len(c.get_offsets()) for c in spot_sets)
+    assert sizes == sorted([int(inside.sum()), int((~inside).sum())])
+    cluster_sets = [c for c in figure.axes[0].collections
+                    if len(c.get_offsets()) == len(clusters) and c not in spot_sets]
+    assert len(cluster_sets) == 1
+
+
+def test_cell_outlines_are_one_collection_with_a_polygon_for_each_cell():
+    figure = _png_figure(_final_data(n_cells=6))
+    lines = [c for c in figure.axes[0].collections if isinstance(c, LineCollection)]
+    assert len(lines) == 1
+    assert len(lines[0].get_segments()) == 6
+
+
+def test_clusters_off_gives_no_cluster_marks_and_no_cluster_count():
+    picture, spots, _, cells, labels = _final_data()
+    figure = qc.draw_final_qc(picture, spots, None, cells, labels, FINAL_IMAGE, 2)
+
+    assert "cluster" not in _title(figure)
+    legend = [t.get_text() for t in figure.axes[0].get_legend().get_texts()]
+    assert "Cluster of spots" not in legend
+
+
+def test_clusters_on_but_none_found_counts_zero():
+    picture, spots, clusters, cells, labels = _final_data()
+    figure = qc.draw_final_qc(picture, spots, clusters.iloc[:0], cells, labels, FINAL_IMAGE, 2)
+    assert _title(figure).endswith("0 clusters")
+
+
+def test_figure_without_labels_has_no_outlines_no_text_and_says_so():
+    picture, spots, clusters, cells, _ = _final_data()
+    figure = qc.draw_final_qc(picture, spots, clusters, cells, None, FINAL_IMAGE, 2)
+    axes = figure.axes[0]
+
+    assert "no cells" in _title(figure)
+    assert not axes.texts
+    assert not [c for c in axes.collections if isinstance(c, LineCollection)]
+    legend = [t.get_text() for t in axes.get_legend().get_texts()]
+    assert "Spot" in legend and "Cell outline" not in legend
+
+
+def test_labels_without_any_cell_count_as_no_cells():
+    picture, spots, clusters, cells, labels = _final_data()
+    figure = qc.draw_final_qc(picture, spots, clusters, cells, np.zeros_like(labels), FINAL_IMAGE, 2)
+    assert "no cells" in _title(figure)
+
+
+def test_figure_with_no_spots_still_shows_the_cells():
+    picture, spots, clusters, cells, labels = _final_data()
+    figure = qc.draw_final_qc(
+        picture, spots.iloc[:0], clusters.iloc[:0], cells, labels, FINAL_IMAGE, 2
+    )
+    assert "no spots found" in _title(figure)
+    assert len(figure.axes[0].texts) == 6
+
+
+def test_figure_with_no_tables_at_all():
+    picture = _final_data()[0]
+    figure = qc.draw_final_qc(picture, None, None, None, None, FINAL_IMAGE, 2)
+    assert _title(figure).endswith("no cells | no spots found")
+
+
+def test_more_than_300_cells_leave_the_text_out_and_the_title_says_so():
+    data = _final_data(n_cells=320, n_spots=500, shape=(300, 300))
+    figure = _png_figure(data)
+
+    assert not figure.axes[0].texts
+    assert "320 cells (too many to number, over 300)" in _title(figure)
+    assert len([c for c in figure.axes[0].collections if isinstance(c, LineCollection)]) == 1
+
+
+def test_exactly_300_cells_keep_the_text():
+    figure = _png_figure(_final_data(n_cells=300, n_spots=100, shape=(300, 300)))
+    assert len(figure.axes[0].texts) == 300
+    assert "too many" not in _title(figure)
+
+
+def test_three_dimensional_channel_is_projected_and_positions_use_y_and_x():
+    picture, spots, clusters, cells, labels = _final_data(ndim=3)
+    figure = qc.draw_final_qc(picture, spots, clusters, cells, labels, FINAL_IMAGE, 2)
+    flat = qc.draw_final_qc(picture.max(axis=0), spots, clusters, cells, labels, FINAL_IMAGE, 2)
+
+    np.testing.assert_array_equal(figure.axes[0].images[0].get_array(), flat.axes[0].images[0].get_array())
+    inside = spots["cell_id"] >= 0
+    offsets = [c.get_offsets() for c in figure.axes[0].collections
+               if len(c.get_offsets()) == inside.sum()][0]
+    np.testing.assert_allclose(offsets, spots.loc[inside, ["x_px", "y_px"]].to_numpy())
+
+
+def test_subpixel_positions_are_used_when_the_table_has_them():
+    picture, spots, clusters, cells, labels = _final_data(subpixel=True)
+    figure = qc.draw_final_qc(picture, spots, clusters, cells, labels, FINAL_IMAGE, 2)
+    inside = spots["cell_id"] >= 0
+    offsets = [c.get_offsets() for c in figure.axes[0].collections
+               if len(c.get_offsets()) == inside.sum()][0]
+    np.testing.assert_allclose(offsets, spots.loc[inside, ["x_sub_px", "y_sub_px"]].to_numpy())
+
+    html_figure = _html_figure((picture, spots, clusters, cells, labels))
+    shown = np.concatenate([
+        np.column_stack([t.x, t.y]) for t in html_figure.data if t.name == "Spots inside cells"
+    ])
+    assert len(shown) == inside.sum()
+    expected = spots.loc[inside, ["x_sub_px", "y_sub_px"]].to_numpy()
+    np.testing.assert_allclose(
+        shown[np.lexsort(shown.T)], expected[np.lexsort(expected.T)], atol=1e-3
+    )
+
+
+def test_a_spot_row_without_a_subpixel_value_keeps_its_pixel_position():
+    picture, spots, clusters, cells, labels = _final_data(subpixel=True)
+    spots.loc[0, ["y_sub_px", "x_sub_px"]] = np.nan
+    view = qc._final_view(picture, spots, clusters, cells, labels)
+    np.testing.assert_allclose(view.spot_yx[0], spots.loc[0, ["y_px", "x_px"]].to_numpy(dtype=float))
+
+
+def test_cell_of_a_spot_is_found_from_the_labels_when_the_table_has_no_cell_column():
+    picture, spots, clusters, cells, labels = _final_data()
+    expected = spots["cell_id"].to_numpy()
+    view = qc._final_view(picture, spots.drop(columns="cell_id"), clusters, cells, labels)
+    np.testing.assert_array_equal(view.spot_cell, expected)
+
+
+def test_labels_of_another_size_are_refused():
+    picture, spots, clusters, cells, labels = _final_data()
+    with pytest.raises(ValueError, match="label image"):
+        qc.draw_final_qc(picture, spots, clusters, cells, labels[:-1], FINAL_IMAGE, 2)
+
+
+def test_final_picture_of_other_shapes_is_refused():
+    picture, spots, clusters, cells, labels = _final_data()
+    with pytest.raises(ValueError):
+        qc.draw_final_qc(picture[None, None], spots, clusters, cells, labels, FINAL_IMAGE, 2)
+
+
+def test_the_tables_and_labels_given_are_not_changed():
+    data = _final_data(snr=True, subpixel=True)
+    picture, spots, clusters, cells, labels = data
+    before = [picture.copy(), spots.copy(), clusters.copy(), cells.copy(), labels.copy()]
+    _png_figure(data)
+    _html_figure(data)
+    np.testing.assert_array_equal(picture, before[0])
+    for given, kept in zip((spots, clusters, cells), before[1:4]):
+        pd.testing.assert_frame_equal(given, kept)
+    np.testing.assert_array_equal(labels, before[4])
+
+
+# The PNG file
+
+@pytest.mark.parametrize("variant", ["cells", "no_cells", "no_spots", "clusters_off", "three_d"])
+def test_final_png_is_written(tmp_path, variant):
+    picture, spots, clusters, cells, labels = _final_data(ndim=3 if variant == "three_d" else 2)
+    if variant == "no_cells":
+        cells, labels = None, None
+    if variant == "no_spots":
+        spots, clusters = spots.iloc[:0], clusters.iloc[:0]
+    if variant == "clusters_off":
+        clusters = None
+    path = qc.write_final_qc(tmp_path, FINAL_IMAGE, picture, spots, clusters, cells, labels, 2)
+
+    assert path == tmp_path / "qc" / f"{FINAL_IMAGE}_ch2_final.png"
+    width, height = _png_size(path)
+    assert width == 2400 and 600 <= height <= 2400
+
+
+def test_final_png_with_more_than_300_cells_is_written(tmp_path):
+    path = _write_png(tmp_path, _final_data(n_cells=320, n_spots=500, shape=(300, 300)))
+    assert _png_size(path)[0] == 2400
+
+
+def test_final_png_is_written_without_loading_plotly(tmp_path):
+    script = f"""
+        import sys
+        from bigfish_pypeline import qc
+        from test_qc import _final_data, _write_png
+        _write_png({str(tmp_path)!r}, _final_data())
+        assert "plotly" not in sys.modules
+        print("ok")
+    """
+    done = _run_fresh_process(script, tmp_path, remove_display=False)
+    assert done.returncode == 0, done.stderr
+
+
+def test_no_temporary_file_is_left_behind_by_the_png(tmp_path):
+    _write_png(tmp_path, _final_data())
+    _write_png(tmp_path, _final_data(n_cells=0))
+    assert [p.name for p in (tmp_path / "qc").iterdir()] == [f"{FINAL_IMAGE}_ch2_final.png"]
+
+
+def test_failed_png_write_leaves_no_file(tmp_path, monkeypatch):
+    def fail(self, *args, **kwargs):
+        Path(args[0]).write_bytes(b"half")
+        raise OSError("disk full")
+
+    monkeypatch.setattr("matplotlib.figure.Figure.savefig", fail)
+    with pytest.raises(OSError):
+        _write_png(tmp_path, _final_data())
+    assert list((tmp_path / "qc").iterdir()) == []
+
+
+# The page: what it holds
+
+def test_page_holds_the_counts_of_the_cells_table(tmp_path):
+    data = _final_data(n_cells=6)
+    cells = data[3].copy()
+    cells["n_spots"] = [7, 0, 12, 3, 99, 5]
+    cells["n_spots_in_clusters"] = [1, 0, 2, 3, 4, 5]
+    cells["n_spots_outside_clusters"] = [6, 0, 10, 0, 95, 0]
+    cells["n_clusters"] = [1, 0, 2, 3, 4, 5]
+    path = _write_html(tmp_path, (data[0], data[1], data[2], cells, data[4]))
+
+    traces = _page_data(path)
+    hover = [t for t in traces if t.get("mode") == "markers" and t["name"] == "Cell outlines"][0]
+    values = np.asarray(hover["customdata"])
+    assert "Spots in clusters" in hover["hovertemplate"] and "Area" in hover["hovertemplate"]
+    for row in values:
+        expected = cells[cells["cell_id"] == row[0]].iloc[0]
+        assert list(row[:5]) == [expected["cell_id"], expected["n_spots"],
+                                 expected["n_spots_in_clusters"],
+                                 expected["n_spots_outside_clusters"], expected["n_clusters"]]
+        assert row[5] == expected["area_px"]
+        assert row[6] == pytest.approx(expected["area_um2"], rel=1e-5)
+    assert set(values[:, 0]) == set(cells["cell_id"])
+
+
+def test_cell_hover_text_says_what_each_number_is():
+    figure = _html_figure(_final_data())
+    template = _trace(figure, "Cell outlines", "markers").hovertemplate
+    assert template == (
+        "<b>Cell %{customdata[0]:.0f}</b><br>Spots: %{customdata[1]:.0f}<br>"
+        "Spots in clusters: %{customdata[2]:.0f}<br>Spots outside clusters: %{customdata[3]:.0f}<br>"
+        "Clusters: %{customdata[4]:.0f}<br>Area: %{customdata[5]:,.0f} px "
+        "(%{customdata[6]:.1f} µm²)<extra></extra>"
+    )
+
+
+def test_every_cell_can_be_hovered():
+    data = _final_data(n_cells=6)
+    figure = _html_figure(data)
+    hover = _trace(figure, "Cell outlines", "markers")
+    assert set(np.asarray(hover.customdata)[:, 0]) == set(range(1, 7))
+    # Each point lies inside the cell it names.
+    labels = data[4]
+    for (cell, *_), x, y in zip(np.asarray(hover.customdata), hover.x, hover.y):
+        assert labels[int(round(y)), int(round(x))] == cell
+
+
+def test_cell_hover_without_a_cells_table_gives_the_number_and_the_spots_counted():
+    picture, spots, clusters, cells, labels = _final_data()
+    figure = qc.draw_final_html(picture, spots, clusters, None, labels, FINAL_IMAGE, 2)
+    hover = _trace(figure, "Cell outlines", "markers")
+    assert hover.hovertemplate == (
+        "<b>Cell %{customdata[0]:.0f}</b><br>Spots: %{customdata[1]:.0f}<extra></extra>"
+    )
+    counted = {int(row[0]): row[1] for row in np.asarray(hover.customdata)}
+    for number in range(1, 7):
+        assert counted[number] == (spots["cell_id"] == number).sum()
+
+
+def test_spot_hover_gives_its_number_cell_and_cluster():
+    figure = _html_figure(_final_data(snr=True, intensity=True))
+    spots_in_clusters = [t for t in figure.data if t.name == "Spots inside cells"
+                         and "Cluster: " in t.hovertemplate]
+    assert spots_in_clusters
+    assert spots_in_clusters[0].hovertemplate == (
+        "<b>Spot %{customdata[0]:.0f}</b><br>Cell: %{customdata[1]:.0f}<br>"
+        "Cluster: %{customdata[2]:.0f}<br>SNR: %{customdata[3]:.2f}<br>"
+        "Log intensity: %{customdata[4]:.2f}<extra></extra>"
+    )
+    outside = [t for t in figure.data if t.name == "Spots outside cells"
+               and "Not in a cluster" in t.hovertemplate]
+    assert outside[0].hovertemplate == (
+        "<b>Spot %{customdata[0]:.0f}</b><br>Outside the cells<br>Not in a cluster<br>"
+        "SNR: %{customdata[1]:.2f}<br>Log intensity: %{customdata[2]:.2f}<extra></extra>"
+    )
+
+
+def test_spot_hover_values_are_those_of_the_table():
+    picture, spots, clusters, cells, labels = _final_data(snr=True)
+    figure = _html_figure((picture, spots, clusters, cells, labels))
+    seen = 0
+    for trace in figure.data:
+        if not trace.name.startswith("Spots"):
+            continue
+        for row, x, y in zip(np.asarray(trace.customdata), trace.x, trace.y):
+            expected = spots.iloc[int(row[0])]
+            assert (x, y) == (pytest.approx(expected["x_px"]), pytest.approx(expected["y_px"]))
+            assert row[-1] == pytest.approx(expected["snr"], rel=1e-5)
+            seen += 1
+    assert seen == len(spots)
+
+
+def test_spot_hover_without_the_optional_columns_leaves_them_out():
+    figure = _html_figure(_final_data(snr=False, intensity=False))
+    for trace in figure.data:
+        if trace.name.startswith("Spots"):
+            assert "SNR" not in trace.hovertemplate and "intensity" not in trace.hovertemplate
+
+
+def test_spot_hover_with_clusters_off_has_no_cluster_line():
+    picture, spots, clusters, cells, labels = _final_data()
+    figure = qc.draw_final_html(picture, spots, None, cells, labels, FINAL_IMAGE, 2)
+    assert not [t for t in figure.data if t.name == "Clusters"]
+    for trace in figure.data:
+        if trace.name.startswith("Spots"):
+            assert "luster" not in trace.hovertemplate
+
+
+def test_cluster_hover_gives_its_number_spots_and_cell():
+    picture, spots, clusters, cells, labels = _final_data()
+    clusters = clusters.copy()
+    clusters["cell_id"] = [3, -1]
+    figure = qc.draw_final_html(picture, spots, clusters, cells, labels, FINAL_IMAGE, 2)
+    trace = _trace(figure, "Clusters")
+    assert list(trace.hovertext) == [
+        "<b>Cluster 0</b><br>4 spots<br>In cell 3", "<b>Cluster 1</b><br>4 spots<br>Outside the cells",
+    ]
+    assert trace.hovertemplate == "%{hovertext}<extra></extra>"
+
+
+def test_every_trace_is_webgl_and_the_outlines_are_one_trace():
+    figure = _html_figure(_final_data(n_cells=40, n_spots=200, shape=(120, 120)))
+    assert {t.type for t in figure.data} == {"scattergl"}
+    assert len([t for t in figure.data if t.mode == "lines"]) == 1
+
+
+def test_the_legend_switches_the_spots_the_clusters_and_the_outlines():
+    figure = _html_figure(_final_data())
+    entries = [t.name for t in figure.data if t.showlegend is not False]
+    assert entries == ["Cell outlines", "Spots inside cells", "Spots outside cells", "Clusters"]
+    # The pieces of one kind (the hover points of the cells, the spots in clusters) go with it.
+    for name in ("Cell outlines", "Spots inside cells", "Spots outside cells"):
+        assert len({t.legendgroup for t in figure.data if t.name == name}) == 1
+
+
+def test_page_without_cells_has_spots_and_clusters_only():
+    picture, spots, clusters, _, _ = _final_data()
+    figure = qc.draw_final_html(picture, spots, clusters, None, None, FINAL_IMAGE, 2)
+    assert sorted({t.name for t in figure.data}) == ["Clusters", "Spots"]
+    assert "no cells" in figure.layout.title.text
+    assert sum(len(t.x) for t in figure.data if t.name == "Spots") == len(spots)
+
+
+def test_page_with_no_spots_and_clusters_off_has_the_outlines_and_the_picture():
+    picture, spots, _, cells, labels = _final_data()
+    figure = qc.draw_final_html(picture, spots.iloc[:0], None, cells, labels, FINAL_IMAGE, 2)
+    assert sorted({t.name for t in figure.data}) == ["Cell outlines"]
+    assert len(figure.layout.images) == 1
+    assert "no spots found" in figure.layout.title.text
+
+
+def test_page_title_names_the_counts():
+    figure = _html_figure(_final_data(), channel_name="jim-exon")
+    assert figure.layout.title.text == (
+        f"{FINAL_IMAGE} | channel 2 (jim-exon) | 6 cells | 60 spots | 2 clusters"
+    )
+
+
+def test_page_of_a_three_dimensional_channel_with_subpixel_positions():
+    figure = _html_figure(_final_data(ndim=3, subpixel=True, snr=True))
+    assert sum(len(t.x) for t in figure.data if t.name.startswith("Spots")) == 60
+
+
+def test_picture_is_8_bit_grey_at_full_size_up_to_2048():
+    data = _final_data(shape=(60, 80))
+    image = _html_figure(data).layout.images[0]
+    assert (image.sizex, image.sizey) == (80, 60)
+    assert image.source.startswith("data:image/png;base64,")
+    from PIL import Image
+    shown = Image.open(io.BytesIO(base64.b64decode(image.source.split(",", 1)[1])))
+    assert shown.mode == "L" and shown.size == (80, 60)
+    np.testing.assert_array_equal(np.asarray(shown), qc._stretch_for_display(data[0])[..., 0])
+
+
+def test_a_larger_picture_is_reduced_but_keeps_its_coordinates():
+    rng = np.random.default_rng(0)
+    picture = rng.poisson(40, (2500, 3000)).astype(np.uint16)
+    spots = pd.DataFrame({"spot_id": [0], "y_px": [2400], "x_px": [2900], "cluster_id": [-1],
+                          "cell_id": [-1]})
+    figure = qc.draw_final_html(picture, spots, None, None, None, FINAL_IMAGE, 2)
+    image = figure.layout.images[0]
+    from PIL import Image
+    shown = Image.open(io.BytesIO(base64.b64decode(image.source.split(",", 1)[1])))
+
+    assert shown.size == (2048, round(2500 * 2048 / 3000))
+    assert (image.sizex, image.sizey) == (3000, 2500)
+    assert list(figure.layout.xaxis.range) == [-0.5, 2999.5]
+    assert (figure.data[0].x[0], figure.data[0].y[0]) == (2900, 2400)
+
+
+def test_picture_of_exactly_2048_is_not_reduced():
+    picture = np.random.default_rng(0).poisson(40, (64, 2048)).astype(np.uint16)
+    image = qc.draw_final_html(picture, None, None, None, None, FINAL_IMAGE, 2).layout.images[0]
+    from PIL import Image
+    assert Image.open(io.BytesIO(base64.b64decode(image.source.split(",", 1)[1]))).size == (2048, 64)
+
+
+def test_labels_of_another_size_are_refused_for_the_page():
+    picture, spots, clusters, cells, labels = _final_data()
+    with pytest.raises(ValueError, match="label image"):
+        qc.draw_final_html(picture, spots, clusters, cells, labels[:, :-1], FINAL_IMAGE, 2)
+
+
+# The page: the file
+
+@pytest.mark.parametrize("variant", ["cells", "no_cells", "no_spots", "clusters_off", "three_d", "subpixel"])
+@pytest.mark.parametrize("script", ["shared", "embedded"])
+def test_final_page_is_written(tmp_path, variant, script):
+    picture, spots, clusters, cells, labels = _final_data(
+        ndim=3 if variant == "three_d" else 2, subpixel=variant == "subpixel", snr=True)
+    if variant == "no_cells":
+        cells, labels = None, None
+    if variant == "no_spots":
+        spots, clusters = spots.iloc[:0], clusters.iloc[:0]
+    if variant == "clusters_off":
+        clusters = None
+    path = qc.write_final_html(
+        tmp_path, FINAL_IMAGE, picture, spots, clusters, cells, labels, 2, plotly_script=script
+    )
+
+    assert path == tmp_path / "qc" / f"{FINAL_IMAGE}_ch2_final.html"
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("<html>") or text.startswith("<!doctype html>")
+    assert f"<title>{FINAL_IMAGE} | channel 2 | final QC</title>" in text
+    assert "Plotly.newPlot" in text
+
+
+def test_the_shared_script_is_one_copy_used_by_every_page_of_the_folder(tmp_path):
+    from plotly.offline import get_plotlyjs
+
+    first = _write_html(tmp_path, _final_data())
+    second = qc.write_final_html(
+        tmp_path, "other", *_final_data()[:1], None, None, None, None, 2
+    )
+    script = tmp_path / "qc" / "plotly.min.js"
+
+    assert sorted(p.name for p in (tmp_path / "qc").iterdir()) == sorted(
+        ["plotly.min.js", first.name, second.name])
+    assert script.read_bytes() == get_plotlyjs().encode("utf-8")
+    for page in (first, second):
+        text = page.read_text(encoding="utf-8")
+        assert '<script charset="utf-8" src="plotly.min.js"></script>' in text
+        assert len(text) < 1_000_000
+
+
+def test_shared_is_the_default():
+    import inspect
+    assert inspect.signature(qc.write_final_html).parameters["plotly_script"].default == "shared"
+
+
+def test_the_embedded_script_is_in_the_page_and_no_script_file_is_written(tmp_path):
+    path = _write_html(tmp_path, _final_data(), plotly_script="embedded")
+
+    assert [p.name for p in (tmp_path / "qc").iterdir()] == [path.name]
+    text = path.read_text(encoding="utf-8")
+    assert len(text) > 4_000_000
+    assert "<script src=" not in text
+    assert "plotly.min.js" not in _without_big_scripts(text)
+
+
+def test_an_unknown_way_of_loading_the_script_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="plotly_script"):
+        _write_html(tmp_path, _final_data(), plotly_script="cdn")
+    assert not (tmp_path / "qc").exists()
+
+
+@pytest.mark.parametrize("script", ["shared", "embedded"])
+def test_the_page_needs_no_address_on_the_internet(tmp_path, script):
+    path = _write_html(tmp_path, _final_data(), plotly_script=script)
+    text = _without_big_scripts(path.read_text(encoding="utf-8"))
+
+    assert not re.findall(r"""(?:src|href)\s*=\s*["']?(?:https?:)?//""", text)
+    assert not re.findall(r"""url\(\s*["']?https?:""", text)
+    before_the_data = text.split("Plotly.newPlot")[0].replace("http://www.w3.org", "")
+    assert "http://" not in before_the_data and "https://" not in before_the_data
+    assert "cdn.plot.ly" not in text and "cdnjs" not in text
+
+
+def test_a_cut_short_copy_of_the_script_is_replaced(tmp_path):
+    folder = tmp_path / "qc"
+    folder.mkdir()
+    (folder / "plotly.min.js").write_bytes(b"half a script")
+    _write_html(tmp_path, _final_data())
+    from plotly.offline import get_plotlyjs
+    assert (folder / "plotly.min.js").read_bytes() == get_plotlyjs().encode("utf-8")
+
+
+def test_a_whole_copy_of_the_script_is_not_written_again(tmp_path):
+    _write_html(tmp_path, _final_data())
+    script = tmp_path / "qc" / "plotly.min.js"
+    os.utime(script, (1_000_000_000, 1_000_000_000))
+    _write_html(tmp_path, _final_data())
+    assert script.stat().st_mtime == 1_000_000_000
+
+
+def test_two_processes_writing_pages_into_one_folder_leave_a_whole_script(tmp_path):
+    from plotly.offline import get_plotlyjs
+
+    expected = hashlib.sha256(get_plotlyjs().encode("utf-8")).hexdigest()
+    script = f"""
+        import sys, time
+        from bigfish_pypeline import qc
+        from test_qc import _final_data
+        start = float(sys.argv[1])
+        data = _final_data(seed=int(sys.argv[2]))
+        while time.time() < start:
+            pass
+        qc.write_final_html({str(tmp_path / "run")!r}, "image" + sys.argv[2], data[0], data[1],
+                            data[2], data[3], data[4], 2)
+        print("ok")
+    """
+    import time
+    script_path = tmp_path / "writer.py"
+    script_path.write_text(textwrap.dedent(script))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(__file__).parent) + os.pathsep + env.get("PYTHONPATH", "")
+    start = time.time() + 6
+    processes = [
+        subprocess.Popen([sys.executable, str(script_path), str(start), str(number)],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        for number in range(3)
+    ]
+    for process in processes:
+        out, err = process.communicate(timeout=300)
+        assert process.returncode == 0, err
+
+    folder = tmp_path / "run" / "qc"
+    assert hashlib.sha256((folder / "plotly.min.js").read_bytes()).hexdigest() == expected
+    assert sorted(p.name for p in folder.iterdir()) == sorted(
+        ["plotly.min.js"] + [f"image{n}_ch2_final.html" for n in range(3)])
+
+
+def test_a_second_page_replaces_the_first(tmp_path):
+    first = _write_html(tmp_path, _final_data(n_cells=6))
+    first_text = first.read_text(encoding="utf-8")
+    second = _write_html(tmp_path, _final_data(n_cells=0))
+    assert second == first
+    assert second.read_text(encoding="utf-8") != first_text
+
+
+def test_failed_page_write_leaves_no_file(tmp_path, monkeypatch):
+    def fail(source, target):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(qc.os, "replace", fail)
+    with pytest.raises(OSError):
+        _write_html(tmp_path, _final_data(), plotly_script="embedded")
+    assert list((tmp_path / "qc").iterdir()) == []
+
+
+def test_failed_script_write_leaves_no_file(tmp_path, monkeypatch):
+    def fail(source, target):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(qc.os, "replace", fail)
+    with pytest.raises(OSError):
+        _write_html(tmp_path, _final_data(), plotly_script="shared")
+    assert list((tmp_path / "qc").iterdir()) == []
+
+
+def test_failed_page_write_after_the_script_leaves_only_the_whole_script(tmp_path, monkeypatch):
+    real = os.replace
+
+    def fail_for_the_page(source, target):
+        if str(target).endswith(".html"):
+            raise OSError("disk full")
+        real(source, target)
+
+    monkeypatch.setattr(qc.os, "replace", fail_for_the_page)
+    with pytest.raises(OSError):
+        _write_html(tmp_path, _final_data())
+    assert [p.name for p in (tmp_path / "qc").iterdir()] == ["plotly.min.js"]
+
+
+@pytest.mark.parametrize("script", ["shared", "embedded"])
+def test_final_page_and_figure_can_be_written_from_another_thread(tmp_path, script):
+    outcome = {}
+
+    def work():
+        try:
+            outcome["page"] = _write_html(tmp_path, _final_data(), plotly_script=script)
+            outcome["png"] = _write_png(tmp_path, _final_data())
+        except BaseException as error:
+            outcome["error"] = error
+
+    thread = threading.Thread(target=work)
+    thread.start()
+    thread.join()
+
+    assert "error" not in outcome, outcome.get("error")
+    assert outcome["page"].is_file() and _png_size(outcome["png"])[0] > 0
+
+
+def test_importing_the_module_does_not_load_plotly(tmp_path):
+    script = """
+        import sys
+        import bigfish_pypeline.qc
+        assert "plotly" not in sys.modules
+        print("ok")
+    """
+    done = _run_fresh_process(script, tmp_path, remove_display=False)
+    assert done.returncode == 0, done.stderr
+
+
+def test_final_qc_is_written_in_a_process_without_a_display(tmp_path):
+    script = f"""
+        import threading
+        from pathlib import Path
+
+        import matplotlib
+        from matplotlib import _pylab_helpers
+
+        from bigfish_pypeline import qc
+        from test_qc import _final_data
+
+        def backend_setting():
+            return dict.__getitem__(matplotlib.rcParams, "backend")
+
+        backend_before = backend_setting()
+        picture, spots, clusters, cells, labels = _final_data(ndim=3, snr=True)
+        outcome = {{}}
+        def work():
+            try:
+                outcome["png"] = qc.write_final_qc(
+                    {str(tmp_path)!r}, "img", picture, spots, clusters, cells, labels, 2)
+                outcome["shared"] = qc.write_final_html(
+                    {str(tmp_path)!r}, "img", picture, spots, clusters, cells, labels, 2)
+                outcome["embedded"] = qc.write_final_html(
+                    {str(tmp_path / "alone")!r}, "img", picture, spots, clusters, cells, labels, 2,
+                    plotly_script="embedded")
+            except BaseException as error:
+                outcome["error"] = repr(error)
+        thread = threading.Thread(target=work)
+        thread.start()
+        thread.join()
+
+        assert "error" not in outcome, outcome.get("error")
+        assert all(Path(path).is_file() for path in outcome.values())
+        assert backend_setting() == backend_before, (backend_before, backend_setting())
+        assert not _pylab_helpers.Gcf.get_all_fig_managers()
+        print("ok")
+    """
+    done = _run_fresh_process(script, tmp_path)
+
+    assert done.returncode == 0, done.stderr
+    assert "ok" in done.stdout
+    assert (tmp_path / "qc" / "img_ch2_final.png").is_file()
+    assert (tmp_path / "qc" / "img_ch2_final.html").is_file()
+    assert (tmp_path / "alone" / "qc" / "img_ch2_final.html").is_file()
+
+
+def test_a_full_size_view_is_drawn_with_one_outline_trace_and_webgl_spots():
+    data = _final_data(n_cells=1300, n_spots=37000, n_clusters=270, shape=(2048, 2048))
+    figure = _html_figure(data)
+
+    assert {t.type for t in figure.data} == {"scattergl"}
+    assert len([t for t in figure.data if t.mode == "lines"]) == 1
+    assert sum(len(t.x) for t in figure.data if t.name.startswith("Spots")) == 37000
