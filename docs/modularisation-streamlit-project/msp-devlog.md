@@ -1430,3 +1430,66 @@ Seen by the executor in the existing code, both given to task 3.2:
 - An unexpected error in a run is written to `run.log` with the session key hidden, but then reaches the terminal as a Python error report whose text is not passed through the same hiding.
 - If the label folder of a Cellpose run cannot be made, the run ends with a bare error and leaves a run folder without `run.log`.
 
+### 3.2 Log, `.npz` files and terminal (24 Nov 2026)
+
+- **`run.log` against spec 8.4.** Most items were there already. Added, without rewording any existing line:
+  - one line for each FISH channel with its threshold setting, e.g. "FISH channel 2 (jim-exon): manual threshold 18", "automatic threshold, found for each image, never below 30" or "calibrated threshold, from the images whose names contain `cal`";
+  - after the summary, "Images in which every channel failed: ..." and "Images not processed: ..." (after a cancel or a stop);
+  - "Config file: none (the settings were passed from Python)" when `run_batch` is given no file;
+  - a summary line after an unexpected problem.
+- **`.npz` files** with `outputs.npz` on: `npz/<image>_ch<index>.npz`.
+  - With clusters on, the keys of the v1 general script: `spots_post_clustering` (z, y, x, cluster index; −1 outside a cluster) and `clusters` (z, y, x, number of spots, cluster index). With clusters off, the key of the v1 HCR script: `spots` (z, y, x). Whole numbers without subpixel fitting, decimal numbers (the subpixel positions) with it, as in v1.
+  - On the crop the arrays equal the reference files in values, shape and data type, for the general and the HCR case, without subpixel fitting (`tests/data/reference_v1/`) and with it (`tests/data/reference_v1_new_env/`).
+  - They are written under temporary names and renamed with the image's tables, before `_images.csv`, which is still renamed last. A failed or skipped channel writes none, and a cancelled or stopped run keeps the files of finished images only. No `npz/` folder when the setting is off.
+- **An unexpected problem during a run** no longer reaches the terminal as a Python error report. `run_batch` raises `RunStoppedError`, whose text is the problem in one line with any OMERO session key hidden, and the place of the details (`run.log`). `bigfish-pypeline batch` prints these two lines and the run folder, and ends with exit code 1. The `BatchResult` message is passed through the same hiding.
+- **An unexpected problem outside a run** (before the run folder is made, or in `check`): the command line shows Python's report with anything that looks like a session key hidden, under the line "The command stopped because of an unexpected problem. Please pass on the lines below when you report it." Added by the orchestrator after the executor pointed out the gap.
+- **A label folder that cannot be made** in a Cellpose run gives a plain message ("The folder for the label images, ..., could not be made ..."), also written to `run.log`; `run_info.yaml` records the stop.
+- **big-fish's `FutureWarning` about `mean_intensity`** is hidden in the workers and, for the length of a run, in the main process. Other warnings are shown as before.
+- Checks: 974 tests pass without the full-size image (6 min 43 s). New tests cover each point above, among them one run whose log is checked against every item of spec 8.4, and the session key after an unexpected problem at three points of a run (exception, terminal, every file of the run folder).
+
+Choices the spec does not settle:
+
+- In `run_info.yaml`, the message after a problem with a plain text of its own (such as the label folder) is that text.
+- The `.npz` files of a 2D image use the same keys without the z column; v1 had no 2D case.
+- The stop line of an unexpected problem is written to `run.log` and carried by the error, not shown a second time in the terminal.
+
+Seen, not changed:
+
+- "Summary: N of M image(s) finished" counts an image in which every channel failed as finished; the new line after it names such images.
+- Ctrl+C at a moment when the run's own handling of it is not in place is recorded as "stopped", not "cancelled".
+
+### 3.5 Final QC (24 Nov 2026)
+
+Drawing and writing functions in `qc.py`; the batch runner calls them from task 3.6 on. Both forms are made from the per-image tables and the label image, as the app's Results page will have them (spec 10.4).
+
+- **PNG**, `qc/<image>_ch<index>_final.png`: `write_final_qc(run_folder, image_name, picture, spots, clusters, cells, labels, channel, channel_name=None)`, with `draw_final_qc` and `final_png_path`. The channel's maximum projection in grey, cell outlines in green, spots inside a cell as orange circles, spots outside the cells as pink crosses, clusters as cyan pentagons, and on each cell its number and its number of spots ("12: 34"). A legend below the picture names each mark.
+  - Title, e.g. "sypN_DAPI_Phal_jim-exon_crop | channel 2 (jim-exon) | 44 cells | 692 spots | 6 clusters". Above 300 cells the text on the cells is left out and the title reads "1287 cells (too many to number, over 300)" (decision 2 of 3.0). Without labels the figure is written without outlines and the title reads "no cells".
+- **HTML**, `qc/<image>_ch<index>_final.html`: `write_final_html(..., plotly_script="shared")`, with `draw_final_html` and `final_html_path`. The same view made with plotly: it can be zoomed and moved, and outlines, spots and clusters can each be switched off in the legend.
+  - Hover on a cell: "Cell 8 / Spots: 26 / Spots in clusters: 15 / Spots outside clusters: 11 / Clusters: 1 / Area: 3,246 px (13.7 µm²)". On a spot: its number, cell and cluster, and SNR and intensity when the table has them. On a cluster: its number, its number of spots and its cell.
+  - The picture inside the page is 8-bit with the contrast stretched, at full size up to 2048 px (decision 3 of 3.0).
+  - plotly's own script (4.8 MB) is needed to open the page without an internet connection. `plotly_script="shared"` writes one copy, `plotly.min.js`, into the `qc` folder for all pages of that folder; `"embedded"` puts it inside each page. The shared copy is written under a name of its own for each process and renamed, so that several workers can write it at once.
+- Checks: 86 new tests (187 pass in `tests/test_qc.py`). The pages were opened in a browser with `playwright-cli`: image, spots and outlines show, and the hover texts appear, also on the full-size image.
+- Looked at by the orchestrator: the crop's PNG and a screenshot of its page. Samples in `~/bigfish-testdata/phase3/samples_3.5/`.
+
+On the full-size image (36,867 spots, 265 clusters, 1,287 cells):
+
+| File | Time | Added to the process's peak | Size |
+|---|---|---|---|
+| `final.png`, 2,400 px wide | 2.3 to 3.0 s | about 0.33 GB | 9.0 MB |
+| `final.html`, script shared | 1.5 to 2.3 s | about 0.27 GB | 7.1 MB, and `plotly.min.js` once (4.8 MB) |
+| `final.html`, script inside | 1.5 to 2.3 s | about 0.24 GB | 11.9 MB |
+| `detection.png`, 3,000 px wide (3.4) | 1.0 to 1.2 s | about 0.1 GB | 7.1 MB |
+
+- The shared page is over the 5 MB of decision 3: 4.5 MB of it is the picture, stored without loss. As a JPEG the picture would take 2.7 MB at quality 90 and 2.3 MB at quality 85.
+- Size of the PNG files against their width, measured by the orchestrator: final QC 9.0 MB at 2,400 px, 6.5 MB at 2,000 px, 4.3 MB at 1,600 px; detection plot 7.1 MB at 3,000 px, 5.0 MB at 2,500 px, 3.2 MB at 2,000 px (v1's width).
+- With every QC image on, a full-size image takes about 16 MB for each channel, so about 6.5 GB for 200 images with two channels.
+
+Brought to the user: the default for the plotly script, and the size of the QC images.
+
+Choices the spec does not settle:
+
+- The contrast of the final QC is stretched between the 1st and 99th percentile, as in the Cellpose QC figure; the detection plot keeps big-fish's stretch (lowest value to the 99.9th percentile).
+- A spot counts as inside a cell by its `cell_id` in the table.
+- The number of cells in the title is the number of labels in the label image.
+- Hover on a cell is answered by a grid of points that are not drawn, about 8 px apart on a 2048 px image.
+
