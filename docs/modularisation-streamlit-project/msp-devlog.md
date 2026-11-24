@@ -1493,3 +1493,10 @@ Choices the spec does not settle:
 - The number of cells in the title is the number of labels in the label image.
 - Hover on a cell is answered by a grid of points that are not drawn, about 8 px apart on a 2048 px image.
 
+**Decisions by the user (24 Nov 2026), after looking at the samples of 3.5:**
+
+- **The HTML final QC holds plotly's script inside each page** (`plotly_script="embedded"`), so that any page opens on its own. A page of a full-size image is then about 12 MB (crop: 5.5 MB). This is above the 5 MB of decision 3 of 3.0, which the user accepts.
+- **The final QC and the detection plot are 2,000 px wide**, in place of 2,400 and 3,000 px: 6.5 MB and 3.2 MB on the full-size image, so about 10 MB for each channel and about 4 GB for 200 images with two channels.
+
+Both are changed in `qc.py` once task 3.6 has left that file.
+

@@ -13,7 +13,7 @@ Where the work stands, for whoever picks it up next. Updated 24 Nov 2026. Detail
 ## Next step
 
 1. Review the changes of 3.6 when its executor reports, run the suite, commit, and write the devlog entry.
-2. The user was asked on 24 Nov 2026 to look at the final QC samples in `~/bigfish-testdata/phase3/samples_3.5/` and to decide two points (devlog 3.5): whether the HTML page shares one copy of the plotly script in the `qc` folder (now the default) or holds it inside each page, and whether the QC images are made smaller (they take about 16 MB for each channel of a full-size image). Their answers change defaults in `qc.py` only.
+2. Carry out the user's two decisions of 24 Nov 2026 (devlog 3.5, at its end) in `qc.py`, once 3.6 is committed: `write_final_html` holds the plotly script inside each page by default, and the final QC and the detection plot are saved 2,000 px wide (final QC at 125 dots per inch, detection plot at 100). The executor of 3.6 was told to use `plotly_script="embedded"` in the runner and not to test figure sizes.
 3. Then 3.7 (keep-awake) → 3.8 (end-to-end tests), 3.9 (time and memory, on its own) and 3.10 (samples); the order is in the plan.
 
 ## How the work is run
