@@ -1548,3 +1548,30 @@ Choices the spec does not settle:
 
 The test kit config has `keep_awake: false`, as the test configs do.
 
+### 3.8 End-to-end tests of the outputs (24 Nov 2026)
+
+`tests/test_end_to_end_outputs.py`: 13 tests in about 66 s. All but one start `bigfish-pypeline batch` as a separate process. No defect was found in the package, and no worker or `caffeinate` process is left behind.
+
+| Case | Result |
+|---|---|
+| Test kit with every output on, final QC as PNG and as HTML | the run folder holds exactly the files and folders of spec 8.1; `qc/` holds exactly the files of spec 8.3; every PNG opens as an image; the HTML page needs no address on the internet; no temporary file left |
+| Run record and log of those runs | `run_info.yaml` complete, status `finished`, the command as typed; the log names the QC images |
+| Repeat from `run_config.yaml` | same tables, same file names, equal `.npz` arrays |
+| Calibrated thresholds on generated images | `calibration.csv` and `qc/calibration.png` written; the threshold agrees between `run_config.yaml`, `run_info.yaml` and `images.csv`; the repeat does not calibrate again, writes neither file and gives the same tables |
+| Every QC image and `npz` off | no `qc/` or `npz/` folder; same tables as with everything on |
+| Cancel while an unfinished image already has QC files drawn | exit code 130; tables, `qc/`, `npz/` and `per_image/` hold exactly the finished images; `run_info.yaml` says `cancelled` |
+| One worker killed, with two workers and with one | two workers: the restart is in `run_info.yaml` and every image finishes; one worker: status `stopped`, exit code 1, files of finished images only |
+| Cellpose with the stand-in model | the final QC shows the cells of the run's own label file, with the counts of its `cells.csv`; the Cellpose QC figure is beside it |
+| Keep-awake through the real command (macOS) | one `caffeinate` tied to the command during the run, none afterwards, the log line |
+
+**Run time of the suite.** The QC images are now switched off in the test configs of the tests that do not look at them (`local_config`, `write_settings`, the copies of the kit config); the kit config file itself is unchanged. No assertion was removed and no test skipped.
+
+| | Tests | Time |
+|---|---|---|
+| Before this task (with 3.7) | 1,041 | 10 min 52 s |
+| After, with the 13 new tests | 1,054 | 9 min 36 s to 9 min 40 s |
+
+- The aim of 8 minutes was missed: switching the QC images off saved about 2 min 20 s, and the new tests take 1 min 6 s. Most of what remains is the 1.5 s each test with a worker pool spends starting its workers.
+- Run by the orchestrator in two halves: 134 tests in 5 min 49 s (end-to-end, keep-awake, command line, Cellpose batch) and 920 in 3 min 47 s.
+- Not done, for the user to decide: running the tests in parallel, which needs the package `pytest-xdist` in `msp-environment.yml`.
+
