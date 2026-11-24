@@ -115,6 +115,7 @@ def kit_settings(tmp_path, device):
     data["run"]["input"]["folder"] = str(folder)
     data["run"]["output_folder"] = str(tmp_path / "out")
     data["segmentation"].update(source="cellpose", label_folder="", device=device)
+    data["outputs"]["qc"].update(elbow_plot=False, detection=False, reference_spot=False, final="none")
     settings = tmp_path / "settings.yaml"
     settings.write_text(yaml.safe_dump(data), encoding="utf-8")
     return settings

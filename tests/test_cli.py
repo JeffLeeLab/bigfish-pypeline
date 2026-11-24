@@ -17,7 +17,7 @@ import yaml
 from batch_helpers import fake_process_image
 from bigfish_pypeline import __version__, batch, cli
 from bigfish_pypeline.config import save_config
-from conftest import CROP_NAME
+from conftest import CROP_NAME, TEST_DATA
 from synthetic import make_image
 from test_batch_run import KEY, FakeConn, omero_config, omero_info  # noqa: F401  (fixture)
 
@@ -54,7 +54,19 @@ def write_config(path, input_folder):
              "threshold": {"mode": "manual", "value": 50}}
             for index in (0, 1)
         ],
+        "outputs": {"qc": {"elbow_plot": False, "detection": False, "reference_spot": False,
+                           "cellpose": False, "final": "none"}},
     }
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+def kit_settings_without_qc(path):
+    """A copy of the test kit's config that draws no QC images, with the kit's folders named in full."""
+    data = yaml.safe_load((TEST_DATA / f"{CROP_NAME}_config.yaml").read_text(encoding="utf-8"))
+    data["run"]["input"]["folder"] = str(TEST_DATA)
+    data["segmentation"]["label_folder"] = str(TEST_DATA)
+    data["outputs"]["qc"].update(elbow_plot=False, detection=False, reference_spot=False, final="none")
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
     return path
 
@@ -157,8 +169,9 @@ def test_command_line_quotes():
     )
 
 
-def test_batch_test_kit_messages(crop_config_path, tmp_path, capsys):
-    code, out, err = run_command(capsys, "batch", crop_config_path, "--output-folder", tmp_path / "out")
+def test_batch_test_kit_messages(tmp_path, capsys):
+    settings = kit_settings_without_qc(tmp_path / "settings.yaml")
+    code, out, err = run_command(capsys, "batch", settings, "--output-folder", tmp_path / "out")
     assert code == 0, err
     assert f"{CROP_NAME}, channel 2: done, threshold 18, 692 spots" in out
     lines = out.splitlines()
@@ -459,10 +472,11 @@ def test_unexpected_problem_outside_a_run_hides_the_session_key(tmp_path, capsys
     assert not (tmp_path / "out").exists()
 
 
-def test_mean_intensity_warning_not_in_the_terminal(crop_config_path, tmp_path):
+def test_mean_intensity_warning_not_in_the_terminal(tmp_path):
     """A real run of the test kit, from the command and from Python with a worker
     that gives another warning: big-fish's FutureWarning about `mean_intensity` is
     not shown, the other warning is."""
+    crop_config_path = kit_settings_without_qc(tmp_path / "kit_settings.yaml")
     script = tmp_path / "script.py"
     script.write_text(textwrap.dedent(f"""
         import sys

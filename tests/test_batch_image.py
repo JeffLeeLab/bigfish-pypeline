@@ -13,6 +13,10 @@ from synthetic import make_image
 
 VOXEL_SIZE = (200, 65, 65)  # nm: z, y, x
 
+# Most tests do not look at QC files, so their configs draw none; the tests that do ask for them with `with_qc`.
+QC_OFF = {"elbow_plot": False, "detection": False, "reference_spot": False, "cellpose": False,
+          "final": "none"}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -33,6 +37,7 @@ def crop_config(crop_config_path, **channel_changes):
     """The test kit config with some channel settings changed (dotted names)."""
     config = load_config(crop_config_path)
     data = config.to_dict()
+    data["outputs"]["qc"] = dict(QC_OFF)
     channel = data["channels"][0]
     for name, value in channel_changes.items():
         group, setting = name.split("__")
@@ -62,7 +67,7 @@ def check_cells_as_v1(cells, folder, with_clusters=True):
             np.testing.assert_array_equal(cells[column], expected[column], err_msg=column)
 
 
-def synthetic_config(axes="ZCYX", voxel_size=None, channels=None, segmentation=None):
+def synthetic_config(axes="ZCYX", voxel_size=None, channels=None, segmentation=None, qc=False):
     """Config for generated images: top-hat background, manual thresholds."""
     if voxel_size is None:
         voxel_size = {"z": 200, "yx": 65} if "Z" in axes else {"yx": 65}
@@ -84,6 +89,8 @@ def synthetic_config(axes="ZCYX", voxel_size=None, channels=None, segmentation=N
     }
     if segmentation is not None:
         data["segmentation"] = segmentation
+    if not qc:
+        data["outputs"] = {"qc": dict(QC_OFF)}
     return parse_config(data)
 
 
@@ -291,7 +298,7 @@ def test_kit_npz_files_as_v1(crop_config_path, crop_path, test_kit_folder, tmp_p
 def test_no_npz_folder_when_switched_off(tmp_path):
     image = make_image((8, 64, 64), n_spots=8, seed=2)[0]
     path = write_image(tmp_path / "off.tif", stack_channels([image, image]), "ZCYX")
-    config = synthetic_config(channels=[{"index": 0}, {"index": 1}])
+    config = synthetic_config(channels=[{"index": 0}, {"index": 1}], qc=True)
     assert config.outputs.npz is False
     summary = batch.process_image(config, "off", path, tmp_path / "run")
     assert [row["status"] for row in summary["rows"]] == ["done", "done"]
@@ -946,10 +953,6 @@ def test_omero_calibration_drop(tmp_path, fake_omero):
 # QC files
 # ---------------------------------------------------------------------------
 
-QC_OFF = {"elbow_plot": False, "detection": False, "reference_spot": False, "cellpose": False,
-          "final": "none"}
-
-
 def with_qc(config, **switches):
     """Copy of a config with every QC file switched off, then `switches` switched on."""
     data = config.to_dict()
@@ -1175,7 +1178,7 @@ def test_kit_qc_files(crop_config_path, crop_path, tmp_path, monkeypatch):
             return _original(picture, *args, **kwargs)
 
         monkeypatch.setattr(qc, name, keep)
-    config = crop_config(crop_config_path)
+    config = with_qc(crop_config(crop_config_path), **ALL_QC)
     summary, tables = run_crop(config, tmp_path, crop_path)
     assert row_of(summary, FISH_CHANNEL)["warnings"] == ""
     assert qc_files(tmp_path) == [

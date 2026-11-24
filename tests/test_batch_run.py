@@ -26,6 +26,8 @@ from conftest import CROP_NAME
 from synthetic import make_image
 
 KEY = "1b2c3d4e-0000-1111-2222-333344445555"
+QC_OFF = {"elbow_plot": False, "detection": False, "reference_spot": False, "cellpose": False,
+          "final": "none"}
 
 
 # ---------------------------------------------------------------------------
@@ -59,8 +61,11 @@ def tiny_images(folder, names):
     return folder
 
 
-def local_config(input_folder, output_folder, workers=1, channels=None, **run_settings):
-    """Config for generated images: top-hat background, manual threshold 50."""
+def local_config(input_folder, output_folder, workers=1, channels=None, qc=False, **run_settings):
+    """Config for generated images: top-hat background, manual threshold 50.
+
+    No QC images are drawn, unless `qc` is true (the defaults of `outputs.qc`).
+    """
     if channels is None:
         channels = [{"index": 0}, {"index": 1}]
     full_channels = []
@@ -76,6 +81,8 @@ def local_config(input_folder, output_folder, workers=1, channels=None, **run_se
         "image": {"axes": "ZCYX", "voxel_size_nm": {"z": 200, "yx": 65}},
         "channels": full_channels,
     }
+    if not qc:
+        data["outputs"] = {"qc": dict(QC_OFF)}
     data["run"].update(run_settings)
     return parse_config(data)
 
@@ -192,6 +199,7 @@ def kit_runs(crop_config_path, test_kit_folder, tmp_path_factory):
         data["run"]["input"]["filter"] = ""
         data["run"]["output_folder"] = str(output)
         data["segmentation"]["label_folder"] = str(folder)
+        data["outputs"]["qc"].update(QC_OFF)
 
     config = with_changes(config, change)
     results = {}
@@ -482,7 +490,7 @@ def test_unexpected_problem_hides_the_session_key(tmp_path, omero_info, monkeypa
 
 def calibrated_config(folder, output, filter_text="cal"):
     return local_config(
-        folder, output, workers=2,
+        folder, output, workers=2, qc=True,
         channels=[{"index": 0, "threshold": {"mode": "calibrated", "calibration_filter": filter_text}},
                   {"index": 1}],
     )
@@ -1082,8 +1090,6 @@ def test_omero_messages_not_in_the_terminal(tmp_path):
 # QC files
 # ---------------------------------------------------------------------------
 
-QC_OFF = {"elbow_plot": False, "detection": False, "reference_spot": False, "cellpose": False,
-          "final": "none"}
 QC_ON = {"elbow_plot": True, "detection": True, "reference_spot": True, "cellpose": True}
 
 
@@ -1239,7 +1245,7 @@ def test_qc_file_that_fails_in_a_run(tmp_path):
     folder = tmp_path / "input"
     folder.mkdir()
     generated_image(folder / "a.tif")
-    result = batch.run_batch(local_config(folder, tmp_path / "out"), image_function=failing_qc_process_image)
+    result = batch.run_batch(local_config(folder, tmp_path / "out", qc=True), image_function=failing_qc_process_image)
     assert result.status == "finished", result.message
     images = read_table(result.run_folder, "images")
     assert list(images["status"]) == ["done", "done"]
@@ -1288,7 +1294,7 @@ def qc_process_image(config, image_name, image_source, run_folder, **arguments):
 ])
 def test_qc_files_of_finished_images_only(tmp_path, names, workers, status, kept):
     folder = tiny_images(tmp_path / "input", names)
-    result = batch.run_batch(local_config(folder, tmp_path / "out", workers=workers),
+    result = batch.run_batch(local_config(folder, tmp_path / "out", workers=workers, qc=True),
                              image_function=qc_process_image)
     assert result.status == status, result.message
     expected = [f"{name}_ch{channel}_elbow.png" for name in kept for channel in (0, 1)]

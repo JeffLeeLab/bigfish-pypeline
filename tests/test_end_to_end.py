@@ -232,9 +232,16 @@ def channel_settings(index, threshold=50, name=""):
     }
 
 
+QC_OFF = {"elbow_plot": False, "detection": False, "reference_spot": False, "cellpose": False,
+          "final": "none"}
+
+
 def write_settings(path, input_folder, output_folder, axes="ZCYX", channels=(0, 1), workers=1,
                    label_folder=None, run_name="e2e", **changes):
-    """A settings file for generated images (top-hat background, manual thresholds)."""
+    """A settings file for generated images (top-hat background, manual thresholds).
+
+    No QC images are drawn; a test that looks at them passes its own `outputs`.
+    """
     data = {
         "config_version": 1,
         "run": {
@@ -249,6 +256,7 @@ def write_settings(path, input_folder, output_folder, axes="ZCYX", channels=(0, 
             "voxel_size_nm": {"z": 200, "yx": 65} if "Z" in axes else {"yx": 65},
         },
         "channels": [channel if isinstance(channel, dict) else channel_settings(channel) for channel in channels],
+        "outputs": {"qc": dict(QC_OFF)},
     }
     if label_folder is not None:
         data["segmentation"] = {"enabled": True, "source": "label_files", "label_folder": str(label_folder)}
@@ -299,10 +307,21 @@ def finished_images(run_folder):
 # ---------------------------------------------------------------------------
 
 
+def kit_settings_without_qc(path):
+    """The test kit's config with its folders named in full and no QC images."""
+    data = yaml.safe_load((TEST_DATA / f"{CROP_NAME}_config.yaml").read_text(encoding="utf-8"))
+    data["run"]["input"]["folder"] = str(TEST_DATA)
+    data["segmentation"]["label_folder"] = str(TEST_DATA)
+    data["outputs"]["qc"] = dict(QC_OFF)
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
 @pytest.fixture(scope="module")
-def kit_with_labels(crop_config_path, tmp_path_factory):
+def kit_with_labels(tmp_path_factory):
     base = tmp_path_factory.mktemp("kit_labels")
-    command, code, folder = batch([crop_config_path, "--output-folder", base / "out"], base)
+    settings = kit_settings_without_qc(base / "settings.yaml")
+    command, code, folder = batch([settings, "--output-folder", base / "out"], base)
     return command, code, folder
 
 
@@ -336,12 +355,11 @@ def test_kit_with_label_files_agrees_with_v1(kit_with_labels, crop_reference_fol
     assert list(images["segmentation_status"]) == ["done"]
 
 
-def test_kit_without_segmentation(kit_with_labels, crop_config_path, tmp_path):
+def test_kit_without_segmentation(kit_with_labels, tmp_path):
     _, _, labelled = kit_with_labels
-    data = yaml.safe_load(crop_config_path.read_text(encoding="utf-8"))
-    data["run"]["input"]["folder"] = str(TEST_DATA)
+    settings = kit_settings_without_qc(tmp_path / "no_segmentation.yaml")
+    data = yaml.safe_load(settings.read_text(encoding="utf-8"))
     data["segmentation"]["enabled"] = False
-    settings = tmp_path / "no_segmentation.yaml"
     settings.write_text(yaml.safe_dump(data), encoding="utf-8")
 
     command, code, folder = batch([settings, "--output-folder", tmp_path / "out"], tmp_path)
