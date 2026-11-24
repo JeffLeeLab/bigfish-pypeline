@@ -5,16 +5,16 @@ Where the work stands, for whoever picks it up next. Updated 24 Nov 2026. Detail
 ## State
 
 - **Phases 0, 1 and 2:** done, signed off, merged into `main` and pushed. Phase 2 was signed off and merged on 24 Nov 2026 (devlog 2.8).
-- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0). Tasks 3.1 to 3.5 are done and committed (devlog 3.1–3.5). Task 3.6 (QC outputs in the batch runner, Opus 5.5) is with its executor since 24 Nov 2026; uncommitted changes in `batch.py`, `outputs.py`, `qc.py` and the tests belong to it.
+- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0) and two more on the QC files (devlog 3.5, at its end). Tasks 3.1 to 3.6 are done and committed (devlog 3.1–3.6). Task 3.7 (keep-awake, Sonnet 5.5) is with its executor since 24 Nov 2026; uncommitted changes in `batch.py` and the tests belong to it.
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
-- 974 tests pass in `bigfish-msp` without the full-size image (about 7 minutes) after tasks 3.1 to 3.5.
+- 1,011 tests pass in `bigfish-msp` without the full-size image (10 min 33 s) after tasks 3.1 to 3.6. A foreground command is cut off after 10 minutes: run the suite in the background.
 - The Phase 3 plan and devlog 3.0 are committed on `msp` and not pushed.
 
 ## Next step
 
-1. Review the changes of 3.6 when its executor reports, run the suite, commit, and write the devlog entry.
-2. Carry out the user's two decisions of 24 Nov 2026 (devlog 3.5, at its end) in `qc.py`, once 3.6 is committed: `write_final_html` holds the plotly script inside each page by default, and the final QC and the detection plot are saved 2,000 px wide (final QC at 125 dots per inch, detection plot at 100). The executor of 3.6 was told to use `plotly_script="embedded"` in the runner and not to test figure sizes.
-3. Then 3.7 (keep-awake) → 3.8 (end-to-end tests), 3.9 (time and memory, on its own) and 3.10 (samples); the order is in the plan.
+1. Review the changes of 3.7 when its executor reports, run the suite, commit, and write the devlog entry.
+2. Task 3.8 (end-to-end tests, Sonnet 5.5). It also has to bring the suite's time back down: it rose from under 7 to over 10 minutes when the QC outputs came on by default in the test configs.
+3. Task 3.9 (time and memory with the QC outputs on, Opus 5.5) on its own, then 3.10 (samples for the user) and 3.11 (phase review).
 
 ## How the work is run
 

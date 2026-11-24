@@ -1500,3 +1500,29 @@ Choices the spec does not settle:
 
 Both are changed in `qc.py` once task 3.6 has left that file.
 
+### 3.6 QC outputs in the batch runner (24 Nov 2026)
+
+`bigfish-pypeline batch` now writes the QC files of spec 8.3 according to the switches of `outputs.qc`. The two decisions at the end of 3.5 are in: the final QC and the detection plot are 2,000 px wide, and the HTML final QC holds plotly's script inside each page (also the default of `write_final_html`).
+
+- **For each channel that is done**, the worker writes `_elbow.png` (in every threshold mode, so the elbow values are now worked out whenever the elbow plot is on; devlog 1.15, deviation 13), `_detection.png` (over the maximum projection after background subtraction, as v1, with the final spot positions), `_referencespot.tif` (when decomposition built one) and `_final.png` or `_final.html` (over the maximum projection of the channel as read, from the channel's tables and the label image). A failed or skipped channel writes none.
+- **Order.** The files of a channel are drawn as soon as the channel is done, in `qc_temporary/<image>/` in the run folder. When every channel of the image is done they are moved into `qc/`, and then the tables are written, `_images.csv` last. If the tables cannot be written, the image's QC files are removed again.
+- **Unfinished images.** A cancel, a stop, a stopped worker and a retried image leave QC files of finished images only, no temporary file, and no `qc_temporary/` folder. An empty `qc/` folder is removed.
+- **`qc/calibration.png`** is written by the main process after the calibration pass, with the lower limits and channel names. It follows the `elbow_plot` switch. A run repeated from `run_config.yaml` does not calibrate and writes none.
+- **A QC file that cannot be written** gives the warning "the QC file <name> could not be written: <reason>" in the `warnings` column of `images.csv` and in `run.log`; the channel stays done. A channel without candidate spots gets "no elbow plot: too few candidate spots in this channel to draw one".
+- **`run.log`** has a new line after the workers line, e.g. "QC images: elbow plot, detection plot, reference spot, final QC (PNG)", or "QC images: none". It names only what applies to the run.
+- **Memory.** Each projection is made once, no second copy of the 3D channel is kept, the figures are drawn after the channel's large arrays are let go, and each figure is let go when saved. Task 3.9 measures the worker's peak.
+- **With every QC switch off** a run loads neither `matplotlib` nor `plotly`, in the workers or the main process. With QC on the workers load `matplotlib`, and `plotly` for the HTML form. Workers never load `cellpose` or `torch`.
+- Checks: 1,011 tests pass without the full-size image. On the test kit the spots, clusters and cells tables are the same, byte for byte, with every QC output on and with all off, and the comparison with the v1 reference still passes. Checked by the orchestrator with the real command on the test kit: `qc/` holds the elbow plot, the detection plot (2,000 × 1,120 px), the reference spot and the final QC (2,000 × 2,000 px).
+- Times on the test kit, whole command with one worker: 4.6 s with every QC output off, 6.1 s with all on and the final QC as PNG, 5.6 s with it as HTML.
+
+The test suite now takes 10 min 33 s, against 6 min 43 s before this task, because the QC outputs are on by default in the test configs. Task 3.8 switches them off in the tests that do not look at them.
+
+Choices the spec does not settle:
+
+- The lower limit is shown on the elbow plot for automatic and calibrated thresholds, not for a manual one, on which it has no effect.
+- The reference spot is written whenever decomposition built one, also when no dense region was found.
+- `runtime_s` in `images.csv` includes the time spent on the QC files.
+- With the elbow plot on, a channel without candidate spots has one more entry in its `warnings` than with it off.
+
+For 3.9: with a manual or calibrated threshold and the elbow plot on, detection now works out the elbow values, which uses a mask of the channel's size for a short time; the worker's peak has to be measured with it.
+
