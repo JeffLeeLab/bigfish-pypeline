@@ -1879,9 +1879,12 @@ Not checked by the third review: the HTML final QC; whether Cellpose masks are r
 
 **User's decision (25 Nov 2026):** 8-bit, 12-bit and 16-bit images are accepted; any other type (float, signed, 32-bit) is refused when the image is opened. A 12-bit image is read as 16-bit. Checked with 12-bit values saved in a 16-bit file and with a packed 12-bit TIFF: both are read as 16-bit with the right values. Reading a packed 12-bit TIFF needs `imagecodecs`, which is installed with Cellpose but not listed in `msp-environment.yml`.
 
-**User's decisions on the points raised by the review (25 Nov 2026):**
+**User's decisions on the points raised by the reviews (25 Nov 2026):**
 
 1. Rolling-ball radius for FISH channels: the comparison of 2.6 is run again at 10, 15 and 25 px on the full-size image, and the default is chosen from it (task 3.17).
 2. Cellpose pre-treatment: clip comes after background subtraction, and values below 0 after background subtraction are set to 0 whatever the projection (task 3.16). This departs from v1, which clipped before background subtraction; clip is off by default.
 3. Cluster centres are always exact (decimals), where v1 gives whole pixels when the pixel sizes are whole numbers (task 3.16). The clusters themselves do not change; each centre moves by less than 1 px.
+4. Clusters are drawn as outlines only in the detection plot and the final QC, so that the spots of a bright focus stay visible (finding 28, task 3.14). This departs from v1's look.
+5. The command still ends with 0 when images failed; the final line in the terminal and the message of `run_info.yaml` give the number of failed and skipped channels (task 3.15).
+6. `run_info.yaml` records the size, date and checksum of each label file and custom Cellpose model read, so that a rerun can tell if one has changed (F3, task 3.15).
 

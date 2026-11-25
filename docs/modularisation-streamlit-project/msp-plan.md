@@ -64,7 +64,7 @@ Spec section 11, Phase 3. Run folder: section 8.1. `.npz` files: section 8.2. QC
 | 3.9 | Time and memory with the QC outputs on | Opus 5.5, medium, then the orchestrator | Numbers in the devlog; `workers: auto` estimate confirmed or changed | Agree a change, if there is one |
 | 3.10 | Sample QC images and logs | Orchestrator | Samples from the crop and the full-size image ready | Review the samples |
 | 3.11 | Phase review | Orchestrator, then the user | Phase 3 done-when met | Sign off; say when to merge |
-| 3.12 | Independent reviews | Gemini 4 Neon (High) and GPT-6.2 Astra (medium), then the orchestrator | Findings checked and in the devlog | Answered: the first decisions of 3.12. Open: the decisions after the third review |
+| 3.12 | Independent reviews | Gemini 4 Neon (High) and GPT-6.2 Astra (medium), then the orchestrator | Findings checked and in the devlog | Answered: the decisions of 3.12 |
 | 3.13 | Reading images: pixel types, layout of each file, OMERO rejoining (`io.py`) | Opus 5.5, medium | Only 8-, 12- and 16-bit accepted; a file whose axes contradict the layout fails; a dropped connection is not reported as an ended session | – |
 | 3.14 | Fixes in the QC figures (`qc.py`) | Sonnet 5.5, high | Final QC with border cells dropped; large cell numbers; axis and panel labels; calibration plot | – |
 | 3.15 | Fixes in the settings, the threshold and the runner (`config.py`, `detection.py`, `batch.py`, `cli.py`, `outputs.py`, `segmentation.py`) | Opus 5.5, medium | Each fix has a test; tables of the test kit unchanged | – |
@@ -172,11 +172,11 @@ Spec section 11, Phase 3. Run folder: section 8.1. `.npz` files: section 8.2. QC
 2. **Cellpose pre-treatment.** Clip after background subtraction instead of before, so that its value does not depend on the camera offset; and set the negative values of a mean projection to 0 after background subtraction, as already happens after a maximum projection (task 3.16).
 3. **Cluster centres.** Always exact centres, instead of v1's whole-pixel centres when pixel sizes are whole numbers; the difference is recorded against the v1 reference (task 3.16).
 
-**Decisions after the third review** (open; none holds up 3.13–3.16)
+**Decisions after the third review** (answered by the user on 25 Nov 2026, devlog 3.12)
 
-4. **Cluster marks.** The detection plot draws clusters as filled cyan pentagons, as v1 does, which hide the spots of a bright focus (finding 28). Proposed: outlines only, in the detection plot and the final QC (task 3.14).
-5. **Runs with failed images.** The command ends with 0 even when images failed, as its help says. Proposed: keep 0, and give the number of failed and skipped channels in the final line in the terminal and in the message of `run_info.yaml` (task 3.15).
-6. **Label files and custom models in the run record.** `run_config.yaml` names them by path only (F3). Proposed: `run_info.yaml` also records each file's size, date and a checksum, so that a rerun can tell if one has changed (task 3.15).
+4. **Cluster marks.** The detection plot draws clusters as filled cyan pentagons, as v1 does, which hide the spots of a bright focus (finding 28). Outlines only, in the detection plot and the final QC (task 3.14).
+5. **Runs with failed images.** The command ends with 0 even when images failed, as its help says. It stays 0, and the number of failed and skipped channels is given in the final line in the terminal and in the message of `run_info.yaml` (task 3.15).
+6. **Label files and custom models in the run record.** `run_config.yaml` names them by path only (F3). `run_info.yaml` also records each file's size, date and a checksum, so that a rerun can tell if one has changed (task 3.15).
 
 ### 3.13 Reading images
 
@@ -195,7 +195,7 @@ Spec section 11, Phase 3. Run folder: section 8.1. `.npz` files: section 8.2. QC
 - Final QC: cell numbers are worked with in a way that does not grow with the largest number, both for the outlines and for the spot counts, so a label file with numbers such as 100,000,000 draws normally (finding 7).
 - Elbow plot: the axis says what is plotted: the natural log of the number of candidate spots above each threshold, smoothed, before spots sharing a peak are merged (finding 3).
 - Cellpose QC figure: the first panel says it shows the image after pre-treatment (finding 8). With no diameter set, the title says the image was used at its own scale, not "diameter chosen by Cellpose" (finding 26); the test of that wording changes with it.
-- If the user agrees (decision 4): clusters drawn as outlines only, in the detection plot and the final QC (finding 28).
+- Clusters drawn as outlines only, in the detection plot and the final QC (finding 28, decision 4).
 - Calibration plot: images whose value was raised to the lower limit are marked, using the column added in 3.15 (finding 4).
 - Checks: a final QC test with `drop_border_cells` on, for PNG and HTML; a label image with very large cell numbers; the labels; tables unchanged.
 
@@ -212,7 +212,7 @@ Spec section 11, Phase 3. Run folder: section 8.1. `.npz` files: section 8.2. QC
 - No setting accepts an infinite or missing number (`.inf`, `.nan`), including the threshold value and its lower limit (finding 25).
 - A worker that stops just before the next image is handed out leads to the same restart with fewer workers, and that image stays in the queue (finding 24).
 - The total time in `run.log` and the duration in `run_info.yaml` are the same figure (finding 27).
-- If the user agrees: the final line in the terminal and the message of `run_info.yaml` give the number of failed and skipped channels (decision 5); `run_info.yaml` records the size, date and checksum of each label file and custom Cellpose model read (decision 6).
+- The final line in the terminal and the message of `run_info.yaml` give the number of failed and skipped channels (decision 5). `run_info.yaml` records the size, date and checksum of each label file and custom Cellpose model read (decision 6); spec 8.4 updated by the orchestrator.
 - Cellpose QC figure: the channel name, when there is one (finding 16).
 - An image marked failed keeps its segmentation status and warnings in `images.csv` (finding 17).
 - Label files written by the runner carry the pixel size, so that Fiji shows µm (finding 18).
