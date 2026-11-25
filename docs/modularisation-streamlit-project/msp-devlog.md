@@ -1903,3 +1903,28 @@ Done by Sonnet 5.5 (high) in `qc.py`, commit `cc360e9`. The orchestrator read th
 **Choices the plan does not settle:** the legend's count of "Automatic value of each image" leaves out the raised images, so the two counts add up to the images in the median; images left out of the median are never marked as raised.
 
 **Samples:** `~/bigfish-testdata/phase3/samples_3.14/` (detection plot, elbow plot, calibration plot with made-up values, final QC with all cells and with the 18 border cells left out, Cellpose QC figure from a stand-in). The two HTML pages were checked by the tests and by their contents, not opened in a browser.
+
+### 3.13 Reading images (25 Nov 2026)
+
+Done by Opus 5.5 (medium) in `io.py`, with two small changes in `batch.py` and one in `cli.py`, commit `f250731`. The orchestrator read the changes and ran the test files of reading, the command line, the batch runner and the end-to-end runs without the full-size image: 511 and 115 pass.
+
+- **Pixel types (finding 1).** 8-bit and 16-bit unsigned images are accepted. A 12-bit image needs nothing of its own: `tifffile` gives 16-bit values for a packed 12-bit file and for 12-bit values in a 16-bit file, and a packed 12-bit image gives the same spot and cluster tables as the 16-bit file. Every other type is refused from the file header, before any pixel is read, for TIFF files and OMERO images. In a run the image is listed as failed and the run goes on. `check` lists such images under "Images that cannot be used"; when the first image is one of them, `check` and `batch` stop with the message.
+- **The message:** "`<file>`: the pixel type is 32-bit with decimal values (float32), which cannot be used; only 8-bit, 12-bit and 16-bit images are accepted. Convert the image to 16-bit, for example in Fiji with Image › Type › 16-bit (https://imagej.net/ij/docs/menus/image.html#type), then run it again. In Fiji, first untick "Scale when converting" under Edit › Options › Conversions, so that the pixel values are kept." The last sentence was added by the orchestrator: with that box ticked, Fiji stretches each 32-bit image to the full 16-bit range, so intensities and thresholds could no longer be compared between images.
+- **The check for NaN and infinite values is removed.** Only float images can hold them, and those are now refused.
+- **Layout check without pixel data (finding 14).** `io.check_image` checks the pixel type, the layout and the channels from the header. A test with a compressed file confirms that nothing is read.
+- **Each file's axes (finding 21).** A file's axes count as known when they come from ImageJ or OME metadata, or from the axes `tifffile` writes, and are one of the five layouts. Such a file fails when its axes differ from the layout of the run: "`<file>`: the file's own information says its axes are stored in the order ZCYX, which does not match the layout CZYX of this run (`image.axes` in the settings). Save the image with its axes in the order CZYX, or run it with the layout ZCYX." A plain TIFF is read with the layout, as before. In a batch of a `ZCYX`, a `CZYX` and a `ZCYX` file, the middle one fails and the others finish.
+- **OMERO rejoining (finding 23).** The OMERO library answers "not joined" for a refused session and for a timeout alike, and hides the reason. `join_session` now keeps the error the library met: an answer from the server (the session key refused) gives the ended-session message and stops the run; anything else (a timeout, no answer) is a connection problem, so that image fails and the next one tries to rejoin. Tested with the real OMERO library talking to a stand-in for the server's router; no server was contacted. `omero_tools.py` is unchanged.
+- **`imagecodecs` 2026.11.11** is listed in `msp-environment.yml` under pip, where the installed copy came from. Nothing was installed.
+
+**Changes in behaviour to know about**
+
+- A Fiji hyperstack is always stored with Z before C. A run with the layout `CZYX` on such files used to mix channels and Z planes without a message; it now fails with the message above.
+- Packed 10-bit and 14-bit files are also read as 16-bit and accepted, since their values are read correctly. 1-bit images are refused.
+- If a later version of the OMERO library joins a session in another way, the kept error would be missing and an ended session would be reported as a connection problem for each image, instead of stopping the run. The tests with the real library would then fail.
+- In a run with Cellpose, a refused image is refused when its segmentation channel is read, so its `warnings` column repeats the message after "no cell results: segmentation failed". Tidied in 3.15.
+
+**For the documentation (Phase 6):** converting to 16-bit in Fiji and the "Scale when converting" box; a 16-bit signed image, which Fiji shows as 16-bit with a calibration, needs another route.
+
+**Tests changed:** the tests that made one channel fail with a NaN in a float image now use a compressed 16-bit file with one damaged plane; the end-to-end test of pixel types expects the float image to fail; the test that the confirmed layout overrides the metadata is replaced by tests of the axes check.
+
+**For the user's OMERO check on the real server:** the rejoin after a dropped connection now goes through the new code, so the check listed in the handoff covers it too.
