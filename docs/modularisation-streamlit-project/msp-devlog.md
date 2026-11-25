@@ -1928,3 +1928,91 @@ Done by Opus 5.5 (medium) in `io.py`, with two small changes in `batch.py` and o
 **Tests changed:** the tests that made one channel fail with a NaN in a float image now use a compressed 16-bit file with one damaged plane; the end-to-end test of pixel types expects the float image to fail; the test that the confirmed layout overrides the metadata is replaced by tests of the axes check.
 
 **For the user's OMERO check on the real server:** the rejoin after a dropped connection now goes through the new code, so the check listed in the handoff covers it too.
+
+### 3.17 Rolling-ball radius for FISH channels (25 Nov 2026)
+
+The comparison of 2.6 run again with rolling ball at 10, 15 and 25 px, next to top-hat at 5 px and rolling ball at 5 px, with the settings of 2.6 (decomposition alpha 0.5 and beta 1, clusters of 12 spots within 600 nm, subpixel fitting off, run seed 0). The measurements were made by Opus 5.5 (medium) rather than by the orchestrator, with a copy of the package at commit `25f8270` so that the tasks under way could not change them. Scripts, logs and tables are in `~/bigfish-testdata/phase3/rolling_ball/` (see its `README.md`; every row is in `results/all_results.csv`).
+
+TH is top-hat, RB is rolling ball. Values are in the order TH 5 / RB 5 / RB 10 / RB 15 / RB 25.
+
+| Image, channel | Threshold | Threshold value | Detected | After decomposition | Clusters |
+|---|---|---|---|---|---|
+| Crop, exon | 18 | 18 | 473 / 440 / 467 / 480 / 478 | 692 / 664 / 696 / 717 / 724 | 6 / 5 / 5 / 6 / 6 |
+| | each setting's automatic | 13 / 12 / 12 / 12 / 13 | 610 / 601 / 624 / 636 / 609 | 869 / 868 / 908 / 917 / 888 | 6 / 7 / 8 / 7 / 8 |
+| Full size, exon | 18 | 18 | 24,631 / 23,680 / 24,570 / 24,825 / 24,866 | 36,360 / 37,126 / 37,096 / 37,531 / 37,296 | 199 / 273 / 251 / 254 / 251 |
+| | each setting's automatic | 15 / 13 / 14 / 14 / 14 | 27,514 / 28,199 / 28,077 / 28,394 / 28,492 | 41,249 / 43,925 / 42,732 / 43,644 / 43,488 | 246 / 308 / 296 / 300 / 287 |
+| Full size, intron | 30 | 30 | 1,143 / 1,131 / 1,216 / 1,235 / 1,228 | 1,526 / 1,532 / 1,604 / 1,643 / 1,627 | 0 at every setting |
+| | 18 | 18 | 3,143 / 2,612 / 3,193 / 3,428 / 3,494 | 6,365 / 4,725 / 6,154 / 7,119 / 7,250 | 22 / 4 / 24 / 58 / 62 |
+| | each setting's automatic | 23 / 22 / 23 / 24 / 24 | 1,643 / 1,654 / 1,703 / 1,629 / 1,644 | 2,404 / 2,462 / 2,440 / 2,328 / 2,366 | 0 at every setting |
+
+**Thresholds.** The automatic threshold moves by at most 1 between the rolling-ball radii. To detect the same number of spots as top-hat at 18 on the exon channel, rolling ball needs 17 at 5 px and 18 at 10, 15 and 25 px, so a manual threshold chosen with top-hat carries over at the larger radii. On the intron channel the match for top-hat at 30 is 30 at 5 px and 32 at the larger radii.
+
+**Run-to-run range** (run seeds 0 to 5, full-size exon channel at 18):
+
+| | Spots after decomposition | Clusters |
+|---|---|---|
+| TH 5 | 36,360 to 37,126 | 197 to 212 |
+| RB 5 | 36,505 to 37,126 | 258 to 273 |
+| RB 10 | 36,470 to 37,130 | 237 to 259 |
+| RB 15 | 37,292 to 38,028 | 245 to 271 |
+| RB 25 | 37,272 to 37,878 | 244 to 265 |
+
+- Clusters: every rolling-ball radius gives clearly more clusters than top-hat (no overlap). The radii do not differ clearly from each other: the ranges of 10, 15 and 25 px all overlap that of 5 px.
+- Spots after decomposition: 15 and 25 px lie 1 to 2 % above top-hat and above rolling ball at 5 px, without overlap. 10 px overlaps both.
+- The range was not measured for the intron channel or for the automatic thresholds, so those rows are single runs.
+
+**Same spots** (at most 1 px apart in each of Z, Y and X, each spot paired once; both / first only / second only):
+
+| Comparison | TH 5 with RB 10 | TH 5 with RB 15 | TH 5 with RB 25 | RB 5 with RB 10 | RB 5 with RB 15 | RB 5 with RB 25 |
+|---|---|---|---|---|---|---|
+| Crop, detected at 18 | 459 / 14 / 8 | 465 / 8 / 15 | 460 / 13 / 18 | 439 / 1 / 28 | 439 / 1 / 41 | 437 / 3 / 41 |
+| Full-size exon, detected at 18 | 24,102 / 529 / 468 | 24,203 / 428 / 622 | 24,214 / 417 / 652 | 23,594 / 86 / 976 | 23,590 / 90 / 1,235 | 23,579 / 101 / 1,287 |
+| Full-size exon, after decomposition at 18 | 34,594 / 1,766 / 2,502 | 34,800 / 1,560 / 2,731 | 34,694 / 1,666 / 2,602 | 35,106 / 2,020 / 1,990 | 35,174 / 1,952 / 2,357 | 34,978 / 2,148 / 2,318 |
+| Full-size intron, detected at 30 | 1,132 / 11 / 84 | 1,137 / 6 / 98 | 1,137 / 6 / 91 | 1,123 / 8 / 93 | 1,124 / 7 / 111 | 1,123 / 8 / 105 |
+| Full-size intron, detected at 18 | 2,824 / 319 / 369 | 2,897 / 246 / 531 | 2,930 / 213 / 564 | 2,561 / 51 / 632 | 2,557 / 55 / 871 | 2,563 / 49 / 931 |
+
+For comparison, top-hat with rolling ball at 5 px on the full-size exon channel at 18 gave 23,516 / 1,115 / 164 (2.6). At the same threshold the larger radii share more spots with top-hat than 5 px does.
+
+**Isolated spots** (no other detected spot within 600 nm; full-size exon channel at 18). Of the 14,136 isolated spots found with rolling ball at 5 px, 13, 10 and 12 are lost at 10, 15 and 25 px, and 456, 585 and 613 are gained. The gained spots are dim: their median value in the LoG-filtered image is 19, just above the threshold of 18 (29 for the spots kept), and their median raw intensity is 170 against 193. On the crop none of the 320 isolated spots is lost and 19 to 24 are gained. Against top-hat's 14,542 isolated spots, lost and gained are 627 and 41 at 5 px, 283 and 139 at 10 px, 221 and 223 at 15 px and 217 and 238 at 25 px. So a larger radius keeps nearly every spot of 5 px and adds a few per cent of dim spots at the threshold, and at 15 to 25 px the isolated spots agree with top-hat about as well as two rolling-ball radii agree with each other.
+
+**Dense foci** (full-size exon channel at 18, run seed 0).
+
+- In the 191 clusters found at every setting, the median number of spots is 15 with top-hat, 18 with rolling ball at 5 px and 17 at 10, 15 and 25 px.
+- Of the 273 clusters of 5 px, 237, 242 and 237 are found again at 10, 15 and 25 px, with 14, 12 and 14 new ones.
+- Of the 199 top-hat clusters, 194 or 195 are found at each larger radius, with 57 to 59 found with rolling ball only; at 10 px, 54 of the 57 are places where top-hat has 8 to 11 spots, just under the limit of 12. This is the picture of 2.6.
+- The reference spot returns to top-hat's size from 10 px up, yet the foci keep 1 to 2 more spots than with top-hat. A likely reason, not tested: a larger ball leaves more light in the foci (median intensity after background subtraction at the detected spots 69 at 5 px against 74, 77 and 78), which offsets the larger reference spot.
+- On the intron channel at 18, which is below that channel's automatic threshold, the clusters go from 22 with top-hat to 4, 24, 58 and 62. They follow the reference spot's amplitude (54.2 / 64.5 / 57.1 / 52.1 / 52.5), so at that threshold the cluster count is not stable at any radius. At 30 there are no clusters at any setting.
+
+**Other numbers** (full-size exon channel at 18):
+
+| | TH 5 | RB 5 | RB 10 | RB 15 | RB 25 |
+|---|---|---|---|---|---|
+| Pixels set to 0 (%) | 4.8 | 36.0 | 29.0 | 22.6 | 19.8 |
+| Median intensity at the detected spots, after background subtraction | 80 | 69 | 74 | 77 | 78 |
+| Reference spot width, Z / YX (nm) | 271 / 100 | 254 / 94 | 269 / 101 | 271 / 102 | 271 / 101 |
+| Reference spot amplitude | 62.9 | 61.8 | 63.2 | 62.8 | 63.6 |
+| Dense regions | 10,521 | 10,846 | 11,018 | 10,648 | 10,345 |
+| Time to subtract the background of one full-size channel (s) | 32 | 42 | 170 | 41 | 75 |
+
+Rolling ball at 10 px is about four times slower than at 5 or 15 px: as in ImageJ, the image is reduced by half before the ball is rolled only above 10 px. The times are for background subtraction alone, measured in one process; those of 2.6 included the LoG filter.
+
+**Per-cell counts on the crop** (44 nuclei, spots after decomposition at 18): totals 413 / 396 / 411 / 425 / 427. Against top-hat, r is 0.990 at 5 px and 0.994 at the larger radii, with a median difference per cell of 0 and a largest difference of 4, 3, 2 and 3 spots.
+
+**Figures** (image panels come from the crop only; full-size panels are in `~/bigfish-testdata/phase3/rolling_ball/figures/`):
+
+- [Spots and clusters at each setting](figures/phase3/rolling_ball/counts-by-setting.png), with the run-to-run range.
+- [Sparse regions of the crop](figures/phase3/rolling_ball/crop_sparse-regions.png) and [bright foci of the crop](figures/phase3/rolling_ball/crop_bright-foci.png): the raw image, each background result on one scale, the detected spots, the spots placed by decomposition and the clusters ([where the regions are](figures/phase3/rolling_ball/crop_regions-where.png)). The sparse regions were chosen where the settings differ most.
+- Spots per focus: [full-size exon](figures/phase3/rolling_ball/spots-per-focus_full_ch2.png), [crop](figures/phase3/rolling_ball/spots-per-focus_crop_ch2.png).
+- [Isolated spots lost and gained](figures/phase3/rolling_ball/isolated-spots_full_ch2.png) on the full-size exon channel.
+- Elbow curves: [crop](figures/phase3/rolling_ball/elbow_crop_ch2.png), [full-size exon](figures/phase3/rolling_ball/elbow_full_ch2.png), [full-size intron](figures/phase3/rolling_ball/elbow_full_ch3.png).
+
+**Checked by the orchestrator.** The executor's script at 5 px gives the numbers of 2.6 on the crop and on the full-size image. `bigfish-pypeline batch`, run from the same copy of the package with a separate script, gave on the test kit the counts of the table at 10, 15 and 25 px, with the manual and the automatic threshold (detected, after decomposition, clusters and the per-cell totals 411, 425 and 427), and on the full-size image 24,825 detected spots, 37,531 spots and 254 clusters for the exon channel at 15 px, and 3,494, 7,250 and 62 for the intron channel at 25 px at 18, as in the table. The isolated-spot and dense-focus numbers were not recomputed.
+
+**What the comparison shows, for the user's choice**
+
+- The rise in clusters against top-hat (about a quarter to a third more) stays at every radius. A larger radius does not bring rolling ball back to top-hat's cluster count.
+- From 10 px up, a manual threshold chosen with top-hat detects the same number of spots, the shared spots with top-hat rise, and the reference spot has top-hat's size. 5 px is the setting that differs most from top-hat in the spots it detects.
+- 15 and 25 px give nearly the same results. 10 px gives results between 5 and 15 px and is the slowest.
+- This is one image and its crop. Which count in a bright focus is nearer the truth is not settled, as in 2.6.
+
+**Waiting on the user:** the default radius for FISH channels (5 px now). If it changes, `config.py`, the spec and the test kit's expected tables are updated after 3.15.
