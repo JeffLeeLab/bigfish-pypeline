@@ -5,17 +5,17 @@ Where the work stands, for whoever picks it up next. Updated 25 Nov 2026. Detail
 ## State
 
 - **Phases 0, 1 and 2:** done, signed off, merged into `main` and pushed. Phase 2 was signed off and merged on 24 Nov 2026 (devlog 2.8).
-- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0) and two more on the QC files (devlog 3.5, at its end). Tasks 3.1 to 3.9 are done and committed (devlog 3.1–3.9); the `workers: auto` figures stand. The samples of 3.10 are made (devlog 3.10) and wait for the user's review. The phase review (devlog 3.11) is written, with its checks run at commit `bf270e0`. An independent review by Gemini 4 Neon (devlog 3.12) found problems from Phases 1–3 to fix before sign-off; tasks 3.13–3.16 are in the plan. The user decided that only 8-bit, 12-bit and 16-bit images are accepted.
+- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0) and two more on the QC files (devlog 3.5, at its end). Tasks 3.1 to 3.9 are done and committed (devlog 3.1–3.9); the `workers: auto` figures stand. The samples of 3.10 are made (devlog 3.10) and wait for the user's review. The phase review (devlog 3.11) is written, with its checks run at commit `bf270e0`. An independent review by Gemini 4 Neon (devlog 3.12) found problems from Phases 1–3 to fix before sign-off; tasks 3.13–3.18 are in the plan. The user decided that only 8-bit, 12-bit and 16-bit images are accepted, and answered the three decisions after 3.12 (rolling-ball radius, Cellpose pre-treatment, cluster centres).
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
 - 1,057 tests pass in `bigfish-msp` with the full-size image, 1,054 without it (9 min 36 s) and 1,048 without the Cellpose model. A foreground command is cut off after 10 minutes: run the suite in the background and in two parts (the split is in devlog 3.8).
 - The Phase 3 plan and devlog 3.0 are committed on `msp` and not pushed.
 
 ## Next step
 
-1. Tasks 3.13 and 3.14 (they can start together), then 3.15, as briefed in the plan. The user's answers to the decisions of 3.12 may add to 3.15.
+1. Tasks 3.13 and 3.14 (they can start together), then 3.15 and 3.16, as briefed in the plan. Task 3.17 (rolling-ball radius comparison) can run at any point, but not during a full-size test run.
 2. The user reviews the samples listed in devlog 3.10 (QC images, `run.log`, `run_info.yaml`), redrawn where 3.14 changed a figure.
-3. Task 3.16: rerun the suite (in two parts: one command is cut off after 10 minutes) and bring devlog 3.11 up to date. The user decides whether the tests may run in parallel (`pytest-xdist` in `msp-environment.yml`), signs off Phase 3 and says when to merge `msp` into `main` and push. Nothing is merged or pushed before that.
-3. After the merge, Phase 4 (Optimise notebook) is planned in detail in `msp-plan.md`, starting from the points carried forward in devlog 3.11.
+3. Task 3.18: rerun the suite (in two parts: one command is cut off after 10 minutes) and bring devlog 3.11 up to date. The user decides whether the tests may run in parallel (`pytest-xdist` in `msp-environment.yml`), signs off Phase 3 and says when to merge `msp` into `main` and push. Nothing is merged or pushed before that.
+4. After the merge, Phase 4 (Optimise notebook) is planned in detail in `msp-plan.md`, starting from the points carried forward in devlog 3.11.
 
 ## How the work is run
 
@@ -28,7 +28,7 @@ Where the work stands, for whoever picks it up next. Updated 25 Nov 2026. Detail
 
 - **OMERO on the real server, on a day with a stable VPN:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) to see both images finish, the "rejoining" line if the connection drops, and no session key or `WARNING:` lines in the terminal.
 - **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
-- **The decisions after 3.12** in the plan: rolling-ball radius for FISH, Cellpose pre-treatment (clip order, negative values), cluster centres.
+- **The default rolling-ball radius for FISH channels**, once the comparison of task 3.17 is in the devlog.
 - **Review of the Phase 3 samples** (devlog 3.10), the decision on running the tests in parallel, and the sign-off of Phase 3 (devlog 3.11).
 - **Manual checks of the Phase 2 review** (devlog 2.8): Cellpose on the test kit, a look at a full-size run folder, and the "choices the spec does not settle" in 2.1, 2.3 and 2.4.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.

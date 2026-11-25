@@ -64,13 +64,15 @@ Spec section 11, Phase 3. Run folder: section 8.1. `.npz` files: section 8.2. QC
 | 3.9 | Time and memory with the QC outputs on | Opus 5.5, medium, then the orchestrator | Numbers in the devlog; `workers: auto` estimate confirmed or changed | Agree a change, if there is one |
 | 3.10 | Sample QC images and logs | Orchestrator | Samples from the crop and the full-size image ready | Review the samples |
 | 3.11 | Phase review | Orchestrator, then the user | Phase 3 done-when met | Sign off; say when to merge |
-| 3.12 | Independent review | Gemini 4 Neon (High), then the orchestrator | Findings checked and in the devlog | Answer the decisions of 3.12 |
+| 3.12 | Independent review | Gemini 4 Neon (High), then the orchestrator | Findings checked and in the devlog | Answered: the decisions of 3.12 |
 | 3.13 | Pixel types: 8-bit, 12-bit and 16-bit only (`io.py`) | Opus 5.5, medium | Other types refused by `check` and when an image is opened, TIFF and OMERO | – |
 | 3.14 | Fixes in the QC figures (`qc.py`) | Sonnet 5.5, high | Final QC with border cells dropped; large cell numbers; axis and panel labels; calibration plot | – |
 | 3.15 | Fixes in the settings and the runner (`config.py`, `batch.py`, `cli.py`, `outputs.py`, `segmentation.py`) | Opus 5.5, medium | Each fix has a test; tables of the test kit unchanged | – |
-| 3.16 | Phase review brought up to date | Orchestrator, then the user | Suite passes; numbers of 3.11 updated | Sign off; say when to merge |
+| 3.16 | Cellpose pre-treatment and cluster centres (`segmentation.py`, `clusters.py`) | Opus 5.5, medium | Clip after background; no negative values after a mean projection; exact cluster centres, compared with v1 | – |
+| 3.17 | Rolling-ball radius for FISH channels | Orchestrator, then the user | Comparison of 2.6 at 10, 15 and 25 px in the devlog | Choose the default radius |
+| 3.18 | Phase review brought up to date | Orchestrator, then the user | Suite passes; numbers of 3.11 updated | Sign off; say when to merge |
 
-**Order:** 3.1 and 3.3 start together (different files). Then 3.2 follows 3.1, and 3.4 → 3.5 follow 3.3. Task 3.6 needs 3.2 and 3.5; then 3.7 → 3.8. Task 3.9 follows 3.6 and runs on its own. Task 3.10 follows 3.6. After 3.12: 3.13 and 3.14 start together (different files); 3.15 follows 3.14, because the calibration plot shows the new column of `calibration.csv`; 3.16 comes last.
+**Order:** 3.1 and 3.3 start together (different files). Then 3.2 follows 3.1, and 3.4 → 3.5 follow 3.3. Task 3.6 needs 3.2 and 3.5; then 3.7 → 3.8. Task 3.9 follows 3.6 and runs on its own. Task 3.10 follows 3.6. After 3.12: 3.13 and 3.14 start together (different files); 3.15 follows 3.14, because the calibration plot shows the new column of `calibration.csv`; 3.16 follows 3.15 (both change `segmentation.py`). Task 3.17 changes no code and can run at any point, but not at the same time as a full-size test run or benchmark (memory). If the user chooses a new default radius, it is changed in `config.py` after 3.15. Task 3.18 comes last.
 
 **Check-ins with the user:** the decisions below; a first look at the final QC from the crop after 3.5, before it goes into the runner; a change to the workers estimate, if 3.9 finds one; the samples (3.10); the phase review (3.11).
 
@@ -164,11 +166,11 @@ Spec section 11, Phase 3. Run folder: section 8.1. `.npz` files: section 8.2. QC
 
 - Gemini 4 Neon (High) reviews Phases 0–3 read-only, then Phases 0–2 on their own; the orchestrator checks each finding against the code and records the result (devlog 3.12).
 
-**Decisions after 3.12** (none holds up 3.13–3.15)
+**Decisions after 3.12** (answered by the user on 25 Nov 2026, devlog 3.12)
 
-1. **Rolling-ball radius for FISH.** Only 5 px was compared with top-hat (2.6). Proposed: before Phase 4 sets the guidance, run the comparison of 2.6 again at 10, 15 and 25 px on the full-size image (both channels) and decide the default from it.
-2. **Cellpose pre-treatment.** (a) Clip after background subtraction instead of before, so that its value does not depend on the camera offset? (b) Set the negative values of a mean projection to 0 after rolling ball, as a maximum projection does? Proposed: yes to both, with the tests of 2.1 updated.
-3. **Cluster centres.** Keep v1's whole-pixel centres when pixel sizes are whole numbers, or always give exact centres (a difference of under 1 px from v1)? Proposed: exact centres, with the difference recorded against the v1 reference.
+1. **Rolling-ball radius for FISH.** Only 5 px was compared with top-hat (2.6). The comparison of 2.6 is run again at 10, 15 and 25 px on the full-size image (both channels), and the default is chosen from it (task 3.17).
+2. **Cellpose pre-treatment.** Clip after background subtraction instead of before, so that its value does not depend on the camera offset; and set the negative values of a mean projection to 0 after background subtraction, as already happens after a maximum projection (task 3.16).
+3. **Cluster centres.** Always exact centres, instead of v1's whole-pixel centres when pixel sizes are whole numbers; the difference is recorded against the v1 reference (task 3.16).
 
 ### 3.13 Pixel types
 
@@ -203,13 +205,28 @@ Spec section 11, Phase 3. Run folder: section 8.1. `.npz` files: section 8.2. QC
 - `log_intensity` written as whole numbers when the values are whole numbers; values unchanged (finding 19).
 - Checks: a test for each; the test kit's tables unchanged apart from the text of `log_intensity`; the v1 comparison tests still pass.
 
-### 3.16 Phase review brought up to date
+### 3.16 Cellpose pre-treatment and cluster centres
+
+- Cellpose pre-treatment runs in the order projection → background → clip → median → Gaussian. The clip value then applies to the image after background subtraction, so it no longer depends on the camera offset. The text that describes the pre-treatment (Cellpose QC figure, `run.log`) follows the new order.
+- After background subtraction, values below 0 are set to 0 whatever the projection, so a mean projection gives no negative values to the filters and to Cellpose.
+- Cluster centres are always exact (decimals), as big-fish gives them for decimal positions; spot positions in the spots table stay as they are (whole numbers when subpixel fitting is off).
+- The spec sections on Cellpose pre-treatment and on clusters are updated by the orchestrator; the change from v1 goes in the devlog.
+- Checks: the tests of 2.1 on pre-treatment changed to the new order, with an image whose camera offset is above the clip value; a mean projection with rolling ball gives no value below 0; on the v1 reference images the clusters and their spot numbers are the same as v1 and each centre is less than 1 px from v1's; the test kit's spot tables unchanged.
+
+### 3.17 Rolling-ball radius for FISH channels
+
+- The comparison of 2.6 is run again with rolling ball at 10, 15 and 25 px on the full-size image (exon channel 2, intron channel 3), with the same settings, thresholds, seeds and tables as 2.6, next to the results at 5 px and top-hat. Scripts and tables go in `~/bigfish-testdata/phase3/rolling_ball/`.
+- The devlog records, for each radius: the automatic threshold, spots detected, spots after decomposition and clusters, and the run-to-run range where it decides a difference.
+- The user chooses the default radius for FISH channels. If it changes, `config.py`, the spec and the test kit's expected tables are updated, and the change is recorded in the devlog.
+- Full-size runs go one at a time (memory), and not during a full-size test run.
+
+### 3.18 Phase review brought up to date
 
 - The orchestrator reruns the suite (in two parts, as in 3.11), updates the numbers and the deviations of 3.11, and records the fixes in the devlog.
 - The points of 3.12 for later phases join the points carried forward: for Phase 5, freeing Cellpose's GPU memory while an abandoned segmentation runs, and the check for damaged files if the app reads images itself; for Phase 6, the rolling-ball radius in pixels, SNR depending on the background method and on the ring's distance from the spot, the confocal formula and a spinning disk, the spot radius near 1 px, subpixel fitting in dense regions, and the size of HTML final QC files.
 - The user reviews the samples of 3.10 (redrawn where 3.14 changed a figure), signs off and says when to merge.
 
-**Done when** (spec): a full run on the test kit produces every output; repeating the run from `run_config.yaml` gives the same tables; the user has reviewed sample QC images and the log. In addition, the `workers: auto` estimate is confirmed with the QC outputs on, and the confirmed findings of 3.12 are fixed.
+**Done when** (spec): a full run on the test kit produces every output; repeating the run from `run_config.yaml` gives the same tables; the user has reviewed sample QC images and the log. In addition, the `workers: auto` estimate is confirmed with the QC outputs on, the confirmed findings of 3.12 are fixed, and the decisions after 3.12 are carried out.
 
 ### Waiting on the user
 
