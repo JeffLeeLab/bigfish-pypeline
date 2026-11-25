@@ -1888,3 +1888,18 @@ Not checked by the third review: the HTML final QC; whether Cellpose masks are r
 5. The command still ends with 0 when images failed; the final line in the terminal and the message of `run_info.yaml` give the number of failed and skipped channels (task 3.15).
 6. `run_info.yaml` records the size, date and checksum of each label file and custom Cellpose model read, so that a rerun can tell if one has changed (F3, task 3.15).
 
+
+### 3.14 Fixes in the QC figures (25 Nov 2026)
+
+Done by Sonnet 5.5 (high) in `qc.py`, commit `cc360e9`. The orchestrator read the changes, ran `tests/test_qc.py` (212 pass) and looked at the samples.
+
+- **Final QC, cells left out (finding 2).** When a cells table is given, only the cells found in both the label image and the table are drawn, counted in the title and given text or hover values, in the PNG and the HTML. With `drop_border_cells` on, the crop's final QC shows 26 cells instead of 44. Spots in a cell that is not drawn appear as spots outside the cells, as in the tables. Without a cells table every cell of the label image is drawn, as before; an empty table draws none.
+- **Final QC, large cell numbers (finding 7).** The cells drawn are renumbered from 1 inside the figure functions, so the work depends on the number of cells and not on the largest number. A cell numbered 100,000,000 needs the same memory as one numbered 1 (4.1 MB at the peak for a 300 × 400 image, measured in the test). The hover values of the HTML page keep exact cell numbers above 16,777,216.
+- **Elbow plot (finding 3).** The axis reads "Natural log of candidate spots above each threshold (smoothed, before spots sharing a peak are merged)", on two lines.
+- **Cellpose QC figure (findings 8 and 26).** The first panel is titled "image after pre-treatment". With no diameter set the title says "no diameter set (image used at its own scale)".
+- **Clusters as outlines (finding 28, decision 4).** No fill in the detection plot, the final PNG and the final HTML. The detection plot's panel title says "cyan outlines: clusters".
+- **Calibration plot (finding 4).** An image whose value was raised to the lower limit is an orange triangle at the value used, joined by a dotted line to an open circle at the elbow method's value. The legend counts these images apart from the others ("Raised to the lower limit (4 images)"). It reads the column `elbow_threshold` (the elbow method's value before the limit) that task 3.15 adds to `calibration.csv`; a table without the column is drawn as before.
+
+**Choices the plan does not settle:** the legend's count of "Automatic value of each image" leaves out the raised images, so the two counts add up to the images in the median; images left out of the median are never marked as raised.
+
+**Samples:** `~/bigfish-testdata/phase3/samples_3.14/` (detection plot, elbow plot, calibration plot with made-up values, final QC with all cells and with the 18 border cells left out, Cellpose QC figure from a stand-in). The two HTML pages were checked by the tests and by their contents, not opened in a browser.
