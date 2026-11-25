@@ -40,12 +40,19 @@ CELLPOSE_FIGURE_WIDTH = 18
 CELLPOSE_FIGURE_MARGIN = 1.0
 FIGURE_DPI = 150
 
-DIAMETER_AUTOMATIC = "diameter chosen by Cellpose"
+DIAMETER_AUTOMATIC = "no diameter set (image used at its own scale)"
+CELLPOSE_INPUT_PANEL_TITLE = "image after pre-treatment"
 
 # Elbow plot
 ELBOW_FIGURE_SIZE = (6.5, 5.0)
 # Titles of the elbow plot are continued on a new line after this many characters.
 ELBOW_TITLE_LINE_WIDTH = 60
+# The curve is big-fish's: the natural log of the number of candidate spots
+# above each threshold, smoothed, before spots that share a peak are merged.
+ELBOW_Y_LABEL = (
+    "Natural log of candidate spots above each threshold\n"
+    "(smoothed, before spots sharing a peak are merged)"
+)
 ELBOW_CURVE_COLOUR = "#2c7bb6"
 SELECTED_COLOUR = "#d7191c"
 AUTOMATIC_COLOUR = "#e08214"
@@ -160,8 +167,8 @@ def cellpose_qc_title(image_name, channel, pretreatment, diameter, n_cells, seco
     channel_name: the channel's name, shown after the number when given.
     pretreatment: the one-line text from `describe_pretreatment`; it starts
         with the Z projection, for example "max projection | rolling ball 200 px".
-    diameter: the cell diameter in pixels given to Cellpose, or None when
-        Cellpose chooses the size itself.
+    diameter: the cell diameter in pixels given to Cellpose, or None when no
+        diameter is set and the image is used at its own scale.
     n_cells: number of cells found.
     seconds: time Cellpose took.
 
@@ -219,9 +226,9 @@ def draw_cellpose_qc(segmentation, image_name, channel, pretreatment, diameter,
         stretch), "masks", "flows", "n_cells" and "seconds" are used.
     The other arguments make the title; see `cellpose_qc_title`.
 
-    The four panels are the input image, the cell outlines, the masks in
-    colour and Cellpose's flows. Returns a matplotlib `Figure` that is not
-    tied to `matplotlib.pyplot`.
+    The four panels are the image given to Cellpose (after pre-treatment), the
+    cell outlines, the masks in colour and Cellpose's flows. Returns a
+    matplotlib `Figure` that is not tied to `matplotlib.pyplot`.
     """
     from cellpose import plot
 
@@ -237,6 +244,7 @@ def draw_cellpose_qc(segmentation, image_name, channel, pretreatment, diameter,
     )
     FigureCanvasAgg(figure)
     plot.show_segmentation(figure, shown, masks, flow_picture)
+    figure.axes[0].set_title(CELLPOSE_INPUT_PANEL_TITLE)
     figure.suptitle(
         cellpose_qc_title(
             image_name, channel, pretreatment, diameter,
@@ -334,8 +342,9 @@ def draw_elbow_plot(detected, image_name, channel, threshold_mode, lower_limit=N
     threshold_mode: "manual", "auto" or "calibrated".
     lower_limit: the channel's lower limit, or None when none is set.
 
-    The curve is the number of spots found at each candidate threshold. The
-    legend names each line:
+    The curve is the natural log of the number of candidate spots above each
+    threshold, smoothed, counted before spots that share a peak are merged
+    (so it is not the final number of spots). The legend names each line:
     - "Selected threshold = 11.0": the threshold used.
     - "Lower limit = 15.0", when a lower limit is set.
     - "Automatic threshold = 13.0 (not used)" for a manual or calibrated
@@ -419,7 +428,7 @@ def draw_elbow_plot(detected, image_name, channel, threshold_mode, lower_limit=N
         fontweight="bold", fontsize=11,
     )
     axes.set_xlabel("Thresholds", fontweight="bold", fontsize=12)
-    axes.set_ylabel("Number of mRNAs detected (log scale)", fontweight="bold", fontsize=12)
+    axes.set_ylabel(ELBOW_Y_LABEL, fontweight="bold", fontsize=10)
     axes.legend(loc="upper right", prop={"size": 10})
     return figure
 
@@ -466,7 +475,11 @@ def draw_calibration_plot(calibration, thresholds, lower_limits=None, channel_na
     saving it.
 
     calibration: the calibration table (columns of `outputs.CALIBRATION_COLUMNS`):
-        one row for each image of the subset and calibrated channel.
+        one row for each image of the subset and calibrated channel. Its
+        optional column `elbow_threshold` is the elbow method's value before
+        the lower limit was applied, while `auto_threshold` is the value after
+        it; without the column (a table from an older run) no image is marked
+        as raised.
     thresholds: the threshold fixed for each calibrated channel, as a dict
         from channel number to value. A channel missing from it has no
         usable value and no line is drawn.
@@ -477,6 +490,10 @@ def draw_calibration_plot(calibration, thresholds, lower_limits=None, channel_na
     There is one panel for each channel of the table. A panel shows the
     automatic value of each image of the subset, a line at the median used
     ("Median used = 14.5") and a line at the lower limit when one is set.
+    An image whose automatic value was raised to the lower limit (its
+    `elbow_threshold` is below its `auto_threshold`) is a triangle at the
+    value used, with an open circle, joined by a dotted line, at the value
+    before the limit; the legend counts these images apart.
     Images left out of the median (not read, or no automatic value) are marked
     with a cross at the bottom of the panel and are not counted in the median;
     their number is in the legend. Image names are written along the axis for
@@ -515,6 +532,14 @@ def draw_calibration_plot(calibration, thresholds, lower_limits=None, channel_na
     return figure
 
 
+def _number_or_nan(value):
+    """The value as a float, or NaN when it is missing."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return np.nan
+
+
 def _draw_calibration_panel(axes, channel, rows, threshold, lower_limit, channel_name):
     """One panel of the calibration plot: the images of one channel."""
     positions = np.arange(1, len(rows) + 1)
@@ -523,11 +548,30 @@ def _draw_calibration_panel(axes, channel, rows, threshold, lower_limit, channel
         for row in rows
     ])
     counted = np.array([bool(row["used"]) for row in rows]) & np.isfinite(values)
+    # The elbow method's value before the lower limit, when the table has it
+    # (tables of older runs do not).
+    before_limit = np.array([_number_or_nan(row.get("elbow_threshold")) for row in rows])
+    raised = counted & (before_limit < values)
+    unraised = counted & ~raised
 
-    if counted.any():
+    if unraised.any():
         axes.scatter(
-            positions[counted], values[counted], s=40, color=ELBOW_CURVE_COLOUR, zorder=3,
-            label=f"Automatic value of each image ({_image_count_text(int(counted.sum()))})",
+            positions[unraised], values[unraised], s=40, color=ELBOW_CURVE_COLOUR, zorder=3,
+            label=f"Automatic value of each image ({_image_count_text(int(unraised.sum()))})",
+        )
+    if raised.any():
+        axes.vlines(
+            positions[raised], before_limit[raised], values[raised],
+            color=AUTOMATIC_COLOUR, linewidth=1, linestyle=":", zorder=2,
+        )
+        axes.scatter(
+            positions[raised], values[raised], s=55, marker="^", color=AUTOMATIC_COLOUR, zorder=3,
+            label=f"Raised to the lower limit ({_image_count_text(int(raised.sum()))})",
+        )
+        axes.scatter(
+            positions[raised], before_limit[raised], s=40, marker="o", facecolors="none",
+            edgecolors=AUTOMATIC_COLOUR, linewidths=1.5, zorder=3,
+            label="Value before the lower limit was applied",
         )
     if threshold is not None:
         axes.axhline(
@@ -711,14 +755,14 @@ def draw_detection_plot(image, spots, image_name, channel, spot_radius_px, clust
         number, or the (z, y, x) or (y, x) values from `get_spot_radius_px`,
         of which the last is used.
     clusters: cluster positions in pixels, in the same form as `spots`, or
-        None when cluster detection is off. A cluster is drawn as a filled
-        cyan shape.
+        None when cluster detection is off. A cluster is drawn as a cyan
+        outline with no fill, so that the spots under it stay visible.
     cluster_radius_px: radius of the cluster shape in pixels (the cluster
         radius in nm divided by the pixel size); needed when clusters are given.
 
     The picture on the left is the image with its contrast stretched for
     display (as big-fish does for `plot_detection`); the picture on the right
-    has the detections on it, as orange circles for the spots and cyan shapes
+    has the detections on it, as orange circles for the spots and cyan outlines
     for the clusters. Without any spot only the image is drawn, and the title
     says that no spots were found.
 
@@ -767,7 +811,7 @@ def draw_detection_plot(image, spots, image_name, channel, spot_radius_px, clust
     _show_levels(right, shown, DETECTION_FIGURE_WIDTH / 2 * DETECTION_FIGURE_DPI)
     legend = "orange circles: spots"
     if n_clusters is not None:
-        legend += "; cyan shapes: clusters"
+        legend += "; cyan outlines: clusters"
     right.set_title(f"Detection results ({legend})", fontsize=10)
 
     # One collection for all the circles keeps a picture with tens of thousands of spots quick.
@@ -786,7 +830,7 @@ def draw_detection_plot(image, spots, image_name, channel, spot_radius_px, clust
                 RegularPolygon((x, y), CLUSTER_SHAPE_SIDES, radius=cluster_radius)
                 for y, x in cluster_positions
             ],
-            facecolors=CLUSTER_COLOUR, edgecolors=CLUSTER_COLOUR, linewidths=CLUSTER_LINE_WIDTH,
+            facecolors="none", edgecolors=CLUSTER_COLOUR, linewidths=CLUSTER_LINE_WIDTH,
         )
         right.add_collection(shapes, autolim=False)
     left.axis("off")
@@ -951,6 +995,8 @@ class _FinalView:
     cluster_yx: np.ndarray
     cluster_table: object
     has_clusters: bool
+    # The label image of the cells drawn, renumbered 1, 2, 3... in the order
+    # of `ids` (0 elsewhere), or None when no cell is drawn.
     labels: object
 
     @property
@@ -983,17 +1029,69 @@ def _integer_column(table, name, default, length):
     return np.asarray(table[name], dtype=np.int64)
 
 
-def _cell_shapes(labels):
+# Label images are read this many pixels at a time, so that working out the
+# cells does not need a copy of the whole image.
+_LABEL_CHUNK_PIXELS = 1 << 22
+
+
+def _row_chunks(labels):
+    """The label image as (first row, rows) pieces of about _LABEL_CHUNK_PIXELS pixels."""
+    step = max(1, _LABEL_CHUNK_PIXELS // max(labels.shape[1], 1))
+    for first in range(0, labels.shape[0], step):
+        yield first, labels[first:first + step]
+
+
+def _drawn_cell_ids(labels, cells):
     """
-    The cells of a label image: their label values (sorted), the outline of
-    each as a list of polygons (arrays of (y, x) points, simplified to
-    FINAL_OUTLINE_TOLERANCE_PX), and for each cell a point inside it, near its
-    centre, where its text goes.
+    The numbers of the cells to draw, sorted: those in the label image and,
+    when a cells table is given, in the table too. Cells that the table leaves
+    out (for example border cells that were dropped) are not drawn. The work
+    depends on the number of cells and not on the largest cell number.
+    """
+    found = [np.unique(chunk) for _, chunk in _row_chunks(labels)]
+    ids = np.unique(np.concatenate(found)).astype(np.int64) if found else np.zeros(0, np.int64)
+    ids = ids[ids > 0]
+    if cells is not None:
+        listed = np.asarray(cells["cell_id"], dtype=np.int64) if "cell_id" in cells else []
+        ids = np.intersect1d(ids, listed)
+    return ids
+
+
+def _renumbered(labels, ids):
+    """
+    The label image with the cells in `ids` (sorted) renumbered 1, 2, 3... in
+    that order and every other pixel set to 0, in the smallest whole-number
+    type that holds the new numbers.
+    """
+    renumbered = np.zeros(labels.shape, dtype=np.min_scalar_type(len(ids)))
+    for first, chunk in _row_chunks(labels):
+        chunk = chunk.astype(np.int64)
+        position = np.minimum(np.searchsorted(ids, chunk), len(ids) - 1)
+        renumbered[first:first + len(chunk)] = np.where(ids[position] == chunk, position + 1, 0)
+    return renumbered
+
+
+def _drawn_cell_of(cell_ids, ids):
+    """`cell_ids` with -1 in place of every number that is not in `ids` (sorted)."""
+    if len(ids) == 0:
+        return np.full(len(cell_ids), -1, dtype=np.int64)
+    position = np.minimum(np.searchsorted(ids, cell_ids), len(ids) - 1)
+    return np.where(ids[position] == cell_ids, cell_ids, -1)
+
+
+def _cell_shapes(labels, ids):
+    """
+    The cells of a label image renumbered 1, 2, 3... (see `_renumbered`), whose
+    numbers in the original are `ids`: for each, its outline as a list of
+    polygons (arrays of (y, x) points, simplified to FINAL_OUTLINE_TOLERANCE_PX),
+    and a point inside it, near its centre, where its text goes.
+    Returns the numbers of the cells found (in `ids` order), the outlines and
+    the anchor points.
     """
     from scipy import ndimage
     from skimage import measure
 
-    ids, outlines, anchors = [], [], []
+    found, outlines, anchors = [], [], []
     for index, region in enumerate(ndimage.find_objects(labels)):
         if region is None:
             continue
@@ -1009,9 +1107,9 @@ def _cell_shapes(labels):
         if not mask[nearest[0], nearest[1]]:
             closest = np.argmin((rows - centre[0]) ** 2 + (columns - centre[1]) ** 2)
             centre = np.array([rows[closest], columns[closest]], dtype=float)
-        ids.append(index + 1)
+        found.append(ids[index])
         anchors.append(centre + offset)
-    return np.array(ids, dtype=np.int64), outlines, np.array(anchors, dtype=float).reshape(-1, 2)
+    return np.array(found, dtype=np.int64), outlines, np.array(anchors, dtype=float).reshape(-1, 2)
 
 
 # Numbers of the cells table that the page shows on hover.
@@ -1026,7 +1124,7 @@ def _cell_values(cells, ids, spot_cell):
     The numbers of each cell, as a dict from column name to an array in the
     order of `ids` (NaN where unknown). They come from the cells table; the
     number of spots is counted from the spots' cells when the table has no
-    number for a cell.
+    number for a cell. Every cell of `spot_cell` is one of `ids`.
     """
     values = {}
     if cells is not None and len(cells) and len(ids):
@@ -1040,8 +1138,8 @@ def _cell_values(cells, ids, spot_cell):
                 column = np.asarray(cells[name], dtype=float)[order][position]
                 values[name] = np.where(found, column, np.nan)
     if len(ids):
-        inside = spot_cell[spot_cell >= 0]
-        counted = np.bincount(inside, minlength=int(ids.max()) + 1)[ids].astype(float)
+        inside = np.searchsorted(ids, spot_cell[spot_cell >= 0])
+        counted = np.bincount(inside, minlength=len(ids)).astype(float)
         known = values.get("n_spots")
         values["n_spots"] = counted if known is None else np.where(np.isnan(known), counted, known)
     return values
@@ -1050,6 +1148,7 @@ def _cell_values(cells, ids, spot_cell):
 def _final_view(picture, spots, clusters, cells, labels):
     """Check the arguments of the final QC and gather what is drawn (see `draw_final_qc`)."""
     picture = project_for_detection(picture)
+    ids = np.zeros(0, dtype=np.int64)
     if labels is not None:
         labels = np.asarray(labels)
         if labels.shape != picture.shape:
@@ -1057,27 +1156,29 @@ def _final_view(picture, spots, clusters, cells, labels):
                 f"The label image has shape {labels.shape}, but the picture has shape "
                 f"{picture.shape}."
             )
-        if not labels.any():
-            labels = None
+        ids = _drawn_cell_ids(labels, cells)
+    # From here on, `labels` holds only the cells drawn, renumbered from 1.
+    labels = _renumbered(labels, ids) if len(ids) else None
+
     spot_yx = _table_yx(spots)
     n_spots = len(spot_yx)
     spot_cluster = _integer_column(spots, "cluster_id", -1, n_spots)
     if labels is None:
         spot_cell = np.full(n_spots, -1, dtype=np.int64)
     elif "cell_id" in (spots if n_spots else ()):
-        spot_cell = _integer_column(spots, "cell_id", -1, n_spots)
+        spot_cell = _drawn_cell_of(_integer_column(spots, "cell_id", -1, n_spots), ids)
     elif n_spots:
         rows = np.clip(np.round(spot_yx[:, 0]).astype(int), 0, labels.shape[0] - 1)
         columns = np.clip(np.round(spot_yx[:, 1]).astype(int), 0, labels.shape[1] - 1)
         found = labels[rows, columns].astype(np.int64)
-        spot_cell = np.where(found > 0, found, -1)
+        spot_cell = np.where(found > 0, ids[np.maximum(found - 1, 0)], -1)
     else:
         spot_cell = np.zeros(0, dtype=np.int64)
 
     if labels is None:
-        ids, outlines, anchors = np.zeros(0, dtype=np.int64), [], np.zeros((0, 2))
+        outlines, anchors = [], np.zeros((0, 2))
     else:
-        ids, outlines, anchors = _cell_shapes(labels)
+        ids, outlines, anchors = _cell_shapes(labels, ids)
     return _FinalView(
         picture=picture, ids=ids, outlines=outlines, anchors=anchors,
         cell_values=_cell_values(cells, ids, spot_cell),
@@ -1108,8 +1209,11 @@ def draw_final_qc(picture, spots, clusters, cells, labels, image_name, channel,
         of spec 8.2): `y_px` and `x_px`, or `y_sub_px` and `x_sub_px` when the
         table has them, and `cell_id`. None for no spots.
     clusters: the clusters table, or None when cluster detection is off.
-    cells: the cells table of the channel, or None. Each cell's number of
-        spots is taken from it.
+    cells: the cells table of the channel, or None. When it is given, only
+        the cells in it are drawn, counted and numbered: cells of the label
+        image that it leaves out (border cells that were dropped, for
+        example) are not shown. Each cell's number of spots is taken from it.
+        Without a table every cell of the label image is drawn.
     labels: the label image (y, x) of the cells, or None when there is none.
         Without labels the figure has no outlines and no cell text, and the
         title says there are no cells.
@@ -1118,10 +1222,11 @@ def draw_final_qc(picture, spots, clusters, cells, labels, image_name, channel,
 
     The picture is grey with its contrast stretched for display. Spots in a
     cell are orange circles and spots outside the cells are pink crosses;
-    clusters are cyan pentagons; cells have green outlines. On each cell the
-    text "12: 34" gives its number and its number of spots. With more than
-    FINAL_MAX_LABELLED_CELLS cells the text is left out and the title says so.
-    A legend below the picture says what each mark is.
+    clusters are cyan pentagon outlines with no fill; cells have green
+    outlines. On each cell the text "12: 34" gives its number and its number
+    of spots. With more than FINAL_MAX_LABELLED_CELLS cells the text is left
+    out and the title says so. A legend below the picture says what each mark
+    is.
 
     Returns a matplotlib `Figure` that is not tied to `matplotlib.pyplot`.
     """
@@ -1184,10 +1289,10 @@ def draw_final_qc(picture, spots, clusters, cells, labels, image_name, channel,
     if n_clusters:
         axes.scatter(
             view.cluster_yx[:, 1], view.cluster_yx[:, 0], s=110, marker="p",
-            facecolors=(0, 1, 1, 0.3), edgecolors=FINAL_CLUSTER_COLOUR, linewidths=1.5,
+            facecolors="none", edgecolors=FINAL_CLUSTER_COLOUR, linewidths=1.5,
         )
         legend.append(Line2D(
-            [], [], linestyle="", marker="p", markersize=9, markerfacecolor=(0, 1, 1, 0.3),
+            [], [], linestyle="", marker="p", markersize=9, markerfacecolor="none",
             markeredgecolor=FINAL_CLUSTER_COLOUR, label="Cluster of spots",
         ))
 
@@ -1294,10 +1399,19 @@ def _cell_hover_points(view):
     sampled = view.labels[np.ix_(rows, columns)]
     found_rows, found_columns = np.nonzero(sampled)
     grid = np.column_stack([rows[found_rows], columns[found_columns]]).astype(float)
-    grid_cells = np.searchsorted(view.ids, sampled[found_rows, found_columns])
+    grid_cells = sampled[found_rows, found_columns].astype(np.int64) - 1
     positions = np.concatenate([view.anchors, grid])
     cell_index = np.concatenate([np.arange(len(view.ids)), grid_cells])
     return positions.astype(np.float32), cell_index
+
+
+def _hover_dtype(view):
+    """
+    The type for the numbers behind the hover text: 32-bit floats, which hold
+    whole numbers exactly up to 16,777,216, or 64-bit floats when a cell has a
+    larger number.
+    """
+    return np.float64 if len(view.ids) and view.ids.max() > 2 ** 24 else np.float32
 
 
 def _cell_hover_template(view):
@@ -1374,7 +1488,7 @@ def _spot_traces(go, view):
                 x=view.spot_yx[chosen, 1], y=view.spot_yx[chosen, 0], mode="markers",
                 name=name, legendgroup=name, showlegend=first,
                 marker=dict(symbol=symbol, size=7, color=colour, line=dict(width=1.2, color=colour)),
-                customdata=np.column_stack(fields).astype(np.float32),
+                customdata=np.column_stack(fields).astype(_hover_dtype(view)),
                 hovertemplate="<br>".join(lines) + "<extra></extra>",
             ))
             first = False
@@ -1391,7 +1505,7 @@ def _cluster_trace(go, view):
         np.asarray(table["cluster_id"], dtype=np.int64) if "cluster_id" in table
         else np.arange(n_clusters)
     )
-    cluster_cells = _integer_column(table, "cell_id", -1, n_clusters)
+    cluster_cells = _drawn_cell_of(_integer_column(table, "cell_id", -1, n_clusters), view.ids)
     cluster_sizes = np.asarray(table["n_spots"]) if "n_spots" in table else None
     texts = []
     for position in range(n_clusters):
@@ -1406,7 +1520,7 @@ def _cluster_trace(go, view):
         texts.append("<br>".join(lines))
     return go.Scattergl(
         x=view.cluster_yx[:, 1], y=view.cluster_yx[:, 0], mode="markers", name="Clusters",
-        marker=dict(symbol="pentagon", size=14, color="rgba(0,255,255,0.35)",
+        marker=dict(symbol="pentagon-open", size=14, color=FINAL_CLUSTER_COLOUR,
                     line=dict(width=2, color=FINAL_CLUSTER_COLOUR)),
         hovertext=texts, hovertemplate="%{hovertext}<extra></extra>",
     )
@@ -1423,7 +1537,8 @@ def draw_final_html(picture, spots, clusters, cells, labels, image_name, channel
     side and reduced above that; positions stay in the pixels of the picture
     given. The figure can be zoomed and panned.
     - Spots inside cells are orange circles, spots outside the cells pink
-      crosses, clusters cyan pentagons and cells have green outlines. Each can
+      crosses, clusters cyan pentagon outlines with no fill and cells have
+      green outlines. Each can
       be switched on and off by clicking its name in the legend.
     - Hovering on a cell gives its number and the numbers of the cells table
       (spots, spots in clusters, spots outside clusters, clusters, area).
@@ -1463,7 +1578,7 @@ def draw_final_html(picture, spots, clusters, cells, labels, image_name, channel
             x=positions[:, 1], y=positions[:, 0], mode="markers", name="Cell outlines",
             legendgroup="cells", showlegend=False,
             marker=dict(size=2, color="rgba(0,0,0,0)"),
-            customdata=np.column_stack(values)[cell_index].astype(np.float32),
+            customdata=np.column_stack(values)[cell_index].astype(_hover_dtype(view)),
             hovertemplate=template,
         ))
 

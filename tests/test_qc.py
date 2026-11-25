@@ -152,11 +152,12 @@ def test_title_with_the_pretreatment_text_from_the_segmentation_module():
     assert text.startswith("mean projection")
 
 
-def test_title_says_when_cellpose_chooses_the_diameter():
+def test_title_says_when_no_diameter_is_set():
     title = qc.cellpose_qc_title("img", 0, PRETREATMENT, None, 5, 1.0)
 
     assert "None" not in title
-    assert "diameter chosen by Cellpose" in title
+    assert "no diameter set (image used at its own scale)" in title
+    assert "chosen by Cellpose" not in title
 
 
 def test_title_counts_cells_in_plain_words():
@@ -344,7 +345,10 @@ def test_elbow_plot_in_manual_mode(rna_log, automatic_value):
     axes = figure.axes[0]
     assert axes.get_title() == f"{IMAGE} | channel 2 (jim-exon) | manual threshold"
     assert axes.get_xlabel() == "Thresholds"
-    assert axes.get_ylabel() == "Number of mRNAs detected (log scale)"
+    assert axes.get_ylabel() == (
+        "Natural log of candidate spots above each threshold\n"
+        "(smoothed, before spots sharing a peak are merged)"
+    )
     assert len(axes.lines) == 3  # the curve and two lines
     assert figure.get_size_inches()[0] > 0
 
@@ -762,10 +766,10 @@ def test_detection_plot_with_spots_and_clusters():
     assert len(right.collections[0].get_offsets()) == 40
     assert len(right.collections[1].get_paths()) == 3
     assert "orange circles: spots" in right.get_title()
-    assert "cyan shapes: clusters" in right.get_title()
+    assert "cyan outlines: clusters" in right.get_title()
 
 
-def test_spots_are_circles_of_the_spot_radius_and_clusters_are_filled_shapes():
+def test_spots_are_circles_of_the_spot_radius_and_clusters_are_outlines_without_fill():
     figure = _draw_detection(spot_radius_px=(2.2, 1.9, 1.9))
 
     circles, shapes = _detection_axes(figure)[1].collections
@@ -773,7 +777,8 @@ def test_spots_are_circles_of_the_spot_radius_and_clusters_are_filled_shapes():
     assert np.allclose(circles._widths, 1.9) and np.allclose(circles._heights, 1.9)
     assert circles.get_facecolor().shape[0] == 0 or circles.get_facecolor()[0][3] == 0
     assert np.allclose(circles.get_edgecolor()[0][:3], (1.0, 165 / 255, 0.0))
-    assert np.allclose(shapes.get_facecolor()[0][:3], (0.0, 1.0, 1.0))
+    assert shapes.get_facecolor().shape[0] == 0 or shapes.get_facecolor()[0][3] == 0
+    assert np.allclose(shapes.get_edgecolor()[0], (0.0, 1.0, 1.0, 1.0))
     # Five corners, each 6 px from the cluster's position (x, y).
     for path, (y, x) in zip(shapes.get_paths(), _positions(3, seed=2)):
         corners = path.vertices[:5]
@@ -2044,3 +2049,386 @@ def test_channel_qc_paths(tmp_path):
     ]
     assert all(path.parent == tmp_path / qc.QC_FOLDER_NAME for path in paths)
     assert outputs.QC_FOLDER_NAME == qc.QC_FOLDER_NAME
+
+
+# ---------------------------------------------------------------------------
+# Final QC: cells left out of the cells table, very large cell numbers, cluster marks
+# ---------------------------------------------------------------------------
+
+DROPPED_CELLS = (2, 5)
+
+
+def _with_cells_dropped(data, dropped=DROPPED_CELLS):
+    """
+    The data as the runner has it with `drop_border_cells` on: the cells table
+    and the cell of each spot and cluster leave out the dropped cells, while the
+    label image still holds them.
+    """
+    picture, spots, clusters, cells, labels = data
+    spots, clusters = spots.copy(), clusters.copy()
+    spots.loc[spots["cell_id"].isin(dropped), "cell_id"] = -1
+    clusters.loc[clusters["cell_id"].isin(dropped), "cell_id"] = -1
+    cells = cells[~cells["cell_id"].isin(dropped)].reset_index(drop=True)
+    return picture, spots, clusters, cells, labels
+
+
+def _kept_cells(dropped=DROPPED_CELLS, n_cells=6):
+    return [number for number in range(1, n_cells + 1) if number not in dropped]
+
+
+def test_final_png_leaves_out_the_cells_that_the_cells_table_leaves_out():
+    data = _with_cells_dropped(_final_data(n_cells=6))
+    labels = data[4]
+    figure = _png_figure(data)
+    axes = figure.axes[0]
+
+    assert "4 cells" in _title(figure) and "6 cells" not in _title(figure)
+    texts = [text.get_text() for text in axes.texts]
+    assert sorted(int(text.split(":")[0]) for text in texts) == _kept_cells()
+    outlines = [c for c in axes.collections if isinstance(c, LineCollection)][0]
+    segments = outlines.get_segments()
+    assert len(segments) == 4
+    for segment in segments:
+        y, x = segment[:, 1].mean(), segment[:, 0].mean()
+        assert labels[int(round(y)), int(round(x))] in _kept_cells()
+
+
+def test_final_html_leaves_out_the_cells_that_the_cells_table_leaves_out():
+    data = _with_cells_dropped(_final_data(n_cells=6))
+    labels = data[4]
+    figure = _html_figure(data)
+
+    title = figure.layout.title.text
+    assert "4 cells" in title and "6 cells" not in title
+    outline = _trace(figure, "Cell outlines", "lines")
+    x, y = np.asarray(outline.x, dtype=float), np.asarray(outline.y, dtype=float)
+    gaps = np.flatnonzero(np.isnan(x))
+    polygons = [part for part in np.split(np.column_stack([x, y]), gaps) if len(part[~np.isnan(part[:, 0])])]
+    assert len(polygons) == 4
+    for polygon in polygons:
+        polygon = polygon[~np.isnan(polygon[:, 0])]
+        assert labels[int(round(polygon[:, 1].mean())), int(round(polygon[:, 0].mean()))] in _kept_cells()
+    hover = _trace(figure, "Cell outlines", "markers")
+    assert sorted(set(np.asarray(hover.customdata)[:, 0])) == _kept_cells()
+    for x_point, y_point in zip(hover.x, hover.y):
+        assert labels[int(round(y_point)), int(round(x_point))] in _kept_cells()
+
+
+def test_the_page_of_a_run_with_dropped_cells_holds_only_the_kept_cells(tmp_path):
+    path = _write_html(tmp_path, _with_cells_dropped(_final_data(n_cells=6)))
+
+    traces = _page_data(path)
+    hover = [t for t in traces if t.get("mode") == "markers" and t["name"] == "Cell outlines"][0]
+    assert sorted(set(np.asarray(hover["customdata"])[:, 0])) == _kept_cells()
+    assert "4 cells" in Path(path).read_text(encoding="utf-8")
+
+
+def test_a_spot_whose_cell_is_not_drawn_is_shown_outside_the_cells():
+    picture, spots, clusters, cells, labels = _final_data(n_cells=6)
+    # The spots table still names the dropped cells.
+    cells = cells[~cells["cell_id"].isin(DROPPED_CELLS)]
+    leaked = spots["cell_id"].isin(DROPPED_CELLS)
+    assert leaked.any()
+    view = qc._final_view(picture, spots, clusters, cells, labels)
+
+    assert (view.spot_cell[leaked.to_numpy()] == -1).all()
+    assert set(view.spot_cell[view.spot_cell >= 0]) <= set(_kept_cells())
+    assert set(view.ids) == set(_kept_cells())
+
+
+def test_an_empty_cells_table_draws_no_cells():
+    picture, spots, clusters, cells, labels = _final_data(n_cells=6)
+    spots = spots.assign(cell_id=-1)
+    empty = cells.iloc[:0]
+    figure = _png_figure((picture, spots, clusters, empty, labels))
+
+    assert "no cells" in _title(figure)
+    assert not figure.axes[0].texts
+    assert not [c for c in figure.axes[0].collections if isinstance(c, LineCollection)]
+    html_figure = _html_figure((picture, spots, clusters, empty, labels))
+    assert "no cells" in html_figure.layout.title.text
+    assert not [t for t in html_figure.data if t.name == "Cell outlines"]
+
+
+def test_without_a_cells_table_every_cell_of_the_label_image_is_drawn():
+    picture, spots, clusters, cells, labels = _final_data(n_cells=6)
+    figure = qc.draw_final_qc(picture, spots, clusters, None, labels, FINAL_IMAGE, 2)
+
+    assert "6 cells" in _title(figure)
+    assert len(figure.axes[0].texts) == 6
+
+
+def _with_cell_numbers(data, new_number):
+    """The same data with each cell number k replaced by new_number(k)."""
+    picture, spots, clusters, cells, labels = data
+    numbers = np.arange(1, 7)
+    table = np.zeros(7, dtype=np.int64)
+    table[1:] = [new_number(k) for k in numbers]
+    renumbered = table[labels.astype(np.int64)].astype(np.uint32)
+
+    def mapped(column):
+        column = column.to_numpy()
+        return np.where(column > 0, table[np.clip(column, 0, 6)], column)
+
+    spots, clusters, cells = spots.copy(), clusters.copy(), cells.copy()
+    spots["cell_id"] = mapped(spots["cell_id"])
+    clusters["cell_id"] = mapped(clusters["cell_id"])
+    cells["cell_id"] = mapped(cells["cell_id"])
+    return (picture, spots, clusters, cells, renumbered), table
+
+
+def _large_numbers(k):
+    return 100_000_000 + 7 * k
+
+
+def _peak_bytes(function):
+    import tracemalloc
+
+    tracemalloc.start()
+    try:
+        function()
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+def test_cells_with_very_large_numbers_are_drawn_like_the_same_cells_numbered_from_1():
+    small = _final_data(n_cells=6)
+    large, table = _with_cell_numbers(small, _large_numbers)
+    small_figure, large_figure = _png_figure(small), _png_figure(large)
+
+    assert _title(small_figure) == _title(large_figure)
+    small_axes, large_axes = small_figure.axes[0], large_figure.axes[0]
+    small_texts = sorted(text.get_text() for text in small_axes.texts)
+    large_texts = sorted(text.get_text() for text in large_axes.texts)
+    assert [t.split(": ")[1] for t in sorted(small_texts, key=lambda t: int(t.split(":")[0]))] == \
+        [t.split(": ")[1] for t in sorted(large_texts, key=lambda t: int(t.split(":")[0]))]
+    assert sorted(int(t.split(":")[0]) for t in large_texts) == [_large_numbers(k) for k in range(1, 7)]
+    small_outlines = [c for c in small_axes.collections if isinstance(c, LineCollection)][0]
+    large_outlines = [c for c in large_axes.collections if isinstance(c, LineCollection)][0]
+    assert len(small_outlines.get_segments()) == len(large_outlines.get_segments()) == 6
+    for first, second in zip(small_outlines.get_segments(), large_outlines.get_segments()):
+        np.testing.assert_allclose(first, second)
+
+    small_html, large_html = _html_figure(small), _html_figure(large)
+    np.testing.assert_array_equal(
+        _trace(small_html, "Cell outlines", "lines").x, _trace(large_html, "Cell outlines", "lines").x
+    )
+    small_hover = np.asarray(_trace(small_html, "Cell outlines", "markers").customdata)
+    large_hover = np.asarray(_trace(large_html, "Cell outlines", "markers").customdata)
+    np.testing.assert_allclose(small_hover[:, 1:], large_hover[:, 1:], rtol=1e-6)
+    np.testing.assert_array_equal(large_hover[:, 0], table[small_hover[:, 0].astype(int)])
+    large_spot_cells = np.concatenate([
+        np.asarray(t.customdata)[:, 1] for t in large_html.data
+        if t.name == "Spots inside cells" and "Cell: " in t.hovertemplate
+    ])
+    assert set(large_spot_cells) <= {float(_large_numbers(k)) for k in range(1, 7)}
+
+
+def test_spot_counts_per_cell_do_not_depend_on_the_cell_numbers():
+    small = _final_data(n_cells=6)
+    large, _ = _with_cell_numbers(small, _large_numbers)
+    no_table = lambda data: qc._final_view(data[0], data[1], data[2], None, data[4])
+
+    np.testing.assert_array_equal(
+        no_table(small).cell_values["n_spots"], no_table(large).cell_values["n_spots"]
+    )
+
+
+def test_a_cell_numbered_100_million_needs_no_more_memory_than_one_numbered_1():
+    picture, spots, clusters, cells, labels = _final_data(n_cells=6, shape=(300, 400))
+    one = np.where(labels == 1, 1, 0).astype(np.uint32)
+    huge = np.where(labels == 1, 100_000_000, 0).astype(np.uint32)
+    spots = spots.assign(cell_id=-1)
+
+    def build(image):
+        return lambda: qc._final_view(picture, spots, clusters, None, image)
+
+    peak_one, peak_huge = _peak_bytes(build(one)), _peak_bytes(build(huge))
+    assert peak_huge < peak_one + 1_000_000
+    assert peak_huge < 20_000_000
+
+    def draw_png():
+        qc.draw_final_qc(picture, spots, clusters, None, huge, FINAL_IMAGE, 2)
+
+    def draw_html():
+        qc.draw_final_html(picture, spots, clusters, None, huge, FINAL_IMAGE, 2)
+
+    for draw in (draw_png, draw_html):
+        assert _peak_bytes(draw) < 150_000_000
+
+
+def test_very_large_cell_numbers_are_written_as_png_and_html(tmp_path):
+    large, _ = _with_cell_numbers(_final_data(n_cells=6), _large_numbers)
+
+    assert _png_size(_write_png(tmp_path, large))[0] > 0
+    assert _write_html(tmp_path, large).is_file()
+
+
+def test_the_cell_number_in_the_hover_text_is_exact_above_16_million():
+    large, _ = _with_cell_numbers(_final_data(n_cells=6), lambda k: 123_456_789 + k)
+    hover = _trace(_html_figure(large), "Cell outlines", "markers")
+
+    assert set(np.asarray(hover.customdata)[:, 0]) == {123_456_789.0 + k for k in range(1, 7)}
+
+
+def _final_cluster_marks(figure):
+    axes = figure.axes[0]
+    marks = [c for c in axes.collections
+             if len(c.get_offsets()) == 2 and c.get_paths() and c.get_sizes().size
+             and c.get_sizes()[0] > 50]
+    assert len(marks) == 1
+    return marks[0]
+
+
+def test_clusters_are_outlines_without_fill_in_the_final_png():
+    figure = _png_figure(_final_data())
+    marks = _final_cluster_marks(figure)
+
+    assert marks.get_facecolor().shape[0] == 0 or marks.get_facecolor()[0][3] == 0
+    assert np.allclose(marks.get_edgecolor()[0], (0.0, 1.0, 1.0, 1.0))
+    handle = [h for h in figure.axes[0].get_legend().legend_handles if h.get_label() == "Cluster of spots"][0]
+    assert handle.get_markerfacecolor() in ("none", (0, 0, 0, 0))
+    assert handle.get_markeredgecolor() == "cyan"
+
+
+def test_clusters_are_outlines_without_fill_in_the_final_html():
+    trace = _trace(_html_figure(_final_data()), "Clusters")
+
+    assert trace.marker.symbol == "pentagon-open"
+    assert trace.marker.color == "cyan"
+    assert trace.marker.line.color == "cyan"
+    assert "rgba" not in str(trace.marker.color)
+
+
+def test_clusters_are_outlines_without_fill_in_the_detection_plot():
+    figure = _draw_detection(n_spots=40, n_clusters=3)
+    shapes = _detection_axes(figure)[1].collections[1]
+
+    assert isinstance(shapes, PatchCollection)
+    assert shapes.get_facecolor().shape[0] == 0 or (shapes.get_facecolor()[:, 3] == 0).all()
+    assert np.allclose(shapes.get_edgecolor()[0], (0.0, 1.0, 1.0, 1.0))
+
+
+# ---------------------------------------------------------------------------
+# Cellpose QC figure: wording
+# ---------------------------------------------------------------------------
+
+def test_the_first_panel_says_it_shows_the_image_after_pre_treatment():
+    figure = qc.draw_cellpose_qc(_segmentation(2), IMAGE, 0, PRETREATMENT, None)
+    titles = [axes.get_title() for axes in figure.axes]
+
+    assert titles[0] == "image after pre-treatment"
+    assert "original image" not in titles
+    assert titles[1:] == ["predicted outlines", "predicted masks", "predicted cell pose"]
+
+
+def test_the_figure_without_a_diameter_says_the_image_is_used_at_its_own_scale():
+    figure = qc.draw_cellpose_qc(_segmentation(2), IMAGE, 0, PRETREATMENT, None)
+
+    assert "no diameter set (image used at its own scale)" in figure.get_suptitle()
+    assert "chosen by Cellpose" not in figure.get_suptitle()
+
+
+# ---------------------------------------------------------------------------
+# Calibration plot: images raised to the lower limit
+# ---------------------------------------------------------------------------
+
+def _table_with_elbow_values(n_images=6, raised=(1, 3), channels=(2,), left_out=(), drop=4.0):
+    """A calibration table with the `elbow_threshold` column that the runner writes."""
+    table = _table(n_images, channels=channels, left_out=left_out)
+    table["elbow_threshold"] = table["auto_threshold"]
+    rows = [i for i in range(len(table)) if i % n_images in raised]
+    table.loc[table.index[rows], "elbow_threshold"] = table.loc[table.index[rows], "auto_threshold"] - drop
+    return table
+
+
+def _collection(axes, label_start):
+    found = [c for c in axes.collections if (c.get_label() or "").startswith(label_start)]
+    assert len(found) == 1, [c.get_label() for c in axes.collections]
+    return found[0]
+
+
+def test_images_raised_to_the_lower_limit_are_marked_and_counted_in_the_legend():
+    table = _table_with_elbow_values(6, raised=(1, 3))
+    figure = qc.draw_calibration_plot(table, {2: 15.0}, lower_limits={2: 15.0})
+
+    assert _legend_texts(figure) == [
+        "Automatic value of each image (4 images)",
+        "Raised to the lower limit (2 images)",
+        "Value before the lower limit was applied",
+        "Median used = 15.0",
+        "Lower limit = 15.0",
+    ]
+    axes = figure.axes[0]
+    used = table["auto_threshold"].to_numpy()
+    before = table["elbow_threshold"].to_numpy()
+    raised = _collection(axes, "Raised to the lower limit")
+    earlier = _collection(axes, "Value before the lower limit")
+    np.testing.assert_allclose(raised.get_offsets(), np.column_stack([[2, 4], used[[1, 3]]]))
+    np.testing.assert_allclose(earlier.get_offsets(), np.column_stack([[2, 4], before[[1, 3]]]))
+    assert earlier.get_facecolor().shape[0] == 0 or earlier.get_facecolor()[0][3] == 0
+    plain = _collection(axes, "Automatic value of each image")
+    np.testing.assert_allclose(plain.get_offsets()[:, 1], used[[0, 2, 4, 5]])
+
+
+def test_the_value_before_the_limit_stays_in_view():
+    table = _table_with_elbow_values(6, raised=(1,), drop=30.0)
+    figure = qc.draw_calibration_plot(table, {2: 15.0}, lower_limits={2: 15.0})
+
+    assert figure.axes[0].get_ylim()[0] < table["elbow_threshold"].min()
+
+
+def test_the_calibration_plot_without_the_elbow_column_is_drawn_as_before():
+    table = _table(6)
+    assert "elbow_threshold" not in table
+
+    figure = qc.draw_calibration_plot(table, {2: 15.0})
+    assert _legend_texts(figure) == [
+        "Automatic value of each image (6 images)", "Median used = 15.0",
+    ]
+
+
+def test_the_calibration_plot_with_no_image_raised_is_drawn_as_without_the_column():
+    plain = _table(6)
+    with_column = plain.assign(elbow_threshold=plain["auto_threshold"])
+    with_missing = plain.assign(elbow_threshold=np.nan)
+
+    for table in (with_column, with_missing):
+        figure = qc.draw_calibration_plot(table, {2: 15.0}, lower_limits={2: 12})
+        assert _legend_texts(figure) == _legend_texts(
+            qc.draw_calibration_plot(plain, {2: 15.0}, lower_limits={2: 12})
+        )
+        assert len(figure.axes[0].collections) == len(
+            qc.draw_calibration_plot(plain, {2: 15.0}, lower_limits={2: 12}).axes[0].collections
+        )
+
+
+def test_images_left_out_are_not_marked_as_raised():
+    table = _table_with_elbow_values(6, raised=(1,), left_out=(0, 5))
+    figure = qc.draw_calibration_plot(table, {2: 15.0}, lower_limits={2: 15.0})
+
+    legend = _legend_texts(figure)
+    assert "Raised to the lower limit (1 image)" in legend
+    assert "Left out of the median (2 images)" in legend
+    assert "Automatic value of each image (3 images)" in legend
+
+
+def test_each_channel_of_the_calibration_plot_marks_its_own_raised_images():
+    table = _table_with_elbow_values(5, raised=(0, 2), channels=(1, 3))
+    table.loc[table["channel"] == 3, "elbow_threshold"] = table.loc[table["channel"] == 3, "auto_threshold"]
+    figure = qc.draw_calibration_plot(table, {1: 15.0, 3: 17.0})
+
+    first = [text.get_text() for text in figure.axes[0].get_legend().get_texts()]
+    second = [text.get_text() for text in figure.axes[1].get_legend().get_texts()]
+    assert "Raised to the lower limit (2 images)" in first
+    assert not [text for text in second if "Raised" in text]
+
+
+def test_calibration_plot_with_raised_images_is_written_and_the_table_is_not_changed(tmp_path):
+    table = _table_with_elbow_values(8, raised=(0, 2, 7))
+    kept = table.copy()
+    path = qc.write_calibration_plot(tmp_path, table, {2: 15.0}, {2: 15.0})
+
+    assert _png_size(path)[0] > 0
+    pd.testing.assert_frame_equal(table, kept)
