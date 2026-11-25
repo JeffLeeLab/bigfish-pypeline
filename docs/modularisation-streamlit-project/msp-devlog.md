@@ -1820,7 +1820,7 @@ Points of science, confirmed in the code, all as in v1:
 
 Not upheld:
 
-- "A sparse image crashes the automatic threshold." Not reproduced: 18 generated images with 0 to 200 spots, flat or noisy, with rolling ball and with top-hat, all gave a threshold or "no threshold".
+- "A sparse image crashes the automatic threshold." Not reproduced: 18 generated images with 0 to 200 spots, flat or noisy, with rolling ball and with top-hat, all gave a threshold or "no threshold". The third review found a smaller case that does crash (finding 22).
 - "A full disk at the end of a run shows a Python report." Since 3.2 an unexpected problem gives `RunStoppedError` and a plain message.
 - "Cellpose's GPU memory is freed while an abandoned segmentation still runs, which can crash the program." Not tested. The command line ends straight after, and the app runs batches as a separate program (brief H), so the risk is small; kept for Phase 5.
 - "Devlog 2.6 left out the intron channel's fall from 22 to 4 clusters." It is in the table of 2.6. 18 is below that channel's automatic threshold (22–23).
@@ -1831,6 +1831,51 @@ Not upheld:
 Decisions the second review questions: B5 and 2.6, the rolling-ball radius of 5 px for FISH, tested at no other radius (it suggests 15–25 px); D6, D9 and 2.1, the place of clip and the negative values of a mean projection; R2 and R8, as in the first review. It found the other decisions of the brief, the devlog and the "choices the spec does not settle" in 1.2, 1.3, 1.8, 1.9, 1.10, 2.1, 2.3 and 2.4 sound.
 
 Not checked: OMERO image names sorted without Unicode normalisation; an empty `resolved.images`; the `atexit` handler in `omero_tools.py` (unchanged until Phase 8); the full-image test comparing sets of spot positions, not counts.
+
+**Third review: Phases 0 to 3.** GPT-6.2 Astra (medium effort), run through Codex in a read-only sandbox, reviewed `msp` at commit `61670ec` with the same brief as the first review. It could read the repository, the installed packages and `~/bigfish-testdata/`, run read-only commands and small Python checks, and compare with `main` to tell the phases apart. It read devlog 3.12 only after writing its own findings. The orchestrator checked each finding against the code, and findings 22 and 25 with test scripts.
+
+Confirmed:
+
+| # | Phase | Finding | Where |
+|---|---|---|---|
+| 21 | 1 | The confirmed layout is used for every file of the run without comparing it with the file's own axes. A file stored `ZCYX` read with the layout `CZYX` (same number of axes) mixes channels and Z planes without any message. Spec section 13 expects such an image to fail with the reason. Read in the code, not run. | `io.py` (`_plane_sizes`, `read_channels`); `batch.py` 230 |
+| 22 | 1, 3 | An elbow curve with a single point (an image with a few maxima, e.g. eight at 3 and one at 150) makes big-fish's `get_breaking_point` fail. In automatic mode the channel fails. With the elbow plot on (Phase 3), a manual or calibrated threshold fails too, while without it the same image gives 9 spots. Run on a generated image. | `detection.py` (`get_elbow_values`) |
+| 23 | 1, 2 | When rejoining the OMERO session, the OMERO library answers "not joined" both when the session has ended and when the connection times out. The package then says the session has ended and stops the run. Read in the OMERO library, not tried on the server. | `io.py` (`join_session`) |
+| 24 | 1 | If a worker stops between two checks, handing the next image to the workers fails with the same error. This is outside the handler that restarts with fewer workers. The run stops with an unexpected problem, and that image is dropped from the queue. Read in the code, not run. | `batch.py` 1980–1981 |
+| 25 | 1 | The threshold value and its lower limit accept `.nan` and `.inf`. A manual threshold of `.nan` finds 0 spots without a warning. Run. Widens findings 5 and 12. | `config.py` (`Number`) |
+| 26 | 2 | The Cellpose QC title says "diameter chosen by Cellpose" when no diameter is set. Cellpose 4 does not estimate a diameter: the image is used at its own scale. A test expects the wording. | `qc.py` 43; `tests/test_qc.py` 159 |
+| 27 | 3 | The total time in `run.log` (15 min 49 s in the full-size benchmark run of 3.9) and the duration in `run_info.yaml` (15 min 54 s) disagree. Both use the same clock, but the log line is written before the end steps of the run. | `batch.py` 2371, 2474 |
+| 28 | 3 | The detection plot draws clusters as filled cyan pentagons, as v1 does, which hide the spots of a bright focus. The final QC fills them at 30 %. | `qc.py` 789, 1186 |
+
+Same as earlier findings, with more:
+
+- Finding 7: two allocations grow with the largest cell number, SciPy's list of objects and the count of spots per cell. A single cell numbered 100,000,000 asks for about 800 MB for the counts alone.
+- Finding 3: the elbow plot's values are the smoothed natural log of the number of local maxima above each threshold, counted before spots sharing a peak are merged. They are not a final spot count.
+- Finding 4: four weak images whose elbows were all raised to the lower limit look in agreement on the calibration plot.
+- The first review's "not checked" points on the 5 s difference in durations and on markers hiding spots are confirmed (findings 27 and 28).
+- The final line in the terminal and the message in `run_info.yaml` do not give the number of failed or skipped channels; the summary line of `run.log` does. The command ends with 0 even when images failed, as its help text says.
+
+Points of science, confirmed in the code:
+
+- With a nuclear label image, as in the test kit, the tables and figures still say "cells". A 2D nuclear outline also collects the spots of every Z plane, so spots above and below a nucleus are counted as nuclear.
+- The reference-spot picture is built from the image after background subtraction. The Gaussian fit that decomposition uses is made on a copy with big-fish's Gaussian background removed (as in v1), so the picture is not the fitted spot.
+- Each QC picture sets its own contrast. This helps to find spots and cells, but brightness cannot be compared between pictures.
+- Three hard links to one file, under different names, gave 36,867, 36,929 and 36,525 spots and 265, 272 and 261 clusters (3.9 benchmark run). This is within the run-to-run range of 1.14, and it comes from the seed taken from the name. It matters when renaming files, or when comparing a local copy with the OMERO image.
+- On the crop with the v1 settings (top-hat 5 px, threshold 18): 473 spots detected, 692 after decomposition and 6 clusters, in v1 and in the new tables and QC alike. On the full-size image, 24,631 spots detected in both.
+
+Decisions the third review questions:
+
+- D9 and 2.1 (clip before background subtraction; negative values after a mean projection): wrong. Already changed by the user's decisions below (task 3.16).
+- F3: `run_config.yaml` names label files and a custom Cellpose model by their path. If those files change, a rerun gives other results without saying so.
+- Phase 1: the command ends with 0 when images failed. With little free memory, the run uses one worker with a warning (2.7), although that does not show there is enough memory.
+- A2, R2 and R6–R8: one specimen and its crops serve well as a check against v1, but they do not show that the defaults suit other samples (negative controls, cultured cells).
+- B5 and D4: as in the first two reviews.
+
+It found the other decisions of the brief and the devlog sound, and agreed with the user's four decisions below. It adds three checks: cluster centres within 1 px on each axis; clusters whose cell changes; and, in 3.17, isolated spots and dense foci as well as totals.
+
+Not upheld: the cause given for finding 27 (a clock started before the Cellpose model is prepared): both durations use the same clock.
+
+Not checked by the third review: the HTML final QC; whether Cellpose masks are right; a worker stopping on real hardware.
 
 **User's decision (25 Nov 2026):** 8-bit, 12-bit and 16-bit images are accepted; any other type (float, signed, 32-bit) is refused when the image is opened. A 12-bit image is read as 16-bit. Checked with 12-bit values saved in a 16-bit file and with a packed 12-bit TIFF: both are read as 16-bit with the right values. Reading a packed 12-bit TIFF needs `imagecodecs`, which is installed with Cellpose but not listed in `msp-environment.yml`.
 
