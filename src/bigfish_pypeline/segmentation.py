@@ -9,6 +9,7 @@ so that reading label files never loads them.
 import numbers
 import os
 import re
+import sys
 import time
 import warnings
 from pathlib import Path
@@ -318,6 +319,32 @@ def load_cellpose_model(model_name="cpsam_v2", device="cpu", threads=None):
         ) from error
 
 
+def custom_model_file(model_name):
+    """
+    The file of a Cellpose model of the user's own, or None for one of
+    Cellpose's models (such as "cpsam_v2").
+
+    model_name: as given to load_cellpose_model. A full path to a model file
+    gives that file. A model added in the Cellpose window gives its file in
+    Cellpose's model folder; this is looked up only when `cellpose` is already
+    loaded (by load_cellpose_model), so that this function never loads it.
+    """
+    model_name = str(model_name).strip()
+    path = Path(model_name).expanduser()
+    if path.is_file():
+        return Path(os.path.abspath(path))
+    if "cellpose.models" not in sys.modules:
+        return None
+    models = sys.modules["cellpose.models"]
+    try:
+        if model_name in models.MODEL_NAMES or model_name not in models.get_user_models():
+            return None
+        path = Path(models.MODEL_DIR) / model_name
+    except Exception:
+        return None
+    return path if path.is_file() else None
+
+
 def cellpose_eval_settings(cellpose_settings):
     """
     The settings passed to segment_cells, taken from the config's
@@ -437,7 +464,7 @@ def temporary_label_path(path):
     return path.with_name(path.name + ".tmp")
 
 
-def write_label_file(masks, label_folder, image_name):
+def write_label_file(masks, label_folder, image_name, pixel_size_nm=None):
     """
     Write an image's labels as `<image>_seglabels.tif` in the label folder.
 
@@ -445,6 +472,9 @@ def write_label_file(masks, label_folder, image_name):
     It is saved as uint32. The file is first written under a temporary name
     and then renamed, so a half-written file never has the label file's name.
     The folder is made when it does not exist.
+    pixel_size_nm: the pixel size of the image in nm. It is saved in the
+    file in µm, in the way Fiji (ImageJ) reads it, so that Fiji shows
+    distances in µm.
 
     Returns the path of the label file.
     Raises LabelFileError when masks is not a usable label image.
@@ -454,8 +484,17 @@ def write_label_file(masks, label_folder, image_name):
     masks = check_labels(masks, masks.shape[-2:], name=path.name)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = temporary_label_path(path)
+    if pixel_size_nm is None:
+        size = {"metadata": {"axes": "YX"}}
+    else:
+        # tifffile cannot write 32-bit whole numbers in ImageJ's own format, so
+        # ImageJ's description text is written by hand: the unit, with the pixels
+        # per µm as the resolution.
+        per_um = 1000 / float(pixel_size_nm)
+        size = {"metadata": None, "description": "ImageJ=1.11a\nunit=micron\n",
+                "resolution": (per_um, per_um), "resolutionunit": "NONE"}
     try:
-        tifffile.imwrite(temporary, masks, photometric="minisblack", metadata={"axes": "YX"})
+        tifffile.imwrite(temporary, masks, photometric="minisblack", **size)
         os.replace(temporary, path)
     finally:
         if temporary.exists():

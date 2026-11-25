@@ -77,7 +77,7 @@ IMAGES = [
     "n_spots_detected", "n_spots", "n_clusters", "n_cells", "segmentation_source",
     "segmentation_status", "warnings", "runtime_s",
 ]
-CALIBRATION = ["image", "channel", "auto_threshold", "used", "reason"]
+CALIBRATION = ["image", "channel", "auto_threshold", "elbow_threshold", "used", "reason"]
 
 VOXEL_Z = 200
 VOXEL_YX = 65
@@ -159,6 +159,30 @@ def test_spots_table_with_every_optional_value():
     assert table["x_sub_nm"].tolist() == pytest.approx([211.25, 276.25, 146.25, 601.25])
     assert table["snr"].tolist() == [1, 2, 3, 4]
     assert table["log_intensity"].tolist() == [5, 6, 7, 8]
+
+
+def test_log_intensity_written_as_whole_numbers(tmp_path):
+    (tmp_path / "per_image").mkdir()
+    columns = spot_columns(3, snr=True, intensity=True)
+    whole = make_spots_table("img", 2, "exon", SPOTS, 3, VOXEL_YX, VOXEL_Z, snr=[1.5, 2.0, 3.0, 4.0],
+                             log_intensity=[18.0, 6.0, 0.0, 65535.0], columns=columns)
+    without = make_spots_table("img", 3, "intron", SPOTS[:1], 3, VOXEL_YX, VOXEL_Z, columns=columns)
+    write_image_tables(tmp_path, "img", make_images_table([image_row("img", 2, "exon", "done")]),
+                       spots=[whole, without])
+    path = tmp_path / "per_image" / "img_spots.csv"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert [line.rsplit(",", 2)[1:] for line in lines] == [
+        ["snr", "log_intensity"], ["1.5", "18"], ["2.0", "6"], ["3.0", "0"], ["4.0", "65535"], ["", ""],
+    ]
+    # the values read back are the same
+    assert pd.read_csv(path)["log_intensity"].tolist()[:4] == [18, 6, 0, 65535]
+    assert whole["log_intensity"].dtype == float
+
+    # values with decimals are written as they are
+    decimal = make_spots_table("img", 2, "exon", SPOTS[:2], 3, VOXEL_YX, VOXEL_Z, log_intensity=[18.5, 6.0])
+    write_image_tables(tmp_path, "dec", make_images_table([image_row("dec", 2, "exon", "done")]), spots=decimal)
+    text = (tmp_path / "per_image" / "dec_spots.csv").read_text(encoding="utf-8").splitlines()
+    assert [line.rsplit(",", 1)[1] for line in text] == ["log_intensity", "18.5", "6.0"]
 
 
 def test_spots_table_2d_subpixel():
@@ -257,6 +281,18 @@ def test_calibration_table():
     assert list(table.columns) == CALIBRATION
     assert table["used"].tolist() == [True, False]
     assert pd.isna(table.loc[1, "auto_threshold"])
+    assert table["elbow_threshold"].isna().all()
+
+    # the elbow method's value before the lower limit, next to the value used
+    table = make_calibration_table([
+        {"image": "a", "channel": 2, "auto_threshold": 15.0, "elbow_threshold": 9.0, "used": True, "reason": ""},
+        {"image": "b", "channel": 2, "auto_threshold": 16.0, "elbow_threshold": 16.0, "used": True, "reason": ""},
+    ])
+    assert list(table.columns) == CALIBRATION
+    assert table["elbow_threshold"].tolist() == [9.0, 16.0]
+    assert table["auto_threshold"].tolist() == [15.0, 16.0]
+    table = make_calibration_table([("a", 2, 15.0, 9.0, True, "")])
+    assert table.loc[0, "elbow_threshold"] == 9.0 and table.loc[0, "used"]
 
 
 def test_join_tables_keeps_order_and_header():
@@ -649,7 +685,7 @@ def test_write_calibration(tmp_path):
     table = pd.read_csv(path)
     assert list(table.columns) == CALIBRATION
     assert table["used"].tolist() == [True, False]
-    assert path.read_text(encoding="utf-8").splitlines()[2] == "b,2,,False,too few spots"
+    assert path.read_text(encoding="utf-8").splitlines()[2] == "b,2,,,False,too few spots"
     assert _leftovers(tmp_path) == []
 
 
@@ -682,6 +718,29 @@ def test_package_versions_without_loading_the_packages(monkeypatch):
     assert versions["omero-py"] == outputs.NOT_INSTALLED
     assert versions["numpy"] == np.__version__
     assert all(isinstance(value, str) and value for value in versions.values())
+    assert list(versions) == [
+        "big-fish", "cellpose", "torch", "numpy", "scipy", "scikit-image", "scikit-learn", "pandas",
+        "tifffile", "pydantic", "plotly", "omero-py",
+    ]
+    assert versions["pandas"] == pd.__version__
+
+
+def test_package_versions_load_no_package():
+    """Reading the versions loads none of the packages named (checked in a new Python)."""
+    import subprocess
+
+    script = (
+        "import sys\n"
+        "from bigfish_pypeline import outputs\n"
+        "before = set(sys.modules)\n"
+        "versions = outputs.package_versions()\n"
+        "assert versions['plotly'] != outputs.NOT_INSTALLED, versions\n"
+        "assert versions['scikit-learn'] != outputs.NOT_INSTALLED, versions\n"
+        "loaded = [name for name in ('plotly', 'sklearn', 'torch', 'cellpose') if name in set(sys.modules) - before]\n"
+        "assert not loaded, loaded\n"
+    )
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr
 
 
 def test_git_commit(tmp_path, monkeypatch):
@@ -698,6 +757,26 @@ def test_computer_details():
     assert isinstance(outputs.operating_system(), str) and outputs.operating_system()
     memory = outputs.computer_memory()
     assert memory.endswith(" GB") and float(memory.split()[0]) > 0
+
+
+def test_file_record(tmp_path, monkeypatch):
+    import hashlib
+
+    path = tmp_path / "model_file"
+    data = os.urandom(3 * 1024 + 17)
+    path.write_bytes(data)
+    os.utime(path, (1_700_000_000, 1_700_000_000))
+    monkeypatch.setattr(outputs, "CHECKSUM_PIECE_BYTES", 1024)
+    record = outputs.file_record(path, "Cellpose model")
+    assert list(record) == ["kind", "path", "size_bytes", "last_changed", "sha256"]
+    assert record["kind"] == "Cellpose model"
+    assert record["path"] == str(path)
+    assert record["size_bytes"] == len(data)
+    assert record["sha256"] == hashlib.sha256(data).hexdigest()
+    changed = datetime.fromisoformat(record["last_changed"])
+    assert changed.tzinfo is not None and changed.timestamp() == 1_700_000_000
+    with pytest.raises(OSError):
+        outputs.file_record(tmp_path / "missing", "label file")
 
 
 def test_write_run_info_keeps_the_order(tmp_path):

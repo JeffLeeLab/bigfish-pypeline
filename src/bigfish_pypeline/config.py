@@ -14,6 +14,8 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 import yaml
 from annotated_types import Ge, Gt, Le
 from pydantic import (
+    AfterValidator,
+    AllowInfNan,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -77,11 +79,15 @@ def _whole_if_possible(value):
 
 
 _tidy = PlainSerializer(_whole_if_possible, return_type=Union[int, float])
+# `.inf` and `.nan` in a settings file are read as numbers; no setting accepts them.
+_finite = AllowInfNan(False)
 
-Number = Annotated[float, _tidy]
-PositiveNumber = Annotated[float, Gt(0), _tidy]
-NonNegativeNumber = Annotated[float, Ge(0), _tidy]
-Fraction = Annotated[float, Gt(0), Le(1), _tidy]
+Number = Annotated[float, _finite, _tidy]
+PositiveNumber = Annotated[float, Gt(0), _finite, _tidy]
+NonNegativeNumber = Annotated[float, Ge(0), _finite, _tidy]
+Fraction = Annotated[float, Gt(0), Le(1), _finite, _tidy]
+ZeroToOne = Annotated[float, Ge(0), Le(1), _finite, _tidy]
+NumberFromOne = Annotated[float, Ge(1), _finite, _tidy]
 NonNegativeInt = Annotated[int, Ge(0)]
 PositiveInt = Annotated[int, Ge(1)]
 Text = Annotated[str, BeforeValidator(_blank_to_text)]
@@ -109,6 +115,17 @@ def _check_workers(value):
 
 
 Workers = Annotated[Any, BeforeValidator(_check_workers)]
+
+
+def _check_model_name(value):
+    if not value.strip():
+        raise _rule_error(
+            ("", "must name a Cellpose model, such as `cpsam_v2`, or give the full path to a model file")
+        )
+    return value
+
+
+ModelName = Annotated[str, BeforeValidator(_blank_to_text), AfterValidator(_check_model_name)]
 
 
 class _Settings(BaseModel):
@@ -182,7 +199,7 @@ class MicroscopeSettings(_Settings):
 
 class BackgroundSettings(_Settings):
     method: Literal["rolling_ball", "tophat"] = "rolling_ball"
-    radius_px: PositiveNumber = 5
+    radius_px: NumberFromOne = 5
 
 
 class ThresholdSettings(_Settings):
@@ -219,8 +236,8 @@ class BailoutSettings(_Settings):
 
 class DecompositionSettings(_Settings):
     enabled: bool = True
-    alpha: NonNegativeNumber = 0.5
-    beta: NonNegativeNumber = 1
+    alpha: ZeroToOne = 0.5
+    beta: PositiveNumber = 1
 
 
 class SubpixelSettings(_Settings):
@@ -230,7 +247,7 @@ class SubpixelSettings(_Settings):
 class ClusterSettings(_Settings):
     enabled: bool = True
     radius_nm: PositiveInt = 500
-    min_spots: PositiveInt = 4
+    min_spots: Annotated[int, Ge(2)] = 4
 
 
 class MeasurementSettings(_Settings):
@@ -260,15 +277,15 @@ class ClipSettings(_Settings):
 class SegmentationBackgroundSettings(_Settings):
     enabled: bool = True
     method: Literal["rolling_ball", "tophat"] = "rolling_ball"
-    radius_px: PositiveNumber = 200
+    radius_px: NumberFromOne = 200
 
 
 class CellposeSettings(_Settings):
-    model: Text = "cpsam_v2"
+    model: ModelName = "cpsam_v2"
     diameter: OptionalPositiveNumber = None
     flow_threshold: NonNegativeNumber = 0.4
     cellprob_threshold: Number = 0
-    min_size: int = 15
+    min_size: Annotated[int, Ge(-1)] = 15
     max_size_fraction: Fraction = 0.4
     normalize: bool = True
     batch_size: PositiveInt = 1
@@ -481,6 +498,15 @@ def _show(value):
     return str(value)
 
 
+def _yaml_number(value):
+    """An infinite or missing number as it is written in a settings file (`.inf`, `-.inf`, `.nan`)."""
+    if isinstance(value, float) and value != value:
+        return ".nan"
+    if isinstance(value, float) and value in (float("inf"), float("-inf")):
+        return ".inf" if value > 0 else "-.inf"
+    return _show(value)
+
+
 def _path_text(loc):
     text = ""
     for position, part in enumerate(loc):
@@ -620,6 +646,9 @@ def _messages_for(error):
 
     annotation, metadata = _setting_at(loc)
     needs = _describe(annotation, metadata)
+
+    if kind == "finite_number":
+        return [f"`{path}` must be {needs}, not infinite and not `.nan` (found `{_yaml_number(value)}`)."]
 
     if kind == "too_short" and path == "channels":
         return ["`channels` needs at least one channel."]

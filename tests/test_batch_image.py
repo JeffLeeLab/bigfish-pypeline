@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 import tifffile
 
-from bigfish_pypeline import batch, detection, io, measurements
+from bigfish_pypeline import batch, detection, io, measurements, outputs
 from bigfish_pypeline.config import load_config, parse_config
 from bigfish_pypeline.decomposition import NO_SPOTS_WARNING
 from conftest import CROP_NAME, FISH_CHANNEL
@@ -561,6 +561,32 @@ def test_other_pixel_types_refused_before_any_work(tmp_path, monkeypatch, dtype)
     assert sorted(path.name for path in (tmp_path / "run" / "per_image").iterdir()) == ["other_images.csv"]
 
 
+def test_image_refused_by_cellpose_fails_with_the_reason_only(tmp_path):
+    """With Cellpose, the main process refuses the image first when it reads the
+    segmentation channel; the image fails with the plain reason, without the same
+    message again as a segmentation warning."""
+    image = make_image((8, 64, 64), n_spots=5)[0]
+    path = tmp_path / "other.tif"
+    tifffile.imwrite(path, stack_channels([image, image]).astype(np.float32), metadata={"axes": "ZCYX"},
+                     photometric="minisblack")
+    reason = io.pixel_type_problem(io.get_image_info(path))
+    config = synthetic_config(channels=[{"index": 0}, {"index": 1}],
+                              segmentation={"enabled": True, "source": "cellpose"})
+    summary = batch.process_image(config, "other", path, tmp_path / "run", label_folder=tmp_path / "labels",
+                                  segmentation_error=reason)
+    for row in summary["rows"]:
+        assert row["status"] == "failed"
+        assert row["reason"] == reason
+        assert row["segmentation_status"] == "failed"
+        assert row["warnings"] == ""
+
+    # a segmentation that failed for another reason is still given
+    summary = batch.process_image(config, "other", path, tmp_path / "run2", label_folder=tmp_path / "labels",
+                                  segmentation_error="Cellpose ran out of memory")
+    for row in summary["rows"]:
+        assert row["warnings"] == "no cell results: segmentation failed: Cellpose ran out of memory"
+
+
 def test_packed_12_bit_image(tmp_path):
     image = make_image((8, 64, 64), n_spots=8, seed=4)[0]
     assert image.max() < 4096
@@ -660,6 +686,37 @@ def test_label_file_used(tmp_path, labelled_image):
     np.testing.assert_array_equal(spots["cell_id"], np.where(spots["x_px"] < 32, 7, -1))
 
 
+def test_label_file_recorded_and_border_cells_counted(tmp_path, labelled_image):
+    labels = np.zeros((64, 64), dtype=np.uint16)
+    labels[:, :20] = 7       # touches the border
+    labels[30:40, 30:40] = 3
+    labels[45:50, 25:35] = 9
+    label_path = tmp_path / "cells_seglabels.tif"
+    tifffile.imwrite(label_path, labels)
+    segmentation = {"enabled": True, "source": "label_files", "label_folder": str(tmp_path),
+                    "drop_border_cells": True}
+    config = synthetic_config(channels=[{"index": 0}, {"index": 1}], segmentation=segmentation)
+    summary = batch.process_image(config, "cells", labelled_image, tmp_path / "run", label_folder=tmp_path)
+    assert row_of(summary, 0)["n_cells"] == 2
+    assert ("cells: 3 cells in the label image, 2 kept (1 touching the image border left out, "
+            "as `segmentation.drop_border_cells` is on)") in summary["log_lines"]
+    [record] = summary["files_read"]
+    assert record == outputs.file_record(label_path, "label file")
+    assert record["size_bytes"] == label_path.stat().st_size
+
+    # without drop_border_cells, no line about border cells
+    segmentation["drop_border_cells"] = False
+    config = synthetic_config(channels=[{"index": 0}], segmentation=segmentation)
+    summary = batch.process_image(config, "cells", labelled_image, tmp_path / "run2", label_folder=tmp_path)
+    assert not any("label image" in line for line in summary["log_lines"])
+    assert len(summary["files_read"]) == 1
+
+    # a label file that cannot be used is not recorded
+    tifffile.imwrite(label_path, np.ones((32, 32), dtype=np.uint16))
+    summary = batch.process_image(config, "cells", labelled_image, tmp_path / "run3", label_folder=tmp_path)
+    assert summary["files_read"] == []
+
+
 def test_voxel_sizes_differ_from_config(tmp_path):
     image = make_image((8, 64, 64), n_spots=8)[0]
     path = write_image(tmp_path / "voxels.tif", stack_channels([image, image]), "ZCYX", voxel_um=(0.3, 0.065, 0.065))
@@ -740,9 +797,13 @@ def test_calibration_on_crop(crop_config_path, crop_path):
     assert result["reason"] is None
     assert result["image"] == CROP_NAME and result["channel"] == FISH_CHANNEL
 
+    assert result["elbow_threshold"] == 13.0
+
     config = crop_config(crop_config_path, threshold__mode="calibrated",
                          threshold__calibration_filter="crop", threshold__lower_limit=15)
-    assert batch.calibration_threshold(config, CROP_NAME, crop_path, FISH_CHANNEL)["threshold"] == 15.0
+    result = batch.calibration_threshold(config, CROP_NAME, crop_path, FISH_CHANNEL)
+    assert result["threshold"] == 15.0
+    assert result["elbow_threshold"] == 13.0
 
 
 def test_calibration_blank_and_unreadable(tmp_path):
@@ -1199,6 +1260,64 @@ def test_elbow_plot_in_each_threshold_mode(tmp_path, threshold, monkeypatch):
     assert lower_limit == threshold.get("lower_limit")
     assert detected["threshold"] == row["threshold"]
     assert len(detected["elbow_thresholds"]) > 0
+
+
+def drawn_elbow_plots(monkeypatch):
+    """A list that receives (detected, legend texts) of each elbow plot drawn."""
+    from bigfish_pypeline import qc
+
+    drawn = []
+    original = qc.draw_elbow_plot
+
+    def keep(detected, *args, **kwargs):
+        figure = original(detected, *args, **kwargs)
+        legend = [text.get_text() for text in figure.axes[0].get_legend().get_texts()]
+        drawn.append((detected, legend))
+        return figure
+
+    monkeypatch.setattr(qc, "draw_elbow_plot", keep)
+    return drawn
+
+
+def test_elbow_curve_of_one_point_in_a_run(tmp_path, monkeypatch):
+    """A channel whose elbow curve has a single point: automatic mode gives no threshold
+    with the usual warning; a manual threshold finds the same spots with the elbow plot
+    on and off, and the plot is drawn without an automatic value."""
+    from test_detection import one_point_elbow_image
+
+    image = one_point_elbow_image()
+    path = write_image(tmp_path / "few.tif", stack_channels([image, image]), "ZCYX")
+    drawn = drawn_elbow_plots(monkeypatch)
+
+    config = with_qc(synthetic_config(channels=[{"index": 0, "threshold": {"mode": "auto"}}]), elbow_plot=True)
+    row = row_of(batch.process_image(config, "few", path, tmp_path / "auto"), 0)
+    assert row["status"] == "done"
+    assert row["threshold"] is None and row["n_spots"] == 0
+    assert detection.NO_THRESHOLD_WARNING in row["warnings"]
+    assert qc_files(tmp_path / "auto") == ["few_ch0_elbow.png"]
+    [(detected, legend)] = drawn
+    assert detected["auto_threshold"] is None
+    assert legend == ["No automatic threshold found"]
+
+    spots = {}
+    for elbow in (True, False):
+        drawn.clear()
+        manual = synthetic_config(channels=[{"index": 0, "threshold": {"mode": "manual", "value": 2}}])
+        folder = tmp_path / f"manual_{elbow}"
+        summary = batch.process_image(with_qc(manual, elbow_plot=elbow), "few", path, folder)
+        row = row_of(summary, 0)
+        assert row["status"] == "done", row["reason"]
+        assert row["n_spots_detected"] == 9
+        assert "threshold" not in row["warnings"] and "elbow" not in row["warnings"]
+        spots[elbow] = read_tables(folder, "few")["spots"]
+        if elbow:
+            [(detected, legend)] = drawn
+            assert detected["auto_threshold"] is None
+            assert legend == ["Selected threshold = 2.0", "No automatic threshold found"]
+            assert qc_files(folder) == ["few_ch0_elbow.png"]
+        else:
+            assert drawn == [] and qc_files(folder) == []
+    pd.testing.assert_frame_equal(spots[True], spots[False])
 
 
 def test_no_candidate_spots_gives_no_elbow_plot(tmp_path):

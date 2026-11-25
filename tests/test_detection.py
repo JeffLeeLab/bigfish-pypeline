@@ -205,6 +205,75 @@ def test_noise_only_with_lower_limit():
     assert len(limited["spots"]) <= 5
 
 
+def one_point_elbow_image():
+    """A generated channel whose elbow curve has a single point: after top-hat (5 px)
+    and the LoG filter, eight local maxima at 3 and one at 147."""
+    from synthetic import _add_spot
+
+    image = np.full((8, 64, 64), 100.0)
+    for i in range(8):
+        _add_spot(image, (4, 8 + 14 * (i % 4), 10 + 40 * (i // 4)), (1.0, 1.5, 1.5), 6)
+    _add_spot(image, (4, 32, 30), (1.0, 1.5, 1.5), 300)
+    return image.round().astype(np.uint16)
+
+
+def one_point_rna_log():
+    return detection.filter_channel(one_point_elbow_image(), SPOT_RADIUS_PX, bg_method="tophat")["rna_log"]
+
+
+def test_elbow_curve_of_one_point():
+    rna_log = one_point_rna_log()
+    mask = detection.find_local_maxima(rna_log, SPOT_RADIUS_PX)
+    assert sorted(rna_log[mask & (rna_log > 0)].tolist()) == [3] * 8 + [147]
+    # big-fish itself cannot find a bend in a curve of one point
+    with pytest.raises(ValueError):
+        bf_detection.get_breaking_point(np.array([0.0]), np.array([2.2]))
+    thresholds, counts, threshold = detection.get_elbow_values(rna_log, mask)
+    assert len(thresholds) == len(counts) == 1
+    assert threshold is None
+
+    # automatic mode: no threshold and the usual warning, no spots
+    detected = detection.detect_spots(rna_log, SPOT_RADIUS_PX, threshold_mode="auto", lower_limit=2)
+    assert detected["threshold"] is None and detected["auto_threshold"] is None
+    assert detected["warning"] == detection.NO_THRESHOLD_WARNING
+    assert len(detected["spots"]) == 0
+    assert len(detected["elbow_counts"]) == 1
+
+    # manual mode: the same spots with the elbow values and without
+    with_elbow = detection.detect_spots(rna_log, SPOT_RADIUS_PX, threshold_mode="manual", threshold=2)
+    without = detection.detect_spots(rna_log, SPOT_RADIUS_PX, threshold_mode="manual", threshold=2,
+                                     elbow=False)
+    assert len(with_elbow["spots"]) == 9
+    np.testing.assert_array_equal(with_elbow["spots"], without["spots"])
+    assert with_elbow["warning"] is None and len(with_elbow["elbow_counts"]) == 1
+
+
+def test_elbow_values_cannot_fail_a_given_threshold(monkeypatch):
+    rna_log = one_point_rna_log()
+    expected = detection.detect_spots(rna_log, SPOT_RADIUS_PX, threshold_mode="manual", threshold=2,
+                                      elbow=False)["spots"]
+
+    def fail(*arguments):
+        raise RuntimeError("no elbow values")
+
+    monkeypatch.setattr(detection, "get_elbow_values", fail)
+    for mode in ("manual", "calibrated"):
+        detected = detection.detect_spots(rna_log, SPOT_RADIUS_PX, threshold_mode=mode, threshold=2)
+        np.testing.assert_array_equal(detected["spots"], expected)
+        assert detected["warning"] is None
+        assert len(detected["elbow_thresholds"]) == 0 and len(detected["elbow_counts"]) == 0
+    # in automatic mode the threshold itself comes from the elbow values
+    with pytest.raises(RuntimeError):
+        detection.detect_spots(rna_log, SPOT_RADIUS_PX, threshold_mode="auto")
+
+
+def test_elbow_curve_without_a_bend():
+    """A flat curve never drops below the line from its first to its last point."""
+    assert detection._breaking_point(np.array([0.0, 1.0, 2.0]), np.array([3.0, 3.0, 3.0])) is None
+    assert detection._breaking_point(np.array([0.0]), np.array([3.0])) is None
+    assert detection._breaking_point(np.zeros(0), np.zeros(0)) is None
+
+
 def test_elbow_off_and_bad_arguments():
     image, _, _ = make_image(shape=(64, 64), n_spots=5)
     rna_log = detection.filter_channel(image, SPOT_RADIUS_PX_2D)["rna_log"]

@@ -2380,8 +2380,8 @@ def test_the_value_before_the_limit_stays_in_view():
 
 
 def test_the_calibration_plot_without_the_elbow_column_is_drawn_as_before():
-    table = _table(6)
-    assert "elbow_threshold" not in table
+    # a calibration table of an older run, which has no `elbow_threshold` column
+    table = _table(6).drop(columns="elbow_threshold")
 
     figure = qc.draw_calibration_plot(table, {2: 15.0})
     assert _legend_texts(figure) == [

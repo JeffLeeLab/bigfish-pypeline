@@ -5,6 +5,7 @@ run folder follows section 8.1. Each image's tables are written to
 `per_image/` and joined into one table per type at the end of a run.
 """
 
+import hashlib
 import importlib.metadata
 import os
 import platform
@@ -40,10 +41,16 @@ RUN_INFO_PACKAGES = (
     ("numpy", "numpy"),
     ("scipy", "scipy"),
     ("scikit-image", "scikit-image"),
+    ("scikit-learn", "scikit-learn"),
+    ("pandas", "pandas"),
     ("tifffile", "tifffile"),
+    ("pydantic", "pydantic"),
+    ("plotly", "plotly"),
     ("omero-py", "omero-py"),
 )
 NOT_INSTALLED = "not installed"
+# Files are read in pieces of this size to work out their checksum.
+CHECKSUM_PIECE_BYTES = 1024 * 1024
 NOT_AVAILABLE = "not available"
 GIT_TIMEOUT_S = 10
 
@@ -71,7 +78,12 @@ IMAGE_COLUMNS = [
     "segmentation_source", "segmentation_status", "warnings", "runtime_s",
 ]
 
-CALIBRATION_COLUMNS = ["image", "channel", "auto_threshold", "used", "reason"]
+CALIBRATION_COLUMNS = ["image", "channel", "auto_threshold", "elbow_threshold", "used", "reason"]
+# Rows given as tuples may leave out `elbow_threshold`.
+_CALIBRATION_COLUMNS_WITHOUT_ELBOW = [name for name in CALIBRATION_COLUMNS if name != "elbow_threshold"]
+
+# Columns written as whole numbers when every value in them is a whole number.
+WHOLE_NUMBER_COLUMNS = ("log_intensity",)
 
 STATUS_CHOICES = ("done", "failed", "skipped")
 SEGMENTATION_STATUS_CHOICES = ("done", "no_labels", "failed", "")
@@ -310,15 +322,23 @@ def make_images_table(rows):
 def make_calibration_table(rows):
     """Calibration table: one row per subset image and channel.
 
-    rows: dictionaries or tuples of (image, channel, auto_threshold, used, reason).
-    auto_threshold may be None when no usable value was found.
+    rows: dictionaries or tuples of (image, channel, auto_threshold,
+        elbow_threshold, used, reason); `elbow_threshold` may be left out.
+    auto_threshold: the automatic threshold used for the image, after the
+        lower limit; elbow_threshold: the elbow method's value before the
+        lower limit. Either may be None when no usable value was found.
     """
     rows = list(rows)
     if rows and not isinstance(rows[0], dict):
-        rows = [dict(zip(CALIBRATION_COLUMNS, row)) for row in rows]
+        rows = [
+            dict(zip(CALIBRATION_COLUMNS if len(row) == len(CALIBRATION_COLUMNS)
+                     else _CALIBRATION_COLUMNS_WITHOUT_ELBOW, row))
+            for row in rows
+        ]
     table = pd.DataFrame(rows, columns=CALIBRATION_COLUMNS)
     table["channel"] = table["channel"].astype("Int64")
     table["auto_threshold"] = table["auto_threshold"].astype(float)
+    table["elbow_threshold"] = table["elbow_threshold"].astype(float)
     table["used"] = table["used"].astype(bool)
     table["reason"] = table["reason"].fillna("")
     return table
@@ -756,6 +776,33 @@ def run_info_text(info):
     return RUN_INFO_HEADER + body
 
 
+def file_record(path, kind):
+    """What `run_info.yaml` records of a file read in a run, so that a later run can
+    tell whether it has changed: its kind (e.g. "label file"), full path, size in
+    bytes, date last changed and SHA-256 checksum.
+
+    The file is read in pieces, so a large file needs little memory.
+    Raises OSError when the file cannot be read.
+    """
+    path = Path(os.path.abspath(path))
+    checksum = hashlib.sha256()
+    with open(path, "rb") as source:
+        while True:
+            piece = source.read(CHECKSUM_PIECE_BYTES)
+            if not piece:
+                break
+            checksum.update(piece)
+        details = os.fstat(source.fileno())
+    changed = datetime.fromtimestamp(details.st_mtime).astimezone()
+    return {
+        "kind": kind,
+        "path": str(path),
+        "size_bytes": int(details.st_size),
+        "last_changed": changed.isoformat(sep=" ", timespec="seconds"),
+        "sha256": checksum.hexdigest(),
+    }
+
+
 def write_run_info(run_folder, info):
     """Write `run_info.yaml` in the run folder, under a temporary name first.
 
@@ -855,8 +902,24 @@ def _npz_writer(named):
 
 
 def _write_csv(table, path):
-    """Write a table as UTF-8 CSV with empty values left blank."""
+    """Write a table as UTF-8 CSV with empty values left blank.
+
+    A column of WHOLE_NUMBER_COLUMNS whose values are all whole numbers is
+    written without decimals (18, not 18.0); the values do not change.
+    """
+    for name in WHOLE_NUMBER_COLUMNS:
+        if name in table.columns and _all_whole(table[name]):
+            table = table.assign(**{name: table[name].astype("Int64")})
     table.to_csv(path, index=False, encoding="utf-8", na_rep="", lineterminator="\n")
+
+
+def _all_whole(column):
+    """True when every value of a number column that is not empty is a whole number."""
+    if not pd.api.types.is_numeric_dtype(column) or pd.api.types.is_bool_dtype(column):
+        return False
+    values = pd.to_numeric(column, errors="coerce").dropna().to_numpy(dtype=float)
+    return bool(np.isfinite(values).all() and (values == np.round(values)).all()
+                and (np.abs(values) < 2 ** 53).all())
 
 
 def _save_config_replacing(config, path):

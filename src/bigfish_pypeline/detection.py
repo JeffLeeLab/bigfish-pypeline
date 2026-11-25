@@ -136,9 +136,11 @@ def get_elbow_values(rna_log, mask):
     Returns (thresholds, count_spots, threshold), the same as big-fish
     detection.get_elbow_values on the unfiltered image: candidate
     thresholds, log of the number of spots above each one (smoothed), and the
-    automatic threshold (None when there is none; the two arrays are then
-    empty). The threshold is the value big-fish
-    detection.automated_threshold_setting returns.
+    automatic threshold. The threshold is the value big-fish
+    detection.automated_threshold_setting returns, or None when there is
+    none: when the two arrays are empty, or when the curve is too short to
+    have a bend (a single point), in which case the arrays are kept for the
+    elbow plot.
     """
     with np.errstate(divide="ignore", invalid="ignore"):
         thresholds = _get_candidate_thresholds(rna_log.ravel())
@@ -147,11 +149,24 @@ def get_elbow_values(rna_log, mask):
         )
         value_spots = rna_log[mask_spots]
         thresholds, count_spots = _get_spot_counts(thresholds, value_spots)
-        if count_spots.size > 0:
-            threshold, _, _ = detection.get_breaking_point(thresholds, count_spots)
-        else:
-            threshold = None
+        threshold = _breaking_point(thresholds, count_spots)
     return thresholds, count_spots, threshold
+
+
+def _breaking_point(thresholds, count_spots):
+    """The big-fish elbow value of the curve, or None when the curve has no bend.
+
+    A curve of one point has no bend; neither has a curve that never drops
+    below the straight line from its first to its last point (big-fish then
+    fails instead of returning a value).
+    """
+    if count_spots.size < 2:
+        return None
+    try:
+        threshold, _, _ = detection.get_breaking_point(thresholds, count_spots)
+    except ValueError:
+        return None
+    return threshold
 
 
 def detect_spots(rna_log, spot_radius_px, threshold_mode="auto", threshold=None,
@@ -171,7 +186,8 @@ def detect_spots(rna_log, spot_radius_px, threshold_mode="auto", threshold=None,
     - "auto_threshold": the big-fish value before the lower limit (auto mode
       only, otherwise None),
     - "elbow_thresholds", "elbow_counts": the elbow plot values, or None when
-      elbow is False,
+      elbow is False. With a manual or calibrated threshold they are empty
+      when they cannot be worked out, and the spots are found all the same,
     - "warning": a message when no threshold was found, otherwise None.
     """
     if threshold_mode not in THRESHOLD_MODES:
@@ -202,7 +218,12 @@ def detect_spots(rna_log, spot_radius_px, threshold_mode="auto", threshold=None,
     elbow_counts = None
     if elbow:
         if elbow_values is None:
-            elbow_values = get_elbow_values(rna_log, mask)
+            try:
+                elbow_values = get_elbow_values(rna_log, mask)
+            except Exception:
+                # The threshold was given, so the spots do not depend on the elbow
+                # values: without them only the elbow plot is left out.
+                elbow_values = (np.zeros(0), np.zeros(0), None)
         elbow_thresholds, elbow_counts = elbow_values[0], elbow_values[1]
 
     return {

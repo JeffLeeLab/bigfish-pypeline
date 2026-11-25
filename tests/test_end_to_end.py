@@ -424,8 +424,9 @@ def test_mixed_batch_run(mixed_batch):
     assert run_folder is not None
     lines = command.out.splitlines()
     assert lines[-1] == f"Run folder: {run_folder}"
-    failed_line = next(line for line in lines if "had a channel that failed" in line)
-    assert failed_line.startswith("3 of 8 image(s) had a channel that failed (6 channel(s) in all)")
+    # the last line of the run gives the number of failed and skipped channels
+    assert lines[-2].startswith("The run finished: 8 image(s) processed; 6 channel(s) failed"), lines[-2]
+    assert lines[-2].endswith(". See images.csv and run.log in the run folder."), lines[-2]
     assert "Workers: 2 worker(s), as set in the config" in command.out
     assert progress(run_folder)["status"] == "finished"
     assert not list((run_folder / "per_image").glob("*.tmp"))
@@ -574,7 +575,8 @@ def test_8_bit_16_bit_and_float_images(tmp_path):
 
     command, code, run_folder = batch([settings], tmp_path)
     assert code == 0, command.describe()
-    assert "1 of 3 image(s) had a channel that failed" in command.out
+    assert ("The run finished: 3 image(s) processed; 2 channel(s) failed. "
+            "See images.csv and run.log in the run folder.") in command.out
     images = read_table(run_folder, "images")
     assert image_names(images) == ["bits16", "bits8", "float32"]
     statuses = images[["image", "channel", "status", "reason"]]

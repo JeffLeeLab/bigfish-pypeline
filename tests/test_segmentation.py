@@ -99,3 +99,30 @@ def test_crop_label_file(crop_labels_path):
     labels = np.unique(masks)
     assert labels[0] == 0
     assert len(labels[labels > 0]) == 44
+
+
+def test_label_file_written_with_the_pixel_size(tmp_path):
+    from bigfish_pypeline.segmentation import write_label_file
+
+    labels = np.zeros((20, 30), dtype=np.uint32)
+    labels[2:8, 3:9] = 100_000
+    path = write_label_file(labels, tmp_path, IMAGE, pixel_size_nm=108)
+    with tifffile.TiffFile(path) as tif:
+        numerator, denominator = tif.pages[0].tags["XResolution"].value
+        assert numerator / denominator == pytest.approx(1000 / 108, rel=1e-6)
+        assert tif.imagej_metadata["unit"] == "micron"
+    np.testing.assert_array_equal(read_label_file(tmp_path, IMAGE, (20, 30)), labels)
+    # without a pixel size, as before
+    path = write_label_file(labels, tmp_path / "plain", IMAGE)
+    np.testing.assert_array_equal(tifffile.imread(path), labels)
+
+
+def test_custom_model_file(tmp_path):
+    from bigfish_pypeline.segmentation import custom_model_file
+
+    model = tmp_path / "my_model"
+    model.write_bytes(b"weights")
+    assert custom_model_file(str(model)) == model
+    assert custom_model_file(f"  {model}  ") == model
+    assert custom_model_file("cpsam_v2") is None
+    assert custom_model_file(str(tmp_path / "missing")) is None

@@ -134,8 +134,11 @@ RUN_INFO_KEYS = [
     "settings_file", "pipeline_version", "git_commit", "python_version", "package_versions",
     "operating_system", "processor_cores", "computer_memory", "cellpose_device", "workers",
     "workers_reason", "worker_restarts", "random_seed", "calibrated_thresholds", "omero_server",
+    "files_read",
 ]
-PACKAGES = ["big-fish", "cellpose", "torch", "numpy", "scipy", "scikit-image", "tifffile", "omero-py"]
+PACKAGES = ["big-fish", "cellpose", "torch", "numpy", "scipy", "scikit-image", "scikit-learn", "pandas",
+            "tifffile", "pydantic", "plotly", "omero-py"]
+FILE_RECORD_KEYS = ["kind", "path", "size_bytes", "last_changed", "sha256"]
 
 
 def run_info(run_folder, status):
@@ -170,12 +173,27 @@ def run_info(run_folder, status):
         assert list(restart) == ["time", "workers", "images_lost"]
         datetime.fromisoformat(restart["time"])
         assert isinstance(restart["workers"], int) and restart["workers"] >= 1
-        assert restart["images_lost"] and all(isinstance(name, str) for name in restart["images_lost"])
+        # a worker that stopped while no image was in it lost none
+        assert isinstance(restart["images_lost"], list)
+        assert all(isinstance(name, str) for name in restart["images_lost"])
     assert isinstance(info["random_seed"], int)
     thresholds = info["calibrated_thresholds"]
     assert thresholds == "none" or all(
         re.fullmatch(r"channel \d+", name) and isinstance(value, float) for name, value in thresholds.items()
     )
+    files = info["files_read"]
+    assert files == "none" or (isinstance(files, list) and files)
+    for record in [] if files == "none" else files:
+        assert list(record) == FILE_RECORD_KEYS
+        assert record["kind"] in ("label file", "Cellpose model")
+        assert Path(record["path"]).is_absolute()
+        assert isinstance(record["size_bytes"], int) and record["size_bytes"] > 0
+        assert datetime.fromisoformat(record["last_changed"]).tzinfo is not None
+        assert re.fullmatch(r"[0-9a-f]{64}", record["sha256"])
+    # the duration is the total time of the summary line of run.log
+    if info["duration"] != "not ended" and (run_folder / "run.log").is_file():
+        summaries = re.findall(r"Total time ([^.]+)\.", (run_folder / "run.log").read_text(encoding="utf-8"))
+        assert summaries[-1:] == [info["duration"]] or not summaries
     return info
 
 
@@ -256,6 +274,10 @@ def test_kit_run_info(kit_runs):
         assert info["random_seed"] == 0
         assert info["calibrated_thresholds"] == "none"
         assert info["omero_server"] == "not used"
+        # the test kit's label file, read for the crop; the generated image has none
+        [record] = info["files_read"]
+        assert record == outputs.file_record(Path(record["path"]), "label file")
+        assert Path(record["path"]).name == f"{CROP_NAME}_seglabels.tif"
 
 
 def test_kit_log(kit_runs):
@@ -265,6 +287,7 @@ def test_kit_log(kit_runs):
         f"  {CROP_NAME}.tif",
         f"{CROP_NAME}: started",
         f"{CROP_NAME}, channel 2: done, threshold 18, 692 spots, 6 clusters, 44 cells",
+        "FISH channel 2 (jim-exon): manual threshold 18; spot radius 1.12 px in Z, 0.99 px in Y and X",
         f"{CROP_NAME}: finished",
         "zz_generated: warning: no cell results",
         "Summary: 2 of 2 image(s) finished, 0 not processed; channels: 2 done, 0 failed, 0 skipped.",
@@ -308,6 +331,10 @@ def test_corrupt_image_and_list_order(tmp_path):
     text = log_text(result.run_folder)
     assert "c_corrupt: failed: c_corrupt.tif: the file is damaged or incomplete" in text
     assert "channels: 8 done, 2 failed, 0 skipped" in text
+    message = ("The run finished: 5 image(s) processed; 2 channel(s) failed. "
+               "See images.csv and run.log in the run folder.")
+    assert result.message == message
+    assert run_info(result.run_folder, "finished")["message"] == message
 
 
 def test_file_stored_in_another_axis_order(tmp_path):
@@ -410,10 +437,10 @@ def test_log_holds_every_item(tmp_path):
         "2 image(s):\n",
         "  a_mixed.tif\n",
         "  b_corrupt.tif\n",
-        # settings of each channel
-        "FISH channel 0 (exon): manual threshold 50",
-        "FISH channel 1: manual threshold 50",
-        "FISH channel 2: automatic threshold, found for each image, never below 30",
+        # settings of each channel, with the spot radius in pixels
+        "FISH channel 0 (exon): manual threshold 50; spot radius 1.12 px in Z, 0.99 px in Y and X",
+        "FISH channel 1: manual threshold 50; spot radius 1.12 px in Z, 0.99 px in Y and X",
+        "FISH channel 2: automatic threshold, found for each image, never below 30; spot radius",
         # each image started, finished or failed, and each channel done, failed or skipped
         "a_mixed: started",
         "a_mixed: finished",
@@ -430,7 +457,8 @@ def test_log_holds_every_item(tmp_path):
         # summary
         "Summary: 2 of 2 image(s) finished, 0 not processed; channels: 1 done, 4 failed, 1 skipped. Total time ",
         "Images in which every channel failed: b_corrupt",
-        "The run finished: 2 image(s) processed.",
+        "The run finished: 2 image(s) processed; 4 channel(s) failed and 1 skipped. "
+        "See images.csv and run.log in the run folder.",
     ):
         assert expected in text, expected
     assert "Images not processed" not in text
@@ -1358,3 +1386,255 @@ def test_qc_files_of_finished_images_only(tmp_path, names, workers, status, kept
     expected += [f"{name}_ch0_final.html" for name in kept if "page" in name]
     assert qc_files(result.run_folder) == sorted(expected)
     no_qc_leftovers(result.run_folder)
+
+
+# ---------------------------------------------------------------------------
+# Stops, stopped workers and the end of a run
+# ---------------------------------------------------------------------------
+
+
+class InProcessPool:
+    """Stand-in for batch._WorkerPool that runs each image in this process at once.
+
+    Words in the image name: `lost` writes a file, then the image's worker stops;
+    `hang` writes a file and never ends; `session_ended` is as in
+    fake_process_image. Images are handed out in one pass when there are workers
+    enough, so their results come back together.
+    """
+
+    def __init__(self, n_workers):
+        self.n_workers = n_workers
+        self.handed_out = []
+
+    def submit(self, function, **arguments):
+        from concurrent.futures import Future
+        from concurrent.futures.process import BrokenProcessPool
+
+        future = Future()
+        name = arguments["image_name"]
+        self.handed_out.append(name)
+        per_image = Path(arguments["run_folder"]) / "per_image"
+        if "lost" in name or "hang" in name:
+            (per_image / f"{name}_spots.csv").write_text("image\n", encoding="utf-8")
+            (per_image / f"{name}_images.csv.tmp").write_text("image\n", encoding="utf-8")
+            if "lost" in name:
+                future.set_exception(BrokenProcessPool("a worker stopped"))
+            return future
+        try:
+            future.set_result(function(**arguments))
+        except BaseException as error:
+            future.set_exception(error)
+        return future
+
+    def stop_now(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_stop_takes_no_further_result(tmp_path, monkeypatch):
+    """A stop found in the same pass as a stopped worker and other results: the
+    message is shown once, at the end; no further result is taken, and the files
+    of every image not finished are removed, the lost image's included."""
+    monkeypatch.setattr(batch, "_WorkerPool", InProcessPool)
+    folder = tiny_images(tmp_path / "input", ["a", "b_lost", "c_session_ended", "d", "e_hang", "f"])
+    config = local_config(folder, tmp_path / "out", workers=5)
+    shown = []
+    started = __import__("time").monotonic()
+    result = run_fake(config, show=shown.append)
+    assert __import__("time").monotonic() - started < batch.CHECK_INTERVAL_S * 5
+    assert result.status == "stopped"
+    message = batch.OMERO_SESSION_ENDED_MESSAGE
+    assert result.message == message
+    run_folder = result.run_folder
+    # a to e are handed out in one pass; the result of `a` comes before the stop
+    assert list(dict.fromkeys(read_table(run_folder, "images")["image"])) == ["a"]
+    assert per_image_files(run_folder) == ["a_images.csv", "a_spots.csv"]
+    text = log_text(run_folder)
+    assert "Discarded (in progress): b_lost, c_session_ended, d, e_hang" in text
+    assert "d: finished" not in text and "f: started" not in text
+    assert "A worker process stopped unexpectedly" not in text
+    # the message once in the terminal, as its last line, and once in run.log
+    assert sum(message in line for line in shown) == 1
+    assert shown[-1] == message
+    assert text.count(message) == 1
+    info = run_info(run_folder, "stopped")
+    assert info["message"] == message
+
+
+def test_worker_stopped_before_an_image_is_handed_out(tmp_path, monkeypatch):
+    """The pool is found broken when the next image is handed out: the run starts
+    again with fewer workers, and that image stays in the queue and is processed."""
+    from concurrent.futures.process import BrokenProcessPool
+
+    handed = {"count": 0}
+
+    class BreaksOnce(batch._WorkerPool):
+        def submit(self, function, **arguments):
+            handed["count"] += 1
+            if handed["count"] == 2:
+                raise BrokenProcessPool("a worker stopped")
+            return super().submit(function, **arguments)
+
+    monkeypatch.setattr(batch, "_WorkerPool", BreaksOnce)
+    folder = tiny_images(tmp_path / "input", ["a", "b", "c"])
+    result = run_fake(local_config(folder, tmp_path / "out", workers=2))
+    assert result.status == "finished", result.message
+    images = read_table(result.run_folder, "images")
+    assert list(dict.fromkeys(images["image"])) == ["a", "b", "c"]
+    assert (images["status"] == "done").all()
+    text = log_text(result.run_folder)
+    assert "A worker process stopped unexpectedly" in text
+    assert text.count("b: started") == 1
+    info = run_info(result.run_folder, "finished")
+    [restart] = info["worker_restarts"]
+    assert restart["workers"] == 1
+    assert "b" not in restart["images_lost"]
+
+
+def test_worker_numbers_leave_out_images_that_will_be_refused(tmp_path):
+    folder = tmp_path / "input"
+    folder.mkdir()
+    small = np.ones((2, 2, 16, 16), dtype=np.uint16)
+    write_image(folder / "a_small.tif", small)
+    # larger files that the run will refuse: several time points, and a pixel type
+    tifffile.imwrite(folder / "b_timelapse.tif", np.ones((3, 4, 2, 64, 64), dtype=np.uint16), imagej=True,
+                     metadata={"axes": "TZCYX"})
+    tifffile.imwrite(folder / "c_float.tif", np.ones((4, 2, 64, 64), dtype=np.float32),
+                     metadata={"axes": "ZCYX"}, photometric="minisblack")
+    config = local_config(folder, tmp_path / "out")
+    plan = batch.plan_run(config)
+    assert [header is not None for header in plan.headers] == [True, True, True]
+    assert batch._largest_channel(config, plan.headers) == 2 * 16 * 16
+    assert [batch._will_be_refused(config, header) for header in plan.headers] == [False, True, True]
+    # an image with more channels or another layout than the run is refused too
+    write_image(folder / "d_zyx.tif", np.ones((4, 64, 64), dtype=np.uint16), axes="ZYX")
+    assert batch._will_be_refused(config, io.get_image_info(folder / "d_zyx.tif"))
+    one_channel = local_config(folder, tmp_path / "out", channels=[{"index": 5}])
+    assert batch._will_be_refused(one_channel, io.get_image_info(folder / "a_small.tif"))
+
+
+def test_total_time_and_duration_are_the_same(tmp_path, monkeypatch):
+    """The end steps of a run take time after the summary line; the run record gives
+    the same figures as the log."""
+    stop = batch._KeepAwake.stop
+
+    def slow_stop(self):
+        __import__("time").sleep(2.5)
+        stop(self)
+
+    monkeypatch.setattr(batch._KeepAwake, "stop", slow_stop)
+    folder = tiny_images(tmp_path / "input", ["a"])
+    result = run_fake(local_config(folder, tmp_path / "out"))
+    info = run_info(result.run_folder, "finished")
+    assert f"Total time {info['duration']}." in log_text(result.run_folder)
+    ended = datetime.fromisoformat(info["ended"])
+    assert (datetime.now().astimezone() - ended).total_seconds() >= 2
+
+
+def test_calibration_with_a_lower_limit_marks_raised_images(tmp_path, monkeypatch):
+    """From the run to the calibration plot: images whose elbow value is below the
+    lower limit are listed with both values and marked as raised in the plot."""
+    from bigfish_pypeline import qc
+
+    legends = []
+    original = qc.draw_calibration_plot
+
+    def keep(*args, **kwargs):
+        figure = original(*args, **kwargs)
+        legends.append([text.get_text() for text in figure.axes[0].get_legend().get_texts()])
+        return figure
+
+    monkeypatch.setattr(qc, "draw_calibration_plot", keep)
+    folder = tmp_path / "input"
+    folder.mkdir()
+    generated_image(folder / "cal_1.tif", seed=10, amplitude=400)
+    generated_image(folder / "cal_2.tif", seed=20, amplitude=800)
+    generated_image(folder / "cal_3_blank.tif", blank=True)
+    config = local_config(
+        folder, tmp_path / "out", workers=2, qc=True,
+        channels=[{"index": 0, "threshold": {"mode": "calibrated", "calibration_filter": "cal",
+                                             "lower_limit": 5000}},
+                  {"index": 1}],
+    )
+    result = batch.run_batch(config)
+    assert result.status == "finished", result.message
+    calibration = pd.read_csv(result.run_folder / "calibration.csv", keep_default_na=False)
+    assert list(calibration.columns) == outputs.CALIBRATION_COLUMNS
+    raised = calibration.iloc[:2]
+    assert (raised["auto_threshold"].astype(float) == 5000).all()
+    elbow = [batch.calibration_threshold(config, name, folder / f"{name}.tif", 0)["elbow_threshold"]
+             for name in ("cal_1", "cal_2")]
+    assert list(raised["elbow_threshold"].astype(float)) == elbow
+    assert all(value < 5000 for value in elbow)
+    assert calibration.loc[2, "elbow_threshold"] == "" and calibration.loc[2, "auto_threshold"] == ""
+    [legend] = legends
+    assert "Raised to the lower limit (2 images)" in legend
+    assert "Value before the lower limit was applied" in legend
+
+
+def test_label_files_in_the_run_record_and_log(tmp_path):
+    folder = tmp_path / "input"
+    folder.mkdir()
+    for seed, name in enumerate(("a", "b")):
+        generated_image(folder / f"{name}.tif", seed=seed)
+    labels = tmp_path / "labels"
+    labels.mkdir()
+    label_image = np.zeros((64, 64), dtype=np.uint16)
+    label_image[:10, :10] = 1
+    label_image[20:40, 20:40] = 2
+    tifffile.imwrite(labels / "a_seglabels.tif", label_image)
+    config = with_changes(local_config(folder, tmp_path / "out", workers=2), lambda data: data[
+        "segmentation"].update(enabled=True, source="label_files", label_folder=str(labels),
+                               drop_border_cells=True))
+    result = batch.run_batch(config)
+    assert result.status == "finished", result.message
+    text = log_text(result.run_folder)
+    assert ("a: 2 cells in the label image, 1 kept (1 touching the image border left out, "
+            "as `segmentation.drop_border_cells` is on)") in text
+    assert "a, channel 0: done, threshold 50, 8 spots, 0 clusters, 1 cell\n" in text
+    info = run_info(result.run_folder, "finished")
+    [record] = info["files_read"]
+    assert record == outputs.file_record(labels / "a_seglabels.tif", "label file")
+
+    # without label files there is nothing to record
+    result = run_fake(local_config(folder, tmp_path / "out2"))
+    assert run_info(result.run_folder, "finished")["files_read"] == "none"
+
+
+def test_custom_cellpose_model_in_the_run_record(tmp_path):
+    from cellpose_standin import StandInModel
+
+    model_file = tmp_path / "my_model"
+    model_file.write_bytes(b"model weights" * 1000)
+    folder = tiny_images(tmp_path / "input", ["a"])
+    config = with_changes(local_config(folder, tmp_path / "out"), lambda data: data["segmentation"].update(
+        enabled=True, source="cellpose", label_folder="", cellpose={"model": str(model_file)}))
+
+    def device(setting):
+        return "cpu", "Cellpose runs on the CPU.", []
+
+    def loader(model_name, device, threads=None):
+        return StandInModel(n_cells=2)
+
+    result = batch.run_batch(config, image_function=fake_process_image, device_chooser=device,
+                             model_loader=loader)
+    assert result.status == "finished", result.message
+    info = run_info(result.run_folder, "finished")
+    assert info["files_read"] == [outputs.file_record(model_file, "Cellpose model")]
+
+    # one of Cellpose's own models gets no entry
+    config = with_changes(config, lambda data: data["segmentation"]["cellpose"].update(model="cpsam_v2"))
+    result = batch.run_batch(config, image_function=fake_process_image, device_chooser=device,
+                             model_loader=loader)
+    assert run_info(result.run_folder, "finished")["files_read"] == "none"
+
+
+def test_counts_in_the_log(tmp_path):
+    assert batch._count_text(1, "cluster") == "1 cluster"
+    assert batch._count_text(6, "cluster") == "6 clusters"
+    assert batch._count_text(0, "spot") == "0 spots"
+    folder = tiny_images(tmp_path / "input", ["a"])
+    result = run_fake(local_config(folder, tmp_path / "out"))
+    assert "a, channel 0: done, threshold 10, 1 spot, 0 clusters\n" in log_text(result.run_folder)

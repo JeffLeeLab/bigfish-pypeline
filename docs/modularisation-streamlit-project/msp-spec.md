@@ -78,7 +78,7 @@ _quarto.yml                 Quarto website project (renders docs/guide/ only)
 
 ### 4.2 Commands
 
-- `bigfish-pypeline batch <config.yaml> [--input-folder …] [--filter …] [--output-folder …] [--workers …]`: values given on the command line override the file (brief: F2).
+- `bigfish-pypeline batch <config.yaml> [--input-folder …] [--filter …] [--output-folder …] [--workers …]`: values given on the command line override the file (brief: F2). The last lines in the terminal say how the run ended, with the number of failed and skipped channels; the command ends with 0 when the run finished, also when images failed.
 - `bigfish-pypeline check <config.yaml>`: validates a config and lists the images it would process, without running anything. Images whose pixel type cannot be used are listed with the reason.
 - `bigfish-pypeline app`: starts the Streamlit app. The command finds `app/` in the repository folder and starts Streamlit with `app/` as its working folder, so it can be run from anywhere.
 - Installed from the repository folder with `pip install -e .`, which the environment file runs (entry point declared in `pyproject.toml`).
@@ -195,7 +195,7 @@ Presets only set step switches. Every preset uses the same default values; any s
 - Device chosen automatically: CUDA, then Apple GPU (MPS), then CPU. A quick test calculation on the chosen device runs before the model loads, the device used is logged, and running on CPU triggers a warning that segmentation will be slow.
 - The model is loaded once per batch run (main process) and cached in the app. The app releases its copy when a batch starts, so two copies are not held in memory.
 - The 4-panel QC figure from the workbook's `qc_figure` is rewritten to take its settings as arguments instead of reading notebook-wide variables. Its title shows the projection, channel, pre-treatment, diameter, cell count and time.
-- Label images are saved as `<image>_seglabels.tif` (uint32, 2D) when switched on.
+- Label images are saved as `<image>_seglabels.tif` (uint32, 2D) when switched on. The file carries the pixel size, so that Fiji shows µm.
 
 **Label files**
 
@@ -215,6 +215,7 @@ Presets only set step switches. Every preset uses the same default values; any s
 
 - One YAML layout written by the notebook and the app and read by the batch; the same names are used everywhere.
 - Validated by a `pydantic` model before any image is processed. Messages are in plain English and name the setting, e.g. "`nb_min_spot` is not a known setting – did you mean `min_spots`?" or "`voxel_size_nm.z` must be a positive number". Unknown settings are errors, not silently ignored.
+- Values that a step cannot use are refused: `decomposition.alpha` outside 0 to 1, `decomposition.beta` of 0 or less, a background radius below 1 px, `clusters.min_spots` below 2, `cellpose.min_size` below −1, an empty `cellpose.model`, and an infinite or missing number (`.inf`, `.nan`) in any setting.
 - `config_version` identifies the layout so later versions can convert older files.
 - Loaded with the safe YAML loader.
 - Switches are written `enabled: true` or `enabled: false`. The words `on`, `off`, `yes` and `no` are not used as setting names or choices, because YAML reads them as true or false.
@@ -378,7 +379,7 @@ Coordinates are given in pixels and in nm (pixel × voxel size). Z columns are p
 | `clusters.csv` | cluster | image, channel, channel_name, cluster_id, z_px, y_px, x_px, z_nm, y_nm, x_nm, n_spots, cell_id |
 | `cells.csv` | cell × channel (every label, including cells with no spots) | image, channel, channel_name, cell_id, area_px, area_um2, centroid_y_px, centroid_x_px, touches_border, n_spots, n_spots_in_clusters, n_spots_outside_clusters, n_clusters, mean_spots_per_cluster |
 | `images.csv` | image × channel | image, channel, channel_name, status (done / failed / skipped), reason, threshold_mode, threshold, n_spots_detected, n_spots, n_clusters, n_cells, segmentation_source, segmentation_status (done / no_labels / failed; empty when segmentation is off), warnings, runtime_s |
-| `calibration.csv` | subset image × channel | image, channel, auto_threshold, used, reason |
+| `calibration.csv` | subset image × channel | image, channel, auto_threshold (after the lower limit), elbow_threshold (the elbow method's value before the lower limit), used, reason |
 
 In `cells.csv`, `n_spots`, `n_spots_in_clusters` and `n_spots_outside_clusters` count each spot in the cell it sits in. `n_clusters` counts the clusters whose centre lies in the cell, and `mean_spots_per_cluster` is the mean size of those clusters (empty when the cell has none). Because a cluster can lie across a cell boundary, a cell can have clustered spots without a cluster, and these numbers need not divide into one another.
 
@@ -398,8 +399,8 @@ Each has its own switch (brief: E3). Names start with `<image>_ch<index>_`.
 
 ### 8.4 Run record and log
 
-- `run_info.yaml`: start and end time, pipeline version and git commit (when available), Python and key package versions (big-fish, cellpose, torch, numpy, scipy, scikit-image, tifffile, omero-py), OS, CPU count, memory, Cellpose device, workers, the command used, the random seed, any worker restarts, final status, and calibrated threshold values.
-- `run.log`: config file used, image list, each image started / finished / skipped / failed with the reason, threshold used per image and channel, warnings (metadata mismatch, missing labels, CPU segmentation), and a summary (counts per status, total time).
+- `run_info.yaml`: start and end time, pipeline version and git commit (when available), Python and key package versions (big-fish, cellpose, torch, numpy, scipy, scikit-image, scikit-learn, pandas, tifffile, pydantic, plotly, omero-py), OS, CPU count, memory, Cellpose device, workers, the command used, the random seed, any worker restarts, final status with a message that gives the number of failed and skipped channels, and calibrated threshold values. For each label file given by the user and each Cellpose model file of the user's own that the run read: its path, size, date last changed and SHA-256 checksum, so that a later run can tell whether a file has changed.
+- `run.log`: config file used, image list, the spot radius in pixels of each channel, each image started / finished / skipped / failed with the reason, threshold used per image and channel, the cells found and kept when `drop_border_cells` is on, warnings (metadata mismatch, missing labels, CPU segmentation), and a summary (counts per status, total time). The total time is the duration given in `run_info.yaml`.
 
 ## 9. Optimise notebook (brief: I1)
 

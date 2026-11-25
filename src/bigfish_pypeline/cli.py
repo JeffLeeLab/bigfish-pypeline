@@ -1,7 +1,6 @@
 """The `bigfish-pypeline` command: `batch` runs a settings file, `check` looks it over."""
 
 import argparse
-import csv
 import os
 import shlex
 import subprocess
@@ -234,24 +233,6 @@ def describe_plan(config, plan, config_path):
     return lines
 
 
-def _failure_lines(run_folder):
-    """Sentences about failed images, read from the run's images table."""
-    try:
-        with open(Path(run_folder) / "images.csv", newline="", encoding="utf-8") as table_file:
-            rows = list(csv.DictReader(table_file))
-    except (OSError, csv.Error, UnicodeDecodeError):
-        return []
-    failed = [row for row in rows if row.get("status") == "failed"]
-    if not failed:
-        return []
-    images = len({row["image"] for row in failed})
-    total = len({row["image"] for row in rows})
-    return [
-        f"{images} of {total} image(s) had a channel that failed "
-        f"({len(failed)} channel(s) in all). See `images.csv` and `run.log` in the run folder."
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -273,14 +254,9 @@ def _check(arguments):
 
 def _batch(arguments):
     config = _load(arguments)
+    # The runner shows how the run ended, with the number of failed and skipped channels.
     result = run_batch(config, config_file=Path(os.path.abspath(arguments.config)), show=_say,
                        command=arguments.command_line)
-    if result.status == "finished":
-        for line in _failure_lines(result.run_folder):
-            _say(line)
-    if result.status == "stopped":
-        # the runner has printed the final message of a finished or cancelled run
-        _say(result.message)
     _say(f"Run folder: {result.run_folder}")
     if result.status == "finished":
         return EXIT_OK

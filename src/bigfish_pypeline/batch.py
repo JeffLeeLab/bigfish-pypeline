@@ -33,7 +33,7 @@ import psutil
 from bigfish_pypeline import __version__, io
 from bigfish_pypeline import outputs
 from bigfish_pypeline import segmentation
-from bigfish_pypeline.cells import assign_cells
+from bigfish_pypeline.cells import assign_cells, border_labels
 from bigfish_pypeline.clusters import detect_clusters
 from bigfish_pypeline.decomposition import NO_SPOT_MODEL_WARNING, decompose_dense_regions, get_seed
 from bigfish_pypeline.detection import (
@@ -684,8 +684,9 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
     segmentation_source = config.segmentation.source if label_folder is not None else ""
     # Warnings for the `warnings` column only (the main process has logged them).
     noted = [hide(warning) for warning in segmentation_warnings]
+    segmentation_failed = f"no cell results: segmentation failed: {hide(segmentation_error)}"
     if label_folder is not None and segmentation_error is not None:
-        noted.append(f"no cell results: segmentation failed: {hide(segmentation_error)}")
+        noted.append(segmentation_failed)
 
     # step 1: open the image, check its voxel sizes and read its labels
     try:
@@ -701,6 +702,9 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
         log_lines.append(f"{image_name}: image failed: {reason}")
         log_lines.append(hide(traceback.format_exc().rstrip()))
         runtime = time.perf_counter() - image_start
+        if hide(segmentation_error or "") == reason:
+            # Cellpose could not read the image for the same reason: the reason is enough.
+            noted = [warning for warning in noted if warning != segmentation_failed]
         for channel in channels:
             rows.append(outputs.image_row(
                 image_name, channel.index, channel.name, "failed",
@@ -727,29 +731,56 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
 
     masks = None
     segmentation_status = ""
+    files_read = []
     if label_folder is not None and segmentation_error is not None:
         segmentation_status = "failed"
     elif label_folder is not None:
         try:
             masks = read_label_file(label_folder, image_name, info.shape[-2:])
+            if config.segmentation.source == "label_files":
+                # A label file given by the user is recorded in run_info.yaml.
+                files_read.append(outputs.file_record(
+                    segmentation.label_file_path(label_folder, image_name), "label file"
+                ))
             segmentation_status = "done"
         except PASS_THROUGH:
             raise
         except Exception as error:
+            masks = None
             segmentation_status = "no_labels"
             image_warnings.append(f"no cell results: {_one_line(error)}")
     for warning in image_warnings:
         log_lines.append(f"{image_name}: warning: {hide(warning)}")
+    if masks is not None and config.segmentation.drop_border_cells:
+        log_lines.append(f"{image_name}: {_border_cells_text(masks)}")
 
     staging = run_folder / QC_TEMPORARY_FOLDER_NAME / image_name
     try:
-        return _process_channels(
+        result = _process_channels(
             config, image_name, run_folder, read_channel, masks, staging, segmentation_source,
             segmentation_status, noted, image_warnings, rows, log_lines, add_notes, hide,
         )
     finally:
         if channel_qc_wanted(config):
             _remove_staging(staging)
+    result["files_read"] = files_read
+    return result
+
+
+def _border_cells_text(masks):
+    """How many cells a label image holds and how many are kept with `drop_border_cells` on, for the log."""
+    labels = np.unique(masks)
+    found = int(np.count_nonzero(labels))
+    on_border = len(border_labels(masks))
+    return (
+        f"{_count_text(found, 'cell')} in the label image, {found - on_border} kept "
+        f"({on_border} touching the image border left out, as `segmentation.drop_border_cells` is on)"
+    )
+
+
+def _count_text(number, singular, plural=None):
+    """A number and its noun, e.g. "1 cluster" or "6 clusters"."""
+    return f"{number} {singular if number == 1 else (plural or singular + 's')}"
 
 
 def _process_channels(config, image_name, run_folder, read_channel, masks, staging,
@@ -886,7 +917,8 @@ def calibration_threshold(config, image_name, image_source, channel_index,
     limit when it is lower. Bailout is not applied.
 
     Returns a dict with "image", "channel", "threshold" (None when there is no
-    value), "reason" (why there is no value, otherwise None) and "log_lines"
+    value), "elbow_threshold" (the elbow value before the lower limit, or
+    None), "reason" (why there is no value, otherwise None) and "log_lines"
     (full details of a failure). The "image", "threshold" and "reason" keys
     are those detection.calibrate_threshold reads.
 
@@ -894,7 +926,7 @@ def calibration_threshold(config, image_name, image_source, channel_index,
     """
     result = {
         "image": image_name, "channel": channel_index,
-        "threshold": None, "reason": None, "log_lines": [],
+        "threshold": None, "elbow_threshold": None, "reason": None, "log_lines": [],
     }
 
     def hide(text):
@@ -938,6 +970,7 @@ def calibration_threshold(config, image_name, image_source, channel_index,
         result["reason"] = NO_AUTO_THRESHOLD_REASON
     else:
         result["threshold"] = float(detected["threshold"])
+        result["elbow_threshold"] = float(detected["auto_threshold"])
     return result
 
 
@@ -1360,17 +1393,38 @@ def _calibration_subsets(config, images):
     return subsets
 
 
+def _will_be_refused(config, header):
+    """True when an image's header shows that the run will refuse the image: its
+    pixel type, time points, positions or axes do not fit, or a channel is missing."""
+    layout = config.image.axes
+    channels = [channel.index for channel in config.channels]
+    if isinstance(header, io.OmeroImageInfo):
+        try:
+            _check_omero_image(header, layout, channels)
+        except io.ImageReadError:
+            return True
+        return False
+    if io.pixel_type_problem(header) is not None:
+        return True
+    if header.n_timepoints > 1 or header.n_positions > 1 or len(header.shape) != len(layout):
+        return True
+    if header.layout is not None and header.layout != layout:
+        return True
+    n_channels = dict(zip(layout, header.shape)).get("C", 1)
+    return any(not 0 <= channel < n_channels for channel in channels)
+
+
 def _largest_channel(config, headers):
-    """Voxels in one channel of the largest image whose header could be read."""
+    """Voxels in one channel of the largest image whose header could be read,
+    leaving out the images the run will refuse (see _will_be_refused)."""
     sizes = [0]
     for header in headers:
-        if header is None:
+        if header is None or _will_be_refused(config, header):
             continue
         if isinstance(header, io.OmeroImageInfo):
             sizes.append(header.size_z * header.size_y * header.size_x)
         else:
-            axes = config.image.axes if len(config.image.axes) == len(header.shape) else header.axes
-            sizes.append(_voxels_per_channel(header.shape, axes))
+            sizes.append(_voxels_per_channel(header.shape, config.image.axes))
     return max(sizes)
 
 
@@ -1414,6 +1468,8 @@ class CellposeSetup:
     warnings: sentences for the log (a GPU passed over; slow on the CPU).
     threads: processor threads Cellpose may use on the CPU.
     load_seconds: time taken to choose the device and load the model.
+    model_file: the record of a model file of the user's own (see
+        outputs.file_record), or None for one of Cellpose's models.
     """
 
     model_name: str
@@ -1423,6 +1479,7 @@ class CellposeSetup:
     warnings: list
     threads: int
     load_seconds: float
+    model_file: dict | None = None
 
     def release(self):
         """Let go of the model and hand the GPU memory it used back to the computer."""
@@ -1466,9 +1523,17 @@ def prepare_cellpose(config, device_chooser=None, model_loader=None):
         raise BatchError(_one_line(error)) from None
     finally:
         _restore_variables(old_variables)
+    load_seconds = time.perf_counter() - started
+    model_path = segmentation.custom_model_file(settings.cellpose.model)
+    model_file = None
+    if model_path is not None:
+        try:
+            model_file = outputs.file_record(model_path, "Cellpose model")
+        except OSError as error:
+            raise BatchError(f"The Cellpose model file {model_path} could not be read: {error}") from None
     return CellposeSetup(
         model_name=settings.cellpose.model, model=model, device=device, report=report,
-        warnings=list(warnings), threads=threads, load_seconds=time.perf_counter() - started,
+        warnings=list(warnings), threads=threads, load_seconds=load_seconds, model_file=model_file,
     )
 
 
@@ -1492,6 +1557,11 @@ class _Segmenter:
         self.pretreatment_text = segmentation.describe_pretreatment(**self.pretreatment)
         self.eval_settings = segmentation.cellpose_eval_settings(run.config.segmentation.cellpose)
         self.write_qc = run.config.outputs.qc.cellpose
+        channel = run.config.segmentation.channel
+        # the name of the FISH channel of the same number, when there is one
+        self.channel_name = next(
+            (item.name for item in run.config.channels if item.index == channel and item.name), None
+        )
         self.lock = threading.Lock()
         self.abandoned = False
         self.task = None
@@ -1547,7 +1617,8 @@ class _Segmenter:
             result = segmentation.segment_cells(self.setup.model, prepared, **self.eval_settings)
             del prepared
             self._write(lambda: segmentation.write_label_file(
-                result["masks"], self.run.label_folder, image.name))
+                result["masks"], self.run.label_folder, image.name,
+                pixel_size_nm=self.run.config.image.voxel_size_nm.yx))
             outcome["n_cells"] = result["n_cells"]
             outcome["seconds"] = result["seconds"]
             if result["warning"]:
@@ -1558,7 +1629,7 @@ class _Segmenter:
                     self._write(lambda: qc.write_cellpose_qc(
                         self.run.run_folder, image.name, result,
                         self.run.config.segmentation.channel, self.pretreatment_text,
-                        self.eval_settings["diameter"],
+                        self.eval_settings["diameter"], channel_name=self.channel_name,
                     ))
                 except Exception as error:
                     outcome["warnings"].append(
@@ -1622,6 +1693,18 @@ def _write_log(run_folder, text):
     written = [f"{stamp}  {lines[0]}"] + [" " * (len(stamp) + 2) + line for line in lines[1:]]
     with open(Path(run_folder) / LOG_NAME, "a", encoding="utf-8", newline="\n") as log_file:
         log_file.write("\n".join(written) + "\n")
+
+
+def _channel_problems_text(counts):
+    """The failed and skipped channels in words, e.g. "2 channel(s) failed and 1 skipped";
+    empty when there are none."""
+    failed, skipped = counts.get("failed", 0), counts.get("skipped", 0)
+    parts = []
+    if failed:
+        parts.append(f"{failed} channel(s) failed")
+    if skipped:
+        parts.append(f"{skipped} skipped" if failed else f"{skipped} channel(s) skipped")
+    return " and ".join(parts)
 
 
 def _threshold_text(value):
@@ -1746,13 +1829,15 @@ class _Run:
 
     def __init__(self, config, run_folder, images, label_folder, subsets, thresholds,
                  n_workers, omero, show, image_function, calibration_function,
-                 cellpose=None, omero_conn=None):
+                 cellpose=None, omero_conn=None, start=None):
         """
         label_folder: the folder the workers read label files from: the
             user's folder for label files, a folder in the run folder for
             Cellpose (see LABEL_FOLDER_NAME), or None without segmentation.
         cellpose: the CellposeSetup when the main process segments, else None.
         omero_conn: the OMERO connection of the main process (OMERO runs).
+        start: the time the run started (time.monotonic()), shared with the
+            run record so that both give the same duration; now when None.
         """
         self.config = config
         self.run_folder = Path(run_folder)
@@ -1769,8 +1854,13 @@ class _Run:
         self.cellpose = cellpose
         self.segmenter = None
         self.segmenting = None
-        self.start = time.monotonic()
+        self.start = time.monotonic() if start is None else start
         self.started_text = _now_text()
+        # set when the run ends (see note_end)
+        self.duration = None
+        self.ended_text = None
+        # the label files given by the user that were read, by path (see outputs.file_record)
+        self.files_read = {}
 
         self.step = "images"
         self.status = "running"
@@ -1923,15 +2013,30 @@ class _Run:
                 self.omero_conn = reader.conn
         return io.read_channel(image.source, layout, channel)
 
-    def write_failed_image(self, image, reason, runtime=None):
-        """Write `_images.csv` for an image the runner marks failed, every channel failed."""
+    def write_failed_image(self, task, reason, runtime=None):
+        """Write `_images.csv` for an image the runner marks failed, every channel failed.
+
+        With Cellpose, the image's segmentation status and warnings are kept:
+        "failed" with the reason when its segmentation failed, otherwise "done".
+        """
+        image = task.image
         self.remove_image_files(image)
         source = self.config.segmentation.source if self.label_folder is not None else ""
+        status, warnings = "", []
+        if self.cellpose is not None:
+            warnings = list(task.arguments.get("segmentation_warnings", ()))
+            error = task.arguments.get("segmentation_error")
+            if error is not None:
+                status = "failed"
+                warnings.append(f"no cell results: segmentation failed: {error}")
+            elif segmentation.label_file_path(self.label_folder, image.name).is_file():
+                status = "done"
         rows = [
             outputs.image_row(
                 image.name, channel.index, channel.name, "failed",
                 reason=reason, threshold_mode=channel.threshold.mode,
-                segmentation_source=source, runtime_s=runtime,
+                segmentation_source=source, segmentation_status=status,
+                warnings=warnings, runtime_s=runtime,
             )
             for channel in self.config.channels
         ]
@@ -1952,6 +2057,15 @@ class _Run:
         on_result(task, result) takes a finished task's result;
         on_error(task, error) takes an error the task function raised;
         on_lost_twice(task) takes a task lost in a second stopped worker.
+
+        Once a reason to stop is found (the OMERO session has ended, or
+        results cannot be written), no further result is taken: the workers
+        are stopped at once and the files of every task in progress are
+        removed, also those of a task lost in the same pass.
+
+        When a worker stops, the pool is started again with half the workers
+        (see restart_pool). This also happens when the pool is found broken
+        while a task is handed to it; that task stays first in the queue.
 
         Returns None when every task is done, or "cancelled" or "stopped"
         (with self.message set).
@@ -1979,16 +2093,24 @@ class _Run:
                         pending = sorted(pending + [task], key=lambda item: item.order)
                     self.write_progress()
 
+            broken = False
             while (stop_message is None and pending and pending[0].ready
                    and len(running) < self.pool.n_workers):
-                task = pending.pop(0)
-                running[self.pool.submit(task.function, **task.arguments)] = task
+                task = pending[0]
+                try:
+                    future = self.pool.submit(task.function, **task.arguments)
+                except BrokenProcessPool:
+                    # A worker stopped since the last check; the task stays in the queue.
+                    broken = True
+                    break
+                pending.pop(0)
+                running[future] = task
                 self.in_progress.append(task.label)
                 self.log(f"{task.label}: started")
                 self.write_progress()
 
-            if (stop_message is None and segmenter is not None and not segmenter.busy
-                    and not any(task.ready for task in pending)):
+            if (stop_message is None and not broken and segmenter is not None
+                    and not segmenter.busy and not any(task.ready for task in pending)):
                 task = next((task for task in pending if not task.ready), None)
                 if task is not None:
                     pending.remove(task)
@@ -1997,101 +2119,121 @@ class _Run:
                     self.log(f"{task.label}: segmenting with Cellpose")
                     self.write_progress()
 
-            waiting_for = list(running)
-            if stop_message is None and segmenter is not None and segmenter.busy:
-                waiting_for.append(segmenter.future)
-            if waiting_for:
-                done, _ = wait(waiting_for, timeout=CHECK_INTERVAL_S, return_when=FIRST_COMPLETED)
-                done = [future for future in done if future in running]
-            else:
-                done = []
+            done = []
+            if stop_message is None:
+                waiting_for = list(running)
+                if segmenter is not None and segmenter.busy:
+                    waiting_for.append(segmenter.future)
+                if waiting_for:
+                    done, _ = wait(waiting_for, timeout=CHECK_INTERVAL_S, return_when=FIRST_COMPLETED)
+                    done = [future for future in done if future in running]
             lost = []
             for future in sorted(done, key=lambda item: running[item].order):
-                task = running.pop(future)
-                self.in_progress.remove(task.label)
+                task = running[future]
                 try:
                     result = future.result()
                 except (BrokenProcessPool, MemoryError):
                     lost.append(task)
-                    continue
                 except io.OmeroSessionEnded:
-                    running[future] = task
-                    self.in_progress.append(task.label)
                     stop_message = OMERO_SESSION_ENDED_MESSAGE
-                    continue
                 except outputs.OutputError as error:
-                    running[future] = task
-                    self.in_progress.append(task.label)
                     stop_message = f"Results cannot be written: {error}"
-                    continue
                 except Exception as error:
+                    self.take_out(running, future)
                     on_error(task, error)
                     continue
-                on_result(task, result)
+                else:
+                    self.take_out(running, future)
+                    on_result(task, result)
+                    continue
+                if stop_message is not None:
+                    # The other results of this pass are not taken.
+                    break
+                self.take_out(running, future)
 
             if stop_message is not None:
-                self.discard(running.values())
+                self.discard(list(running.values()) + lost)
                 self.message = stop_message
-                self.log(stop_message)
                 return "stopped"
 
-            if lost:
-                # Tasks that finished just before the worker stopped are kept.
-                for future, task in list(running.items()):
-                    if future.done() and not future.cancelled() and future.exception() is None:
-                        del running[future]
-                        self.in_progress.remove(task.label)
-                        on_result(task, future.result())
-                lost += list(running.values())
-                running.clear()
-                self.in_progress.clear()
-                self.pool.stop_now()
-                lost.sort(key=lambda task: task.order)
-                for task in lost:
-                    self.discard_files(task)
-
-                twice = [task for task in lost if task.order in lost_before]
-                once = [task for task in lost if task.order not in lost_before]
-                self.log(
-                    "A worker process stopped unexpectedly, probably because it ran out of memory. "
-                    f"Lost: {', '.join(task.label for task in lost)}."
+            if lost or broken:
+                pending, stopped = self.restart_pool(
+                    running, lost, pending, lost_before, on_result, on_lost_twice
                 )
-                for task in twice:
-                    on_lost_twice(task)
-
-                if self.pool.n_workers == 1:
-                    self.message = (
-                        "A worker process stopped unexpectedly (probably out of memory) while only "
-                        "one worker was running, so the run has ended. Finished images are kept. "
-                        "Try again with smaller or fewer images, or close other programs."
-                    )
-                    self.log(self.message)
+                if stopped:
                     return "stopped"
-
-                self.pool = _WorkerPool(max(1, self.pool.n_workers // 2))
-                self.restarts.append({
-                    "time": _record_time(),
-                    "workers": self.pool.n_workers,
-                    "images_lost": [task.label for task in lost],
-                })
-                lost_before.update(task.order for task in once)
-                pending = sorted(once + pending, key=lambda task: task.order)
-                if once:
-                    self.log(
-                        f"Starting again with {self.pool.n_workers} worker(s); "
-                        f"{', '.join(task.label for task in once)} will be tried once more."
-                    )
-                else:
-                    self.log(f"Going on with {self.pool.n_workers} worker(s).")
-                self.write_progress()
             elif done or time.monotonic() - self.last_progress >= PROGRESS_INTERVAL_S:
                 self.write_progress()
         return None
 
+    def take_out(self, running, future):
+        """Take a task whose result has come in out of those in progress."""
+        task = running.pop(future)
+        self.in_progress.remove(task.label)
+        return task
+
+    def restart_pool(self, running, lost, pending, lost_before, on_result, on_lost_twice):
+        """
+        After a worker stopped: stop the pool, remove the files of the tasks it
+        lost, and start a pool with half the workers; a task lost a second
+        time goes to on_lost_twice. With one worker, the run stops instead.
+
+        Returns (pending, stopped): the tasks still to do, with the tasks lost
+        once put back in order, and True when the run has stopped.
+        """
+        # Tasks that finished just before the worker stopped are kept.
+        for future, task in list(running.items()):
+            if future.done() and not future.cancelled() and future.exception() is None:
+                self.take_out(running, future)
+                on_result(task, future.result())
+        lost = sorted(lost + list(running.values()), key=lambda task: task.order)
+        running.clear()
+        self.in_progress.clear()
+        self.pool.stop_now()
+        for task in lost:
+            self.discard_files(task)
+
+        twice = [task for task in lost if task.order in lost_before]
+        once = [task for task in lost if task.order not in lost_before]
+        text = "A worker process stopped unexpectedly, probably because it ran out of memory."
+        if lost:
+            text += f" Lost: {', '.join(task.label for task in lost)}."
+        else:
+            text += " No image was in progress in it."
+        self.log(text)
+        for task in twice:
+            on_lost_twice(task)
+
+        if self.pool.n_workers == 1:
+            self.message = (
+                "A worker process stopped unexpectedly (probably out of memory) while only "
+                "one worker was running, so the run has ended. Finished images are kept. "
+                "Try again with smaller or fewer images, or close other programs."
+            )
+            return pending, True
+
+        self.pool = _WorkerPool(max(1, self.pool.n_workers // 2))
+        self.restarts.append({
+            "time": _record_time(),
+            "workers": self.pool.n_workers,
+            "images_lost": [task.label for task in lost],
+        })
+        lost_before.update(task.order for task in once)
+        pending = sorted(once + pending, key=lambda task: task.order)
+        if once:
+            self.log(
+                f"Starting again with {self.pool.n_workers} worker(s); "
+                f"{', '.join(task.label for task in once)} will be tried once more."
+            )
+        else:
+            self.log(f"Going on with {self.pool.n_workers} worker(s).")
+        self.write_progress()
+        return pending, False
+
     def discard(self, tasks):
         """Stop the workers at once, abandon the image being segmented, and remove
         what the tasks in progress have written."""
-        tasks = list(tasks)
+        tasks = sorted(tasks, key=lambda task: task.order)
         self.pool.stop_now()
         for task in tasks:
             self.discard_files(task)
@@ -2168,11 +2310,12 @@ class _Run:
                 threshold = None
                 table = [{"image": entry["image"], "threshold": entry["threshold"], "used": False,
                           "reason": entry["reason"] or "no automatic threshold"} for entry in entries]
-            for entry in table:
+            for entry, found in zip(table, entries):
                 rows.append({
                     "image": entry["image"], "channel": channel_index,
-                    "auto_threshold": entry["threshold"], "used": entry["used"],
-                    "reason": entry["reason"] or "",
+                    "auto_threshold": entry["threshold"],
+                    "elbow_threshold": found.get("elbow_threshold"),
+                    "used": entry["used"], "reason": entry["reason"] or "",
                 })
             if threshold is None:
                 unusable.append(channel_index)
@@ -2194,7 +2337,6 @@ class _Run:
                 "gave a usable automatic threshold (see calibration.csv). Change the calibration "
                 "filter or the threshold settings and run again."
             )
-            self.log(self.message)
             return "stopped"
         outputs.add_thresholds_to_run_config(self.run_folder, self.thresholds)
         self.config = self.config.with_resolved([image.listed for image in self.images], self.thresholds)
@@ -2233,11 +2375,11 @@ class _Run:
             self.channel_counts[row["status"]] = self.channel_counts.get(row["status"], 0) + 1
             text = f"{image.name}, channel {row['channel']}: {row['status']}, threshold {_threshold_text(row['threshold'])}"
             if row["status"] == "done":
-                counts = [f"{row['n_spots']} spots"]
+                counts = [_count_text(row["n_spots"], "spot")]
                 if row.get("n_clusters") is not None:
-                    counts.append(f"{row['n_clusters']} clusters")
+                    counts.append(_count_text(row["n_clusters"], "cluster"))
                 if row.get("n_cells") is not None:
-                    counts.append(f"{row['n_cells']} cells")
+                    counts.append(_count_text(row["n_cells"], "cell"))
                 text += ", " + ", ".join(counts)
             else:
                 text += f" ({row['reason']})"
@@ -2293,15 +2435,17 @@ class _Run:
         def on_result(task, result):
             for line in result.get("log_lines", []):
                 self.log(line, details="\n" in line or line.startswith("Traceback"))
+            for record in result.get("files_read", ()):
+                self.files_read.setdefault(record["path"], record)
             self.record_rows(task.image, result["rows"])
 
         def on_error(task, error):
             reason = self.hide(_one_line(error))
             self.log("".join(traceback.format_exception(error)), details=True)
-            self.record_rows(task.image, self.write_failed_image(task.image, reason))
+            self.record_rows(task.image, self.write_failed_image(task, reason))
 
         def on_lost_twice(task):
-            self.record_rows(task.image, self.write_failed_image(task.image, WORKER_STOPPED_REASON))
+            self.record_rows(task.image, self.write_failed_image(task, WORKER_STOPPED_REASON))
 
         status = self.run_tasks(tasks, on_result, on_error, on_lost_twice)
         if status is not None:
@@ -2361,26 +2505,37 @@ class _Run:
 
         not_processed = len(self.images) - len(finished)
         counts = ", ".join(f"{n} {name}" for name, n in self.channel_counts.items())
+        problems = _channel_problems_text(self.channel_counts)
         if status == "finished":
-            self.message = f"The run finished: {len(finished)} image(s) processed."
+            self.message = f"The run finished: {len(finished)} image(s) processed"
+            self.message += f"; {problems}. {SEE_TABLES}" if problems else "."
         elif status == "cancelled":
             self.message = (
                 f"The run was cancelled ({self.cancel_reason}). "
-                f"{len(finished)} finished image(s) are kept."
+                f"{len(finished)} finished image(s) are kept"
             )
+            self.message += f"; {problems}. {SEE_TABLES}" if problems else "."
+        elif problems:
+            self.message += f" In the finished images, {problems}. {SEE_TABLES}"
         self.status = status
+        self.note_end()
         self.log(
             f"Summary: {len(finished)} of {len(self.images)} image(s) finished, "
             f"{not_processed} not processed; channels: {counts}. "
-            f"Total time {_duration(time.monotonic() - self.start)}."
+            f"Total time {_duration(self.duration)}."
         )
         self.log_image_lists(finished)
-        if status != "stopped":
-            self.log(self.message)
+        self.log(self.message)
         self.write_progress()
+
+    def note_end(self):
+        """Note when the run ended and how long it took, for run.log and run_info.yaml alike."""
+        self.duration = time.monotonic() - self.start
+        self.ended_text = _record_time()
 
 
 NOT_ENDED = "not ended"
+SEE_TABLES = "See images.csv and run.log in the run folder."
 NOT_ENDED_MESSAGE = (
     "The run has not ended: it is still going, or it was ended before it could finish "
     "this file (for example when the computer was switched off)."
@@ -2447,6 +2602,16 @@ class _RunRecord:
             "calibrated_thresholds": _thresholds_for_record(thresholds),
             "omero_server": omero_server,
         }
+        # Label files given by the user, and a Cellpose model file of the user's own
+        # (not one of Cellpose's models), with their size, date and checksum.
+        self.reads_label_files = (
+            config.segmentation.enabled and config.segmentation.source == "label_files"
+        )
+        self.model_files = [cellpose.model_file] if cellpose is not None and cellpose.model_file else []
+        if self.reads_label_files:
+            self.info["files_read"] = NOT_ENDED
+        else:
+            self.info["files_read"] = self.model_files or "none"
 
     def write(self):
         info = self.info if self.key is None else _hide_in_values(self.info, self.key)
@@ -2471,15 +2636,17 @@ class _RunRecord:
             message = f"{UNEXPECTED_PROBLEM_TEXT}: {_one_line(error)}"
         else:
             status, message = "stopped", "The run ended before any image was processed."
-        self.info.update(
-            status=status,
-            message=message,
-            ended=_record_time(),
-            duration=_duration(time.monotonic() - self.start),
-        )
+        ended, duration = _record_time(), time.monotonic() - self.start
+        if run is not None and run.duration is not None:
+            # the same figures as the summary line of run.log
+            ended, duration = run.ended_text, run.duration
+        self.info.update(status=status, message=message, ended=ended, duration=_duration(duration))
         if run is not None:
             self.info["worker_restarts"] = list(run.restarts) or "none"
             self.info["calibrated_thresholds"] = _thresholds_for_record(run.thresholds)
+        if self.reads_label_files:
+            read = {} if run is None else run.files_read
+            self.info["files_read"] = [read[path] for path in sorted(read)] or "none"
         try:
             self.write()
         except Exception as problem:
@@ -2714,7 +2881,7 @@ def _run_batch(config, config_file, omero_conn, show, image_function, calibratio
             run_config = config.with_full_paths().with_resolved([image.listed for image in plan.images], thresholds)
             run = _Run(run_config, run_folder, plan.images, label_folder, plan.subsets, thresholds,
                        n_workers, plan.omero, show, image_function, calibration_function,
-                       cellpose=cellpose, omero_conn=plan.omero_conn)
+                       cellpose=cellpose, omero_conn=plan.omero_conn, start=start)
             return _run(run, config_file, workers_reason, plan.workers_warning)
         except BaseException as error:
             ending = error
@@ -2797,7 +2964,10 @@ def _run(run, config_file, workers_reason, workers_warning):
         run.log(keep_awake.start(config.run.keep_awake))
         run.log(f"QC images: {_qc_images_text(config, bool(run.subsets), run.cellpose is not None)}")
         for channel in config.channels:
-            run.log(f"FISH channel {_channel_label(channel)}: {_threshold_setting(channel)}")
+            run.log(
+                f"FISH channel {_channel_label(channel)}: {_threshold_setting(channel)}; "
+                f"{_spot_radius_text(config, channel)}"
+            )
         for index, value in sorted(run.thresholds.items()):
             run.log(f"Channel {index}: calibrated threshold {_threshold_text(value)}, from the config (not calibrated again)")
         run.write_progress()
@@ -2813,6 +2983,7 @@ def _run(run, config_file, workers_reason, workers_warning):
         run.pool.stop_now()
         run.status = "stopped"
         run.message = run.hide(f"{UNEXPECTED_PROBLEM_TEXT}: {_one_line(error)}")
+        run.note_end()
         try:
             # not shown: the caller is told through the error raised
             run.log(run.message, details=True)
@@ -2820,7 +2991,7 @@ def _run(run, config_file, workers_reason, workers_warning):
             run.log(
                 f"Summary: {len(run.finished)} of {len(run.images)} image(s) finished before the "
                 f"run stopped; channels: {', '.join(f'{n} {name}' for name, n in run.channel_counts.items())}. "
-                f"Total time {_duration(time.monotonic() - run.start)}.",
+                f"Total time {_duration(run.duration)}.",
                 details=True,
             )
             run.write_progress()
@@ -2872,6 +3043,18 @@ def _threshold_setting(channel):
             text += f", never below {_threshold_text(threshold.lower_limit)}"
         return text
     return f"calibrated threshold, from the images whose names contain `{threshold.calibration_filter}`"
+
+
+def _spot_radius_text(config, channel):
+    """The spot radius of a channel in pixels, for the log, e.g.
+    "spot radius 1.12 px in Z, 0.99 px in Y and X"."""
+    microscope = config.microscope
+    radius = get_spot_radius_px(
+        get_voxel_size(config), channel.ex, channel.em, microscope.NA, microscope.RI, microscope.type
+    )
+    if len(radius) == 3:
+        return f"spot radius {radius[0]:.2f} px in Z, {radius[-1]:.2f} px in Y and X"
+    return f"spot radius {radius[-1]:.2f} px in Y and X"
 
 
 def _log_cellpose(run):

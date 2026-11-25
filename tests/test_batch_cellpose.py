@@ -931,3 +931,76 @@ def test_label_folder_that_cannot_be_made(tmp_path, monkeypatch, capsys):
     assert "Traceback" not in captured.out + captured.err
     [run_folder] = (tmp_path / "again").iterdir()
     assert sorted(path.name for path in run_folder.iterdir()) == ["per_image", "run.log", "run_info.yaml"]
+
+
+# ---------------------------------------------------------------------------
+# Images marked failed by the runner, label files and the Cellpose QC figure
+# ---------------------------------------------------------------------------
+
+
+def test_image_marked_failed_keeps_its_segmentation(tmp_path):
+    """Images lost in two stopped workers: their rows keep the segmentation status
+    and warnings, whether the segmentation went well or failed."""
+    folder = tiny_images(tmp_path / "input", ["a", "b_crash_always", "c_crash_always", "d"])
+    config = with_cellpose(local_config(folder, tmp_path / "out", workers=4), qc=False)
+    model = FailingModel(fail_on=(3,), n_cells=0)
+    result = run_cellpose(config, model, image_function=fake_process_image)
+    assert result.status == "finished", result.message
+    run_folder = result.run_folder
+
+    done = image_rows(run_folder, "b_crash_always")
+    assert list(done["status"]) == ["failed", "failed"]
+    assert set(done["reason"]) == {batch.WORKER_STOPPED_REASON}
+    assert list(done["segmentation_source"]) == ["cellpose", "cellpose"]
+    assert list(done["segmentation_status"]) == ["done", "done"]
+    assert set(done["warnings"]) == {segmentation.NO_CELLS_WARNING}
+
+    failed = image_rows(run_folder, "c_crash_always")
+    reason = "Cellpose could not segment the image (RuntimeError: the stand-in model failed)"
+    assert list(failed["status"]) == ["failed", "failed"]
+    assert list(failed["segmentation_status"]) == ["failed", "failed"]
+    assert set(failed["warnings"]) == {f"no cell results: segmentation failed: {reason}"}
+
+
+def test_label_files_carry_the_pixel_size(tmp_path):
+    folder = tiny_images(tmp_path / "input", ["a"])
+    config = with_cellpose(local_config(folder, tmp_path / "out"), qc=False)
+    result = run_cellpose(config, StandInModel(n_cells=2))
+    assert result.status == "finished", result.message
+    path = result.run_folder / LABELS / "a_seglabels.tif"
+    with tifffile.TiffFile(path) as tif:
+        page = tif.pages[0]
+        numerator, denominator = page.tags["XResolution"].value
+        assert numerator / denominator == pytest.approx(1000 / 65, rel=1e-6)
+        numerator, denominator = page.tags["YResolution"].value
+        assert numerator / denominator == pytest.approx(1000 / 65, rel=1e-6)
+        # the unit as Fiji (ImageJ) reads it
+        assert tif.imagej_metadata["unit"] == "micron"
+        labels = tif.asarray()
+    assert labels.dtype == np.uint32
+    assert len(np.unique(labels)) == 3
+    # the run's own label files are read back as they were written
+    assert segmentation.read_label_file(path.parent, "a", labels.shape).tolist() == labels.tolist()
+
+
+@pytest.mark.parametrize("segmentation_channel, name", [(0, "DAPI"), (1, None)])
+def test_cellpose_qc_figure_names_the_channel(tmp_path, monkeypatch, segmentation_channel, name):
+    from bigfish_pypeline import qc
+
+    titles = []
+    original = qc.draw_cellpose_qc
+
+    def keep(*args, **kwargs):
+        figure = original(*args, **kwargs)
+        titles.append(figure._suptitle.get_text())
+        return figure
+
+    monkeypatch.setattr(qc, "draw_cellpose_qc", keep)
+    folder = tiny_images(tmp_path / "input", ["a"])
+    config = local_config(folder, tmp_path / "out", channels=[{"index": 0, "name": "DAPI"}, {"index": 1}])
+    config = with_cellpose(config, channel=segmentation_channel)
+    result = run_cellpose(config, StandInModel(n_cells=2), image_function=fake_process_image)
+    assert result.status == "finished", result.message
+    [title] = titles
+    expected = f"channel {segmentation_channel}" + (f" ({name})" if name else " |")
+    assert expected in title.replace("\n", " "), title

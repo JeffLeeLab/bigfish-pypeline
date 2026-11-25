@@ -897,3 +897,63 @@ def test_overrides_on_a_config_that_was_not_read_from_a_file():
     changed = apply_overrides(config, filter="x", workers=2)
     assert (changed.run.input.filter, changed.run.workers) == ("x", 2)
     assert isinstance(changed, Config)
+
+
+# --- values that the steps cannot use ------------------------------------------
+
+REFUSED_SETTINGS = [
+    # (settings text, message)
+    ("channels: [{index: 0, decomposition: {alpha: 1.5}}]",
+     "`channels[0].decomposition.alpha` must be a number from 0 to 1 (found `1.5`)."),
+    ("channels: [{index: 0, decomposition: {alpha: -0.1}}]",
+     "`channels[0].decomposition.alpha` must be a number from 0 to 1 (found `-0.1`)."),
+    ("channels: [{index: 0, decomposition: {beta: 0}}]",
+     "`channels[0].decomposition.beta` must be a positive number (found `0`)."),
+    ("channels: [{index: 0, background: {radius_px: 0.5}}]",
+     "`channels[0].background.radius_px` must be a number of 1 or more (found `0.5`)."),
+    ("segmentation: {background: {radius_px: 0.9}}",
+     "`segmentation.background.radius_px` must be a number of 1 or more (found `0.9`)."),
+    ("channels: [{index: 0, clusters: {min_spots: 1}}]",
+     "`channels[0].clusters.min_spots` must be a whole number of 2 or more (found `1`)."),
+    ("segmentation: {cellpose: {min_size: -2}}",
+     "`segmentation.cellpose.min_size` must be a whole number of -1 or more (found `-2`)."),
+    ("segmentation: {cellpose: {model: ''}}",
+     "`segmentation.cellpose.model` must name a Cellpose model, such as `cpsam_v2`, "
+     "or give the full path to a model file."),
+    ("segmentation: {cellpose: {model: }}",
+     "`segmentation.cellpose.model` must name a Cellpose model, such as `cpsam_v2`, "
+     "or give the full path to a model file."),
+    ("channels: [{index: 0, threshold: {mode: manual, value: .nan}}]",
+     "`channels[0].threshold.value` must be a number, not infinite and not `.nan` (found `.nan`)."),
+    ("channels: [{index: 0, threshold: {mode: manual, value: .inf}}]",
+     "`channels[0].threshold.value` must be a number, not infinite and not `.nan` (found `.inf`)."),
+    ("channels: [{index: 0, threshold: {lower_limit: -.inf}}]",
+     "`channels[0].threshold.lower_limit` must be a number, not infinite and not `.nan` (found `-.inf`)."),
+    ("channels: [{index: 0, ex: .inf}]",
+     "`channels[0].ex` must be a positive number, not infinite and not `.nan` (found `.inf`)."),
+    ("microscope: {NA: .nan}",
+     "`microscope.NA` must be a positive number, not infinite and not `.nan` (found `.nan`)."),
+    ("channels: [{index: 0, decomposition: {alpha: .nan}}]",
+     "`channels[0].decomposition.alpha` must be a number from 0 to 1, not infinite and not `.nan` (found `.nan`)."),
+    ("segmentation: {cellpose: {cellprob_threshold: .inf}}",
+     "`segmentation.cellpose.cellprob_threshold` must be a number, not infinite and not `.nan` (found `.inf`)."),
+    ("resolved: {images: [a.tif], thresholds: {0: .nan}}",
+     "`resolved.thresholds.0` must be a number, not infinite and not `.nan` (found `.nan`)."),
+]
+
+
+@pytest.mark.parametrize("text, message", REFUSED_SETTINGS)
+def test_values_the_steps_cannot_use_are_refused(text, message):
+    data = made(**yaml.safe_load(text))
+    assert problems(data) == [message]
+
+
+@pytest.mark.parametrize("text", [
+    "channels: [{index: 0, decomposition: {alpha: 0, beta: 0.01}}]",
+    "channels: [{index: 0, decomposition: {alpha: 1}}]",
+    "channels: [{index: 0, background: {radius_px: 1}, clusters: {min_spots: 2}}]",
+    "segmentation: {cellpose: {min_size: -1}, background: {radius_px: 1}}",
+    "channels: [{index: 0, threshold: {mode: manual, value: -3, lower_limit: 0}}]",
+])
+def test_values_at_the_limits_are_accepted(text):
+    parse_config(made(**yaml.safe_load(text)))

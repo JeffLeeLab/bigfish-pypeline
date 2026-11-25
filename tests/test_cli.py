@@ -309,9 +309,65 @@ def test_failed_image_is_reported(images, tmp_path, capsys):
     code, out, err = run_command(capsys, "batch", config, "--output-folder", tmp_path / "out")
     assert code == 0, err
     lines = out.splitlines()
-    assert lines[-3] == "The run finished: 2 image(s) processed."
-    assert "1 of 2 image(s) had a channel that failed" in lines[-2]
+    assert lines[-2] == (
+        "The run finished: 2 image(s) processed; 2 channel(s) failed. "
+        "See images.csv and run.log in the run folder."
+    )
     assert lines[-1].startswith("Run folder: ")
+    info = yaml.safe_load((run_folder_from(out) / "run_info.yaml").read_text(encoding="utf-8"))
+    assert info["message"] == lines[-2]
+
+
+def test_stopped_run_gives_its_message_once(tmp_path, capsys, monkeypatch):
+    """A run that stops (here: the OMERO session has ended) gives its message once
+    in the terminal, at the end, and once in run.log; the command ends with 1."""
+    folder = tmp_path / "input"
+    folder.mkdir()
+    for seed, name in enumerate(("a", "b_session_ended", "c")):
+        write_image(folder / f"{name}.tif", seed=seed)
+    config = write_config(tmp_path / "settings.yaml", folder)
+    monkeypatch.setattr(cli, "run_batch", functools.partial(batch.run_batch, image_function=fake_process_image))
+    code, out, err = run_command(capsys, "batch", config, "--output-folder", tmp_path / "out")
+    assert code == cli.EXIT_PROBLEM
+    message = batch.OMERO_SESSION_ENDED_MESSAGE
+    lines = out.splitlines()
+    assert out.count(message) == 1 and err.count(message) == 0
+    assert lines[-2] == message
+    run_folder = run_folder_from(out)
+    assert (run_folder / "run.log").read_text(encoding="utf-8").count(message) == 1
+    assert "c: started" not in out
+
+
+def test_check_refuses_values_the_steps_cannot_use(images, tmp_path, capsys):
+    first, _ = images
+    config = write_config(tmp_path / "settings.yaml", first)
+    data = yaml.safe_load(config.read_text(encoding="utf-8"))
+    channel = data["channels"][0]
+    channel["decomposition"] = {"alpha": 2, "beta": 0}
+    channel["background"]["radius_px"] = 0.5
+    channel["threshold"] = {"mode": "manual", "value": float("nan"), "lower_limit": float("inf")}
+    channel["clusters"] = {"min_spots": 1}
+    data["segmentation"] = {"cellpose": {"min_size": -5, "model": ""}}
+    config.write_text(yaml.safe_dump(data), encoding="utf-8")
+    code, out, err = run_command(capsys, "check", config, "--output-folder", tmp_path / "out")
+    assert code == 1
+    assert out == ""
+    assert "Traceback" not in err
+    expected = [
+        "`channels[0].background.radius_px` must be a number of 1 or more (found `0.5`).",
+        "`channels[0].threshold.value` must be a number, not infinite and not `.nan` (found `.nan`).",
+        "`channels[0].threshold.lower_limit` must be a number, not infinite and not `.nan` (found `.inf`).",
+        "`channels[0].decomposition.alpha` must be a number from 0 to 1 (found `2`).",
+        "`channels[0].decomposition.beta` must be a positive number (found `0`).",
+        "`channels[0].clusters.min_spots` must be a whole number of 2 or more (found `1`).",
+        "`segmentation.cellpose.model` must name a Cellpose model, such as `cpsam_v2`, "
+        "or give the full path to a model file.",
+        "`segmentation.cellpose.min_size` must be a whole number of -1 or more (found `-5`).",
+    ]
+    assert f"{len(expected)} problems were found" in err
+    for message in expected:
+        assert f"  - {message}" in err, message
+    assert "Nothing was run." in err
 
 
 REFUSED_PIXEL_TYPES = {
