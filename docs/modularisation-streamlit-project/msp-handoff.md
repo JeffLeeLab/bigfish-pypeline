@@ -5,14 +5,14 @@ Where the work stands, for whoever picks it up next. Updated 25 Nov 2026. Detail
 ## State
 
 - **Phases 0, 1 and 2:** done, signed off, merged into `main` and pushed. Phase 2 was signed off and merged on 24 Nov 2026 (devlog 2.8).
-- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0) and two more on the QC files (devlog 3.5, at its end). Tasks 3.1 to 3.9 are done and committed (devlog 3.1–3.9); the `workers: auto` figures stand. The samples of 3.10 are made (devlog 3.10) and wait for the user's review. The phase review (devlog 3.11) is written, with its checks run at commit `bf270e0`. Independent reviews by Gemini 4 Neon and GPT-6.2 Astra (devlog 3.12, findings 1–28) found problems from Phases 1–3 to fix before sign-off; tasks 3.13–3.18 are in the plan. The user decided that only 8-bit, 12-bit and 16-bit images are accepted, and answered the six decisions after the reviews (rolling-ball radius, Cellpose pre-treatment, cluster centres, cluster marks, the final message of a run with failed images, checksums in `run_info.yaml`).
+- **Phase 3 (outputs, logs and QC):** planned in `msp-plan.md` on 24 Nov 2026; the user answered the three decisions (devlog 3.0) and two more on the QC files (devlog 3.5, at its end). Tasks 3.1 to 3.9 are done and committed (devlog 3.1–3.9); the `workers: auto` figures stand. The samples of 3.10 are made (devlog 3.10) and wait for the user's review. The phase review (devlog 3.11) is written, with its checks run at commit `bf270e0`. Independent reviews by Gemini 4 Neon and GPT-6.2 Astra (devlog 3.12, findings 1–28) found problems from Phases 1–3 to fix before sign-off; tasks 3.13–3.18 are in the plan. Tasks 3.13 (reading images) and 3.14 (QC figures) are done and committed (devlog 3.13, 3.14). Task 3.15 was started on 25 Nov 2026 and is not yet reviewed or committed: if the working tree holds changes in `config.py`, `detection.py`, `batch.py`, `cli.py`, `outputs.py` or `segmentation.py`, they are the executor's unreviewed work. The measurements of task 3.17 were started the same day in `~/bigfish-testdata/phase3/rolling_ball/` and are not yet checked or in the devlog. The user decided that only 8-bit, 12-bit and 16-bit images are accepted, and answered the six decisions after the reviews (rolling-ball radius, Cellpose pre-treatment, cluster centres, cluster marks, the final message of a run with failed images, checksums in `run_info.yaml`).
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
-- 1,057 tests pass in `bigfish-msp` with the full-size image, 1,054 without it (9 min 36 s) and 1,048 without the Cellpose model. A foreground command is cut off after 10 minutes: run the suite in the background and in two parts (the split is in devlog 3.8).
-- The Phase 3 plan and devlog 3.0 are committed on `msp` and not pushed.
+- At the Phase 3 review (commit `bf270e0`), 1,057 tests passed in `bigfish-msp` with the full-size image, 1,054 without it (9 min 36 s) and 1,048 without the Cellpose model. Tasks 3.13 and 3.14 added tests; the whole suite is run again in 3.18. A foreground command is cut off after 10 minutes: run the suite in the background and in two parts (the split is in devlog 3.8).
+- Everything of Phase 3 is committed on `msp` and not pushed.
 
 ## Next step
 
-1. Tasks 3.13 and 3.14 (they can start together), then 3.15 and 3.16, as briefed in the plan. Task 3.17 (rolling-ball radius comparison) can run at any point, but not during a full-size test run.
+1. Review, check and commit task 3.15, then task 3.16, as briefed in the plan. Check the numbers of task 3.17 with a separate script, write them in the devlog and bring the choice of radius to the user.
 2. The user reviews the samples listed in devlog 3.10 (QC images, `run.log`, `run_info.yaml`), redrawn where 3.14 changed a figure.
 3. Task 3.18: rerun the suite (in two parts: one command is cut off after 10 minutes) and bring devlog 3.11 up to date. The user decides whether the tests may run in parallel (`pytest-xdist` in `msp-environment.yml`), signs off Phase 3 and says when to merge `msp` into `main` and push. Nothing is merged or pushed before that.
 4. After the merge, Phase 4 (Optimise notebook) is planned in detail in `msp-plan.md`, starting from the points carried forward in devlog 3.11.
@@ -29,6 +29,7 @@ Where the work stands, for whoever picks it up next. Updated 25 Nov 2026. Detail
 - **OMERO on the real server, on a day with a stable VPN:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) to see both images finish, the "rejoining" line if the connection drops, and no session key or `WARNING:` lines in the terminal.
 - **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
 - **The default rolling-ball radius for FISH channels**, once the comparison of task 3.17 is in the devlog.
+- **The wording of the message for a refused pixel type** (devlog 3.13): the orchestrator added the advice to untick "Scale when converting" in Fiji.
 - **Review of the Phase 3 samples** (devlog 3.10), the decision on running the tests in parallel, and the sign-off of Phase 3 (devlog 3.11).
 - **Manual checks of the Phase 2 review** (devlog 2.8): Cellpose on the test kit, a look at a full-size run folder, and the "choices the spec does not settle" in 2.1, 2.3 and 2.4.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.
@@ -43,6 +44,8 @@ Where the work stands, for whoever picks it up next. Updated 25 Nov 2026. Detail
 | `~/bigfish-testdata/benchmarks/phase2/` | Benchmark scripts, logs and numbers of task 2.7 |
 | `~/bigfish-testdata/benchmarks/phase3/` | Benchmark scripts, logs and numbers of task 3.9, and a full-size run folder with every output |
 | `~/bigfish-testdata/phase3/samples/` | Sample run folders for the user's review (task 3.10), with the script that makes them |
+| `~/bigfish-testdata/phase3/samples_3.14/` | The QC figures changed by task 3.14, drawn from the crop, with the script that makes them |
+| `~/bigfish-testdata/phase3/rolling_ball/` | Scripts, logs and tables of the rolling-ball radius comparison (task 3.17), with a copy of the package at commit `25f8270` |
 | `~/bigfish-testdata/phase1/` | Full-size runs of Phase 1 and the v1 scripts run in the new env |
 | `~/bigfish-testdata/phase2/` | Scripts, tables and logs of the rolling ball comparison (task 2.6) |
 | `~/bigfish-testdata/phase2/omero/` | Config and run folder of the real OMERO batch |
@@ -51,6 +54,9 @@ Where the work stands, for whoever picks it up next. Updated 25 Nov 2026. Detail
 | `~/.cellpose/models/cpsam_v2` | The Cellpose model, already downloaded |
 
 ## Worth knowing
+
+- Only 8-bit, 12-bit and 16-bit images are read; other pixel types are refused with how to convert them. A TIFF file whose own axes differ from the layout of the run fails (a Fiji hyperstack is always `ZCYX`) (devlog 3.13).
+- The final QC shows only the cells of `cells.csv`, and clusters are drawn as outlines (devlog 3.14).
 
 - The user reviewed the rolling ball comparison and kept rolling ball as the default for FISH channels (devlog 2.6). It gives about a third more clusters than top-hat on the full-size exon channel, because decomposition places more spots in each bright focus on the rolling ball image.
 - OMERO output names leave out a `.tif` or `.tiff` ending (user's decision, devlog): image 5806 gives `5806_20240308_sypN_DAPI_Phal_jim-exon_jim-intron_100x_00001`.
