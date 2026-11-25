@@ -1746,3 +1746,91 @@ Small points left as they are:
 - `docs/modularisation-streamlit-project/figures/` holds 3.1 MB, of which 1.6 MB is new.
 - `msp` is 25 commits ahead of GitHub: none of the Phase 3 work has been pushed.
 
+### 3.12 Independent review (25 Nov 2026)
+
+Gemini 4 Neon (High), run through Antigravity, reviewed the code, the science and the decisions of Phases 0 to 3 on `msp` at commit `b757802`. It could read the repository, the installed big-fish and Cellpose packages, and `~/bigfish-testdata/` (QC images, logs and tables, not the image files). It could not change files or run commands. The orchestrator checked each finding against the code, and the pixel-type finding with a test script.
+
+**Confirmed**
+
+| # | Phase | Finding | Where |
+|---|---|---|---|
+| 1 | 1 | Images that are not 8-bit or 16-bit unsigned are accepted when they are opened and fail later in the run, with a message that does not say why (table below). The end-to-end test of a float image passes only because its spots are far apart, so decomposition finds no dense region. | `io.py` (`read_channels`) |
+| 2 | 3 | With `segmentation.drop_border_cells: true`, the final QC (PNG and HTML) still draws the border cells that `cells.csv` leaves out, counts them in its title, and shows them with 0 spots and no area. No test covers it. | `batch.py` 565–573; `qc.py` (`_cell_shapes`) |
+| 3 | 3 | The elbow plot's axis reads "Number of mRNAs detected (log scale)", big-fish's label. The values are natural logarithms, which a reader may take for log10. | `qc.py` 422 |
+| 4 | 1 | `calibration.csv`, and the calibration plot of Phase 3, hold the threshold after the lower limit is applied. An image whose elbow fell below the limit cannot be told from one whose elbow was at the limit. | `batch.py` 933–936 |
+| 5 | 1, 2 | The settings check lets through `decomposition.alpha` above 1 (big-fish then stops the channel), infinite numbers (`.inf`), `clusters.min_spots: 1`, `cellpose.min_size` below −1 and an empty `cellpose.model`. | `config.py` |
+| 6 | 1 | When a run stops, its message appears twice in the terminal: from the runner, and again at the end from the command line. | `batch.py` 2031; `cli.py` 276–278 |
+| 7 | 3 | A label file with very large cell numbers (e.g. 100,000,000) makes the final QC use several GB of memory, because the numbers are not renumbered when the file is read (Phase 2). Rare. | `qc.py` (`_cell_shapes`, `_cell_values`) |
+| 8 | 2 | The first panel of the Cellpose QC figure is titled "original image" by Cellpose's own plotting function, but it shows the image after pre-treatment. | `qc.py` 239 |
+| 9 | 1 | `run.log` says "1 clusters". | `batch.py` 2234 |
+| 10 | 3 | `run_info.yaml` gives the versions listed in spec 8.4, but not those of pandas, scikit-learn (clusters), pydantic and plotly. | `outputs.py` 36–45 |
+| 11 | 1 | If a worker stops in the same pass as a stop for another reason (OMERO session ended, results cannot be written), the files of the worker's image are not removed. Rare. | `batch.py` 2002–2032 |
+
+Pixel types, on a generated 3D image with one dense region, through background subtraction, detection at threshold 18 and decomposition:
+
+| Pixel type | Rolling ball | Top-hat |
+|---|---|---|
+| 16-bit unsigned | works (38 spots, 44 after decomposition) | works (same) |
+| 16-bit signed, 32-bit signed or unsigned | fails at decomposition | fails at background subtraction |
+| 32-bit float | fails at decomposition | fails at decomposition |
+
+8-bit unsigned images are covered by the end-to-end test.
+
+**Not upheld**
+
+- "Background is subtracted twice, which gives a third more clusters." The Gaussian background step in `decomposition.py` is big-fish's own step for the reference spot, and v1 ran it after top-hat too. The extra clusters come from rolling ball against top-hat, measured in 2.6 and accepted with B5.
+- "SNR is inflated." SNR is measured on the image after background subtraction, as the spec says. Rolling ball sets 36–38 % of the pixels to 0 (2.6), so SNR values from rolling-ball and top-hat runs cannot be compared. This is for the documentation.
+- "Counts change with the image name." Already recorded: the seed comes from the output name ("Real OMERO batch with Cellpose").
+- "The final QC's contrast (1st to 99th percentile) is wrong." On `region_2_ch2_final.png` and the crop's final QC the spots are clear and the markers sit on them; the background looks grainy and the brightest clumps are white. A higher upper limit (e.g. the 99.8th percentile) is a matter of taste, for the user's review of the samples.
+- "The cell text '38: 0' is cut off at the edge." It is not, in the crop's final QC.
+
+**Decisions the review questions**
+
+- B5, rolling-ball radius in pixels: the same setting means a different size on a microscope with a different pixel size. A point for the documentation, or a warning when the radius is small next to the spot radius in nm.
+- R8, the Cellpose 4 mask review before Phase 8: the notebook (Phase 4) and the app (Phase 5) are built around Cellpose defaults not yet checked on the images they are meant for.
+- 3.11 deviation 3, plotly's script inside each HTML page: about 12 MB for each full-size image and channel, several GB for a large run. PNG is the default; the documentation gives the size (point 5 carried forward).
+
+The review found that the other decisions of the brief and the devlog hold up.
+
+**Not checked:** a difference of about 5 s between the durations in `run_info.yaml` and `run.log`; `per_image/` left uncombined after an unexpected problem; the detection plot's cluster markers hiding the spots under them; colours safe for colour-blind readers in the final QC and the elbow plot; whole numbers on the axis of the calibration plot.
+
+**Second review: Phases 0 to 2.** Gemini 4 Neon (High) also reviewed a copy of `main` at the Phase 2 sign-off, so that only the code of Phases 0–2 was in view, with the findings above listed as known. Same access, and same checks by the orchestrator against the code on `msp`.
+
+Confirmed:
+
+| # | Phase | Finding | Where |
+|---|---|---|---|
+| 12 | 1 | The settings check also lets through `decomposition.beta: 0`, which makes the whole image one dense region, and a background radius below 1 px, with which top-hat removes the whole image. Read in the code, not run. | `config.py` 185, 223 |
+| 13 | 1 | Worker numbers are worked out from every image header, including a time-lapse file that will be refused, so one such file in the input folder can lower the number of workers or stop the run for lack of memory. | `batch.py` (`_largest_channel`) |
+| 14 | 1 | Checking an image's layout reads the whole image when the file holds it in one block and cannot be mapped (e.g. a compressed file). | `batch.py` 231; `io.py` (`read_channels`) |
+| 15 | 1 | Widens finding 11: after a stop is found, the runner still waits for and handles worker results before it stops. | `batch.py` 1965–2032 |
+| 16 | 2 | The Cellpose QC figure never shows the channel name: the runner does not pass it. | `batch.py` 1554–1558 |
+| 17 | 2 | For an image the runner marks failed (e.g. a worker lost twice), `images.csv` leaves the segmentation status and warnings empty, even when Cellpose ran. | `batch.py` (`write_failed_image`) |
+| 18 | 2 | Label files written by the runner carry no pixel size, so Fiji shows them in pixels. | `segmentation.py` 458 |
+| 19 | 1 | `log_intensity` is written with decimals (`18.0`); devlog 1.6 says whole numbers. | `outputs.py` 189–193 |
+| 20 | 2 | With `drop_border_cells` on, `images.csv` counts the cells kept, while `run.log` and the Cellpose QC figure give every cell Cellpose found. | `batch.py` 437 |
+
+Points of science, confirmed in the code, all as in v1:
+
+- The spot radius on the test image is 0.994 px in y and x (`phase2/results/full_ch3/summary.json`). big-fish rounds it up for the detection window and the reference spot, so a small change in emission wavelength or pixel size that takes it above 1 px makes both larger. The confocal formula of `psf.py` takes the pinhole as very small; a spinning disk is nearer the widefield case. Brief D4 assumed that `ex` and `em` matter little.
+- Per-spot SNR takes its background ring at 1.5 to 2.5 times the spot radius. If the true spot is wider than the radius, the ring sits on the spot's own edge and SNR comes out low. Not measured.
+- With whole-number pixel sizes and subpixel fitting off, cluster centres are cut to whole pixels (big-fish keeps the data type of the spots); with decimal pixel sizes they are exact (devlog 1.9).
+- With decomposition and subpixel fitting both on, each spot of a dense region is fitted on its own, so the spots of one focus are pulled towards the same peak.
+- Cellpose pre-treatment: clip comes before background subtraction (D9), so clip at its default of 100 flattens an image whose camera offset is above 100. A mean projection keeps negative values after rolling ball, and a maximum projection does not (devlog 2.1).
+
+Not upheld:
+
+- "A sparse image crashes the automatic threshold." Not reproduced: 18 generated images with 0 to 200 spots, flat or noisy, with rolling ball and with top-hat, all gave a threshold or "no threshold".
+- "A full disk at the end of a run shows a Python report." Since 3.2 an unexpected problem gives `RunStoppedError` and a plain message.
+- "Cellpose's GPU memory is freed while an abandoned segmentation still runs, which can crash the program." Not tested. The command line ends straight after, and the app runs batches as a separate program (brief H), so the risk is small; kept for Phase 5.
+- "Devlog 2.6 left out the intron channel's fall from 22 to 4 clusters." It is in the table of 2.6. 18 is below that channel's automatic threshold (22–23).
+- "The 38 bytes per voxel were set before the QC figures." Measured again with them in 3.9.
+- "A one-channel file in a batch of several channels fails." Right as it is: the file does not hold the channels the settings ask for.
+- "The check for damaged files is not safe with threads." During a run only the segmentation thread reads TIFF files in the main process. A point for Phase 5 if the app reads images itself.
+
+Decisions the second review questions: B5 and 2.6, the rolling-ball radius of 5 px for FISH, tested at no other radius (it suggests 15–25 px); D6, D9 and 2.1, the place of clip and the negative values of a mean projection; R2 and R8, as in the first review. It found the other decisions of the brief, the devlog and the "choices the spec does not settle" in 1.2, 1.3, 1.8, 1.9, 1.10, 2.1, 2.3 and 2.4 sound.
+
+Not checked: OMERO image names sorted without Unicode normalisation; an empty `resolved.images`; the `atexit` handler in `omero_tools.py` (unchanged until Phase 8); the full-image test comparing sets of spot positions, not counts.
+
+**User's decision (25 Nov 2026):** 8-bit, 12-bit and 16-bit images are accepted; any other type (float, signed, 32-bit) is refused when the image is opened. A 12-bit image is read as 16-bit. Checked with 12-bit values saved in a 16-bit file and with a packed 12-bit TIFF: both are read as 16-bit with the right values. Reading a packed 12-bit TIFF needs `imagecodecs`, which is installed with Cellpose but not listed in `msp-environment.yml`.
+
