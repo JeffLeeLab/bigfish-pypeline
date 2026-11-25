@@ -382,7 +382,7 @@ def test_kit_without_segmentation(kit_with_labels, tmp_path):
 
 ACCENTED = unicodedata.normalize("NFC", "g ünï côde 日本 name")
 GOOD_IMAGES = ["a_small", "b_large", "c blank", ACCENTED, "h_no_labels"]
-FAILED_IMAGES = ["d_one_channel", "e_corrupt", "f_nan"]
+FAILED_IMAGES = ["d_one_channel", "e_corrupt", "f_float"]
 
 
 @pytest.fixture(scope="module")
@@ -404,9 +404,8 @@ def mixed_batch(tmp_path_factory):
     write_labels(folder, "d_one_channel", (64, 64))
     corrupt = write_tif(folder / "e_corrupt.tif", spots_stack(), "ZCYX")
     corrupt.write_bytes(corrupt.read_bytes()[:3000])
-    not_a_number = spots_stack().astype(np.float32)
-    not_a_number[2, :, 10, 10] = np.nan
-    write_tif(folder / "f_nan.tif", not_a_number, "ZCYX")
+    # a pixel type that is refused
+    write_tif(folder / "f_float.tif", spots_stack().astype(np.float32), "ZCYX")
 
     # results of an earlier run sit in a subfolder
     earlier = folder / "bigfish_results" / "2026-01-01_0900_earlier" / "labels"
@@ -452,7 +451,7 @@ def test_mixed_batch_images_table(mixed_batch):
 
     assert "axes" in rows("d_one_channel")["reason"].iloc[0] or "layout" in rows("d_one_channel")["reason"].iloc[0]
     assert "damaged or incomplete" in rows("e_corrupt")["reason"].iloc[0]
-    assert "NaN" in rows("f_nan")["reason"].iloc[0]
+    assert "the pixel type is 32-bit with decimal values (float32)" in rows("f_float")["reason"].iloc[0]
 
     assert (rows("c blank")["n_spots"] == 0).all()
     for name in ("a_small", "b_large", ACCENTED):
@@ -575,16 +574,19 @@ def test_8_bit_16_bit_and_float_images(tmp_path):
 
     command, code, run_folder = batch([settings], tmp_path)
     assert code == 0, command.describe()
+    assert "1 of 3 image(s) had a channel that failed" in command.out
     images = read_table(run_folder, "images")
     assert image_names(images) == ["bits16", "bits8", "float32"]
-    assert list(images["status"]) == ["done"] * 6, images[["image", "channel", "status", "reason"]]
-    spots = read_table(run_folder, "spots")
-    assert set(spots["image"]) == {"bits16", "bits8", "float32"}
-    columns = ["channel", "z_px", "y_px", "x_px"]
-    pd.testing.assert_frame_equal(
-        spots.loc[spots["image"] == "float32", columns].reset_index(drop=True),
-        spots.loc[spots["image"] == "bits16", columns].reset_index(drop=True),
+    statuses = images[["image", "channel", "status", "reason"]]
+    assert list(images["status"]) == ["done"] * 4 + ["failed"] * 2, statuses
+    expected = (
+        "float32.tif: the pixel type is 32-bit with decimal values (float32), which cannot be used; "
+        "only 8-bit, 12-bit and 16-bit images are accepted. Convert the image to 16-bit, for example in Fiji "
+        "with Image › Type › 16-bit (https://imagej.net/ij/docs/menus/image.html#type), then run it again. In Fiji, first untick \"Scale when converting\" under Edit › Options › Conversions, so that the pixel values are kept."
     )
+    assert list(images.loc[images["image"] == "float32", "reason"]) == [expected] * 2
+    spots = read_table(run_folder, "spots")
+    assert set(spots["image"]) == {"bits16", "bits8"}
 
 
 # ---------------------------------------------------------------------------

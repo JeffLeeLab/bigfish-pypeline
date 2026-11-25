@@ -109,6 +109,20 @@ def stack_channels(channels):
     return np.stack(channels, axis=1)
 
 
+def write_with_damaged_channel(path, channels, damaged, voxel_um=(0.2, 0.065, 0.065)):
+    """A compressed ImageJ TIFF (ZCYX) in which one plane of channel `damaged` cannot be read."""
+    z, y, x = voxel_um
+    tifffile.imwrite(path, stack_channels(channels), imagej=True, compression="zlib",
+                     metadata={"axes": "ZCYX", "unit": "um", "spacing": z}, resolution=(1 / x, 1 / y))
+    with tifffile.TiffFile(path) as tif:
+        page = tif.pages[damaged]
+        start, length = page.dataoffsets[0], page.databytecounts[0]
+    data = bytearray(path.read_bytes())
+    data[start:start + length] = bytes(length)
+    path.write_bytes(bytes(data))
+    return path
+
+
 def row_of(summary, channel):
     rows = [row for row in summary["rows"] if row["channel"] == channel]
     assert len(rows) == 1
@@ -306,11 +320,9 @@ def test_no_npz_folder_when_switched_off(tmp_path):
 
 
 def test_npz_files_of_done_channels_only(tmp_path):
-    many = make_image((8, 64, 64), n_spots=30, min_spacing=5, seed=1)[0].astype(np.float32)
-    few = make_image((8, 64, 64), n_spots=8, seed=2)[0].astype(np.float32)
-    broken = few.copy()
-    broken[3, 20, 20] = np.nan
-    path = write_image(tmp_path / "mixed.tif", stack_channels([few, broken, many]), "ZCYX")
+    many = make_image((8, 64, 64), n_spots=30, min_spacing=5, seed=1)[0]
+    few = make_image((8, 64, 64), n_spots=8, seed=2)[0]
+    path = write_with_damaged_channel(tmp_path / "mixed.tif", [few, few, many], damaged=1)
     bailout = {"enabled": True, "max_spots": 20}
     config = with_npz(synthetic_config(channels=[
         {"index": 0, "clusters": {"enabled": False}},
@@ -378,17 +390,16 @@ def test_three_channels_with_own_thresholds(tmp_path):
 
 
 def test_one_channel_fails_others_kept(tmp_path):
-    channels = [make_image((8, 64, 64), n_spots=10, seed=seed)[0].astype(np.float32) for seed in range(3)]
-    channels[1][3, 20, 20] = np.nan
-    path = write_image(tmp_path / "nan.tif", stack_channels(channels), "ZCYX")
+    channels = [make_image((8, 64, 64), n_spots=10, seed=seed)[0] for seed in range(3)]
+    path = write_with_damaged_channel(tmp_path / "damaged.tif", channels, damaged=1)
     config = synthetic_config(channels=[{"index": index} for index in range(3)])
-    summary = batch.process_image(config, "nan", path, tmp_path / "run")
-    tables = read_tables(tmp_path / "run", "nan")
+    summary = batch.process_image(config, "damaged", path, tmp_path / "run")
+    tables = read_tables(tmp_path / "run", "damaged")
 
     statuses = {row["channel"]: row["status"] for row in summary["rows"]}
     assert statuses == {0: "done", 1: "failed", 2: "done"}
     failed = row_of(summary, 1)
-    assert failed["reason"] == "nan.tif: channel 1 contains NaN or infinite values"
+    assert failed["reason"].startswith("damaged.tif: the pixel data cannot be read (")
     assert "\n" not in failed["reason"]
     assert failed["n_spots"] is None
     assert any("channel 1: failed" in line for line in summary["log_lines"])
@@ -511,6 +522,86 @@ def test_layout_differs_from_config(tmp_path):
     row = row_of(summary, 0)
     assert row["status"] == "failed"
     assert "the layout ZCYX needs 4" in row["reason"]
+
+
+def test_axes_in_the_file_differ_from_the_layout(tmp_path):
+    image = make_image((8, 64, 64), n_spots=5)[0]
+    path = tmp_path / "czyx.tif"
+    tifffile.imwrite(path, np.stack([image, image]), metadata={"axes": "CZYX"}, photometric="minisblack")
+    config = synthetic_config(channels=[{"index": 0}, {"index": 1}])
+    summary = batch.process_image(config, "czyx", path, tmp_path / "run")
+    assert [row["status"] for row in summary["rows"]] == ["failed", "failed"]
+    assert row_of(summary, 0)["reason"].startswith(
+        "czyx.tif: the file's own information says its axes are stored in the order CZYX, "
+        "which does not match the layout ZCYX of this run"
+    )
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.int16, np.int32, np.uint32])
+def test_other_pixel_types_refused_before_any_work(tmp_path, monkeypatch, dtype):
+    image = make_image((8, 64, 64), n_spots=5)[0]
+    path = tmp_path / "other.tif"
+    tifffile.imwrite(path, stack_channels([image, image]).astype(dtype), metadata={"axes": "ZCYX"},
+                     photometric="minisblack")
+
+    def no_work(*arguments, **keywords):
+        raise AssertionError("the image was worked on")
+
+    monkeypatch.setattr(io, "read_channel", no_work)
+    monkeypatch.setattr(batch, "filter_channel", no_work)
+    config = synthetic_config(channels=[{"index": 0}, {"index": 1}])
+    summary = batch.process_image(config, "other", path, tmp_path / "run")
+    assert [row["status"] for row in summary["rows"]] == ["failed", "failed"]
+    expected = io.pixel_type_problem(io.get_image_info(path))
+    assert expected.startswith("other.tif: the pixel type is ")
+    assert np.dtype(dtype).name in expected
+    for row in summary["rows"]:
+        assert row["reason"] == expected
+    assert any(line == f"other: image failed: {expected}" for line in summary["log_lines"])
+    assert sorted(path.name for path in (tmp_path / "run" / "per_image").iterdir()) == ["other_images.csv"]
+
+
+def test_packed_12_bit_image(tmp_path):
+    image = make_image((8, 64, 64), n_spots=8, seed=4)[0]
+    assert image.max() < 4096
+    config = synthetic_config(channels=[{"index": 0}, {"index": 1}])
+    (tmp_path / "16").mkdir()
+    (tmp_path / "12").mkdir()
+    path_16 = write_image(tmp_path / "16" / "image.tif", stack_channels([image, image]), "ZCYX")
+    path_12 = tmp_path / "12" / "image.tif"
+    tifffile.imwrite(path_12, stack_channels([image, image]), bitspersample=12, imagej=True,
+                     metadata={"axes": "ZCYX", "unit": "um", "spacing": 0.2}, resolution=(1 / 0.065, 1 / 0.065))
+    with tifffile.TiffFile(path_12) as tif:
+        assert tif.pages[0].bitspersample == 12
+    # the same output name, so that decomposition uses the same seed
+    batch.process_image(config, "image", path_16, tmp_path / "run_16")
+    summary = batch.process_image(config, "image", path_12, tmp_path / "run_12")
+    assert [row["status"] for row in summary["rows"]] == ["done", "done"]
+    for kind in ("spots", "clusters"):
+        sixteen = read_tables(tmp_path / "run_16", "image")[kind]
+        twelve = read_tables(tmp_path / "run_12", "image")[kind]
+        pd.testing.assert_frame_equal(twelve, sixteen)
+    assert len(read_tables(tmp_path / "run_12", "image")["spots"]) > 0
+
+
+def test_opening_an_image_reads_no_pixel_data(tmp_path, monkeypatch):
+    # A compressed file holding each channel's Z stack in one page cannot be mapped from the disk.
+    image = make_image((8, 64, 64), n_spots=5)[0]
+    path = tmp_path / "packed.tif"
+    tifffile.imwrite(path, np.stack([image, image]), volumetric=True, tile=(8, 16, 16), compression="zlib",
+                     metadata={"axes": "CZYX"}, photometric="minisblack")
+    with tifffile.TiffFile(path) as tif:
+        assert len(tif.series[0].pages) == 2 and tif.series[0].dataoffset is None
+
+    def refuse(*arguments, **keywords):
+        raise AssertionError("pixel data were read")
+
+    monkeypatch.setattr(tifffile, "memmap", refuse)
+    monkeypatch.setattr(tifffile.TiffFile, "asarray", refuse)
+    monkeypatch.setattr(tifffile.TiffPage, "asarray", refuse)
+    config = synthetic_config(axes="CZYX", channels=[{"index": 0}, {"index": 1}])
+    info, _ = batch._open_image(config, path, [0, 1])
+    assert info.shape == (2, 8, 64, 64)
 
 
 @pytest.fixture
@@ -921,6 +1012,69 @@ def test_omero_drop_and_server_unreachable(tmp_path, fake_omero, monkeypatch):
     assert fake_omero["info"][-1] == (124, 2)
 
 
+REAL_JOIN_SESSION = io.join_session
+REAL_DETACH_SESSION = io.detach_session
+
+
+def test_omero_drop_and_rejoin_timeout(tmp_path, fake_omero, monkeypatch):
+    """The real omero-py gateway answers "not joined" when the server does not answer in time;
+    the image fails and the run is not stopped as if the session had ended."""
+    Ice = pytest.importorskip("Ice")
+    omero_clients = pytest.importorskip("omero.clients")
+    omero_image(omero_config(), 122, tmp_path / "run")
+    communicators = []
+
+    def no_answer(client, communicator):
+        communicators.append(communicator)
+        raise Ice.ConnectTimeoutException()
+
+    monkeypatch.setattr(omero_clients.BaseClient, "getRouter", no_answer)
+    monkeypatch.setattr(io, "join_session", REAL_JOIN_SESSION)
+    monkeypatch.setattr(io, "detach_session", REAL_DETACH_SESSION)
+    fake_omero["drops"] = {"info": 1}
+    try:
+        summary = omero_image(omero_config(), 123, tmp_path / "run")
+        row = row_of(summary, 1)
+        assert row["status"] == "failed"
+        assert row["reason"].startswith(
+            "OMERO image 123: lost the connection to OMERO and could not reconnect "
+            "(cannot reach the OMERO server at omero.example:4064"
+        )
+        assert "session has ended" not in row["reason"]
+
+        # the next image tries to join again, and fails on its own
+        summary = omero_image(omero_config(), 124, tmp_path / "run")
+        row = row_of(summary, 1)
+        assert row["status"] == "failed"
+        assert "cannot reach the OMERO server" in row["reason"]
+    finally:
+        batch.close_omero_connection()
+        for communicator in communicators:
+            try:
+                communicator.destroy()
+            except Exception:
+                pass
+    assert_no_key_in_files(tmp_path / "run")
+
+
+@pytest.mark.parametrize("pixel_type, dtype", [("float", "float32"), ("int16", "int16"), ("uint32", "uint32")])
+def test_omero_other_pixel_type_refused(tmp_path, fake_omero, monkeypatch, pixel_type, dtype):
+    def other_info(conn, image_id):
+        return io.OmeroImageInfo(
+            image_id=image_id, name="my image.tif", size_z=8, size_c=2, size_t=1,
+            size_y=64, size_x=64, pixel_type=pixel_type, dtype=np.dtype(dtype),
+            voxel_size_z=200.0, voxel_size_y=65.0, voxel_size_x=65.0, channel_names=["a", "b"],
+        )
+
+    monkeypatch.setattr(io, "get_omero_image_info", other_info)
+    summary = omero_image(omero_config(), 123, tmp_path / "run")
+    row = row_of(summary, 1)
+    assert row["status"] == "failed"
+    assert row["reason"].startswith("OMERO image 123: the pixel type is ")
+    assert f"({dtype})" in row["reason"] and "Image › Type › 16-bit" in row["reason"]
+    assert fake_omero["read"] == []
+
+
 def test_omero_calibration_drop(tmp_path, fake_omero):
     config = omero_config()
     arguments = dict(omero_host="omero.example", omero_port=4064, omero_key=KEY)
@@ -1078,11 +1232,9 @@ def test_no_reference_spot_when_decomposition_off_or_skipped(tmp_path):
 
 
 def test_failed_and_skipped_channels_write_no_qc_files(tmp_path):
-    many = make_image((8, 64, 64), n_spots=30, min_spacing=5, seed=1)[0].astype(np.float32)
-    few = make_image((8, 64, 64), n_spots=8, seed=2)[0].astype(np.float32)
-    broken = few.copy()
-    broken[3, 20, 20] = np.nan
-    path = write_image(tmp_path / "mixed.tif", stack_channels([few, broken, many]), "ZCYX")
+    many = make_image((8, 64, 64), n_spots=30, min_spacing=5, seed=1)[0]
+    few = make_image((8, 64, 64), n_spots=8, seed=2)[0]
+    path = write_with_damaged_channel(tmp_path / "mixed.tif", [few, few, many], damaged=1)
     config = with_qc(synthetic_config(channels=[
         {"index": 0}, {"index": 1}, {"index": 2, "bailout": {"enabled": True, "max_spots": 20}},
     ]), **ALL_QC)

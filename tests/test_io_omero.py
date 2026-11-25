@@ -354,10 +354,38 @@ def test_read_layouts(size_z, size_c, layout):
         assert arrays[channel].dtype == data.dtype
 
 
-def test_read_one_channel_float():
-    data = make_data(3, 2, dtype=np.float32)
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_read_accepted_pixel_types(dtype):
+    data = make_data(3, 2, dtype=dtype)
     conn = FakeConn([FakeImage(1, "a", data)])
+    assert io.pixel_type_problem(io.get_omero_image_info(conn, 1)) is None
     np.testing.assert_array_equal(io.read_omero_channel(conn, 1, "CZYX", 1), data[0, :, 1])
+
+
+@pytest.mark.parametrize(
+    "pixel_type, dtype, text",
+    [
+        ("float", np.float32, "32-bit with decimal values (float32)"),
+        ("double", np.float64, "64-bit with decimal values (float64)"),
+        ("int8", np.int8, "8-bit signed (int8)"),
+        ("int16", np.int16, "16-bit signed (int16)"),
+        ("int32", np.int32, "32-bit signed (int32)"),
+        ("uint32", np.uint32, "32-bit (uint32)"),
+        ("bit", np.uint8, "'bit'"),
+    ],
+)
+def test_other_pixel_types_refused(pixel_type, dtype, text):
+    conn = FakeConn([FakeImage(1, "a", make_data(3, 2, dtype=dtype), pixel_type=pixel_type)])
+    expected = (
+        f"OMERO image 1: the pixel type is {text}, which cannot be used; only 8-bit, 12-bit and 16-bit "
+        "images are accepted. Convert the image to 16-bit, for example in Fiji with Image › Type › 16-bit "
+        "(https://imagej.net/ij/docs/menus/image.html#type), then run it again. In Fiji, first untick \"Scale when converting\" under Edit › Options › Conversions, so that the pixel values are kept."
+    )
+    assert io.pixel_type_problem(io.get_omero_image_info(conn, 1)) == expected
+    with pytest.raises(io.ImageReadError) as caught:
+        io.read_omero_channels(conn, 1, "ZCYX", [0])
+    assert str(caught.value) == expected
+    assert not isinstance(caught.value, io.OmeroConnectionLost)
 
 
 @pytest.mark.parametrize(
@@ -627,11 +655,80 @@ def test_join_session(fake_gateway):
     assert conn.closed == []
 
 
-def test_join_session_refused(fake_gateway):
+def test_join_session_not_joined_without_a_server_answer(fake_gateway):
     fake_gateway.result = False
+    with pytest.raises(ConnectionError, match=f"cannot reach the OMERO server at {HOST}:{PORT}") as caught:
+        io.join_session(HOST, PORT, KEY)
+    assert not isinstance(caught.value, io.OmeroSessionEnded)
+    assert fake_gateway.made[0].closed == [False]
+
+
+class Router:
+    """Stand-in for the server's Glacier2 router, which answers a request to join a session."""
+
+    def __init__(self, error):
+        self.error = error
+        self.calls = 0
+
+    def createSession(self, username, password, context):
+        self.calls += 1
+        raise self.error
+
+
+@pytest.fixture
+def gateway_with_router(monkeypatch):
+    """The real omero-py BlitzGateway, talking to a stand-in router instead of a server."""
+    omero_clients = pytest.importorskip("omero.clients")
+    communicators = []
+
+    def use(error):
+        router = Router(error)
+
+        def get_router(client, communicator):
+            communicators.append(communicator)
+            return router
+
+        monkeypatch.setattr(omero_clients.BaseClient, "getRouter", get_router)
+        return router
+
+    yield use
+    # omero-py leaves the communicator of a client that never joined open.
+    for communicator in communicators:
+        try:
+            communicator.destroy()
+        except Exception:
+            pass
+
+
+def test_join_session_ended_on_the_server(gateway_with_router):
+    glacier2 = pytest.importorskip("Glacier2")
+    router = gateway_with_router(glacier2.PermissionDeniedException(reason=f"session {KEY} not found"))
     with pytest.raises(io.OmeroSessionEnded, match="Log in again") as caught:
         io.join_session(HOST, PORT, KEY)
-    assert fake_gateway.made[0].closed == [False]
+    assert router.calls == 1
+    assert_key_hidden(caught.value)
+
+
+def test_join_session_timeout_is_a_connection_problem(gateway_with_router):
+    # omero-py tries three times after a connection timeout, then BlitzGateway answers "not joined".
+    router = gateway_with_router(Ice.ConnectTimeoutException())
+    assert omero_gateway.BlitzGateway(host=HOST, port=PORT, secure=True).connect(sUuid=KEY) is False
+    with pytest.raises(ConnectionError, match=f"cannot reach the OMERO server at {HOST}:{PORT}") as caught:
+        io.join_session(HOST, PORT, KEY)
+    assert not isinstance(caught.value, io.OmeroSessionEnded)
+    assert router.calls == 6
+    assert_key_hidden(caught.value)
+
+
+def test_reader_join_timeout_fails_the_image_only(gateway_with_router):
+    gateway_with_router(Ice.TimeoutException())
+    first = FakeConn([FakeImage(1, "a", make_data())], info_failures=[lost()])
+    reader = io.OmeroImageReader(first, 1, HOST, PORT, KEY, notes=[])
+    with pytest.raises(io.ImageReadError, match="could not reconnect") as caught:
+        reader.info()
+    assert not isinstance(caught.value, io.OmeroSessionEnded)
+    assert "TimeoutException" in str(caught.value)
+    assert reader.conn is None
     assert_key_hidden(caught.value)
 
 

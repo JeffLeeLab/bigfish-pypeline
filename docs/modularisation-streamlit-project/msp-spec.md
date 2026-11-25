@@ -79,7 +79,7 @@ _quarto.yml                 Quarto website project (renders docs/guide/ only)
 ### 4.2 Commands
 
 - `bigfish-pypeline batch <config.yaml> [--input-folder …] [--filter …] [--output-folder …] [--workers …]`: values given on the command line override the file (brief: F2).
-- `bigfish-pypeline check <config.yaml>`: validates a config and lists the images it would process, without running anything.
+- `bigfish-pypeline check <config.yaml>`: validates a config and lists the images it would process, without running anything. Images whose pixel type cannot be used are listed with the reason.
 - `bigfish-pypeline app`: starts the Streamlit app. The command finds `app/` in the repository folder and starts Streamlit with `app/` as its working folder, so it can be run from anywhere.
 - Installed from the repository folder with `pip install -e .`, which the environment file runs (entry point declared in `pyproject.toml`).
 
@@ -98,6 +98,7 @@ The versions listed are targets. The versions actually installed are recorded in
 | pydantic, plotly, tk, jupyterlab, ipykernel, pytest | conda-forge | current |
 | streamlit | conda-forge | current, pinned (Phase 5) |
 | cellpose | pip | 4.2.1.1 |
+| imagecodecs | pip | current, pinned; reads packed 12-bit and compressed TIFF files |
 | big-fish | pip from git | `git+https://github.com/JeffLeeLab/big-fish.git@v0.6.2.post1` |
 | streamlit-image-coordinates | pip | current, pinned (Phase 5) |
 
@@ -138,6 +139,8 @@ Presets only set step switches. Every preset uses the same default values; any s
 - The user chooses a folder, a file-name text filter and an extension (`.tif` or `.tiff`). Only the top level of the folder is searched; matching files are sorted by name and listed before anything runs.
 - Optimise works on one file picked from that list; batch uses the whole list.
 - Images are read with `tifffile`. Accepted layouts: `ZCYX`, `CZYX`, `ZYX`, `CYX`, `YX` (2D and 3D, one or several channels). The detected layout and image dimensions are shown and must be confirmed by the user; the confirmed layout is stored in the config. A time axis of length 1 is dropped; files with several time points or positions are rejected with a message.
+- In a batch, each file's own axes, when its metadata gives them (ImageJ, OME, or the axes that `tifffile` writes), are compared with the confirmed layout. A file that does not match fails with a message naming both, and the run goes on. A file whose metadata does not give its axes is read with the confirmed layout.
+- Pixel types: 8-bit, 12-bit and 16-bit images are accepted. A 12-bit image is read as 16-bit, whether its values are saved in a 16-bit file or packed as 12-bit. Any other type (32-bit float, signed, 32-bit) is refused by `bigfish-pypeline check` and when the image is opened, before any work on it, with a message that names the type found and says how to convert the image to 16-bit in Fiji. The same holds for OMERO images.
 - Voxel sizes are read from ImageJ or OME metadata when present and shown for confirmation. Missing values must be entered; no silent defaults. In batch, an image whose metadata disagrees with the config is processed with the config values and a warning is logged.
 - One pixel size is used for both X and Y. If the metadata gives different X and Y sizes, this is shown and the user enters the value to use.
 - Channel numbers count from 0 and always refer to the channel's position in the original file, also when only some channels are read.
@@ -387,11 +390,11 @@ The optional `.npz` files use the v1 keys for old downstream scripts: `spots_pos
 
 Each has its own switch (brief: E3). Names start with `<image>_ch<index>_`.
 
-- `elbow.png`: elbow plot with the legend "Selected threshold = 11.0", plus the lower limit when set. In calibrated mode, `calibration.png` shows the per-image auto values and the median used.
-- `detection.png`: spots (and clusters) over the MIP.
+- `elbow.png`: elbow plot with the legend "Selected threshold = 11.0", plus the lower limit when set. Its axis names what is plotted: the natural log of the number of candidate spots above each threshold, smoothed, before spots sharing a peak are merged. In calibrated mode, `calibration.png` shows the per-image auto values and the median used, and marks the images whose value was raised to the lower limit.
+- `detection.png`: spots (and clusters) over the MIP. Clusters are drawn as outlines, here and in the final QC, so that the spots of a bright focus stay visible.
 - `referencespot.tif`: the reference spot built from `rna`, as in v1 (always TIFF). Not written when decomposition is switched off or skipped.
 - `<image>_cellpose_qc.png`: 4-panel Cellpose QC (one per image).
-- `final.png` or `final.html`: spots, clusters, cell outlines, and for each cell its index and counts. PNG by default; HTML (interactive, with hover) as an option.
+- `final.png` or `final.html`: spots, clusters, cell outlines, and for each cell its index and counts. PNG by default; HTML (interactive, with hover) as an option. Only the cells of `cells.csv` are shown, so cells left out by `drop_border_cells` are not drawn.
 
 ### 8.4 Run record and log
 
@@ -590,8 +593,10 @@ Only on the user's instruction, after Phase 7 and the Cellpose 4 mask review (Ph
 | Missing, mismatched or invalid label file | Cell-level results skipped with a warning; `cell_id = -1` | unit, end-to-end |
 | Cellpose finds no cells | Warning; empty cell table; `cell_id = -1` | unit |
 | Cluster lying across a cell boundary | Spots counted in their own cells; cluster counted where its centre lies | unit |
-| Corrupt or unreadable file; NaN or infinite values | Image fails with the reason; run continues | end-to-end |
-| Input stored as 8-bit, 16-bit or 32-bit float | Processed | unit |
+| Corrupt or unreadable file | Image fails with the reason; run continues | end-to-end |
+| Input stored as 8-bit, 12-bit or 16-bit | Processed; 12-bit read as 16-bit | unit, end-to-end |
+| Input of another pixel type (32-bit float, signed, 32-bit) | Refused by `check`; in a run the image fails with the type found and how to convert it, and the run continues | unit, end-to-end |
+| File whose own axes differ from the confirmed layout (e.g. stored `ZCYX`, layout `CZYX`) | Image fails with a message naming both; run continues | end-to-end |
 | Voxel sizes missing from metadata | Must be entered; never assumed | unit, app |
 | Metadata voxel sizes differ from the config | Config values used; warning logged | unit |
 | Metadata X and Y pixel sizes differ | Shown; the user enters the value to use | unit, app |
@@ -599,7 +604,7 @@ Only on the user's instruction, after Phase 7 and the Cellpose 4 mask review (Ph
 | Very large image or out of memory | Workers limited by memory, based on the largest image; after a worker stops unexpectedly the run restarts with fewer workers and retries the images in progress once | end-to-end, Phase 0 and 2 benchmarks |
 | No GPU | CPU used, warning about time | unit |
 | OMERO connection drops | One retry, then the image fails | manual (lab network) |
-| OMERO session ended | No new images start; finished images combined; message to log in again | manual (lab network) |
+| OMERO session ended | No new images start; finished images combined; message to log in again. Only when the server says the session has ended: a connection that fails while the session is rejoined is handled as a dropped connection | unit (stand-in), manual (lab network) |
 | Output folder not writable | Stopped before processing | unit |
 | Input folder already contains `bigfish_results/` | Ignored (top level only) | unit |
 | Run cancelled or computer sleeps | Workers stopped at once; images in progress discarded; finished images kept and combined; run marked cancelled; keep-awake on by default | end-to-end |

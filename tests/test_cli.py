@@ -314,6 +314,62 @@ def test_failed_image_is_reported(images, tmp_path, capsys):
     assert lines[-1].startswith("Run folder: ")
 
 
+REFUSED_PIXEL_TYPES = {
+    "float32": "32-bit with decimal values (float32)",
+    "int16": "16-bit signed (int16)",
+    "int32": "32-bit signed (int32)",
+    "uint32": "32-bit (uint32)",
+}
+
+
+def refusal(name, text):
+    return (
+        f"{name}: the pixel type is {text}, which cannot be used; only 8-bit, 12-bit and 16-bit images are "
+        "accepted. Convert the image to 16-bit, for example in Fiji with Image › Type › 16-bit "
+        "(https://imagej.net/ij/docs/menus/image.html#type), then run it again. In Fiji, first untick \"Scale when converting\" under Edit › Options › Conversions, so that the pixel values are kept."
+    )
+
+
+def write_other_pixel_type(path, dtype):
+    channels = [make_image((8, 64, 64), n_spots=8, seed=channel)[0] for channel in range(2)]
+    tifffile.imwrite(path, np.stack(channels, axis=1).astype(dtype), metadata={"axes": "ZCYX"},
+                     photometric="minisblack")
+    return path
+
+
+def test_check_lists_images_of_other_pixel_types(images, tmp_path, capsys):
+    first, _ = images
+    for dtype in REFUSED_PIXEL_TYPES:
+        write_other_pixel_type(first / f"b_{dtype}.tif", dtype)
+    config = write_config(tmp_path / "settings.yaml", first)
+    code, out, err = run_command(capsys, "check", config, "--output-folder", tmp_path / "out")
+    assert code == 0, err
+    lines = out.splitlines()
+    start = lines.index("Images that cannot be used (4); a run would list them as failed:")
+    assert lines[start + 1:start + 5] == [
+        f"  - {refusal(f'b_{dtype}.tif', text)}" for dtype, text in sorted(REFUSED_PIXEL_TYPES.items())
+    ]
+    assert "a_1.tif" in out and "Nothing was processed" in out
+
+
+@pytest.mark.parametrize("dtype", REFUSED_PIXEL_TYPES)
+def test_check_refuses_a_first_image_of_another_pixel_type(tmp_path, capsys, dtype):
+    folder = tmp_path / "input"
+    folder.mkdir()
+    write_other_pixel_type(folder / "a.tif", dtype)
+    write_image(folder / "b.tif")
+    config = write_config(tmp_path / "settings.yaml", folder)
+    for command in ("check", "batch"):
+        code, out, err = run_command(capsys, command, config, "--output-folder", tmp_path / "out")
+        assert code == 1
+        assert err.splitlines() == [
+            f"Problem: The first image cannot be used with these settings: "
+            f"{refusal('a.tif', REFUSED_PIXEL_TYPES[dtype])}",
+            "Nothing was run.",
+        ]
+    assert not (tmp_path / "out").exists()
+
+
 # ---------------------------------------------------------------------------
 # Repeating a run
 # ---------------------------------------------------------------------------

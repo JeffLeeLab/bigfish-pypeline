@@ -197,6 +197,11 @@ def describe_plan(config, plan, config_path):
     width = len(str(len(plan.images)))
     for number, image in enumerate(plan.images, start=1):
         lines.append(f"  {number:>{width}}. {image.listed}")
+    refused = [io.pixel_type_problem(header) for header in plan.headers if header is not None]
+    refused = [problem for problem in refused if problem is not None]
+    if refused:
+        lines.append(f"Images that cannot be used ({len(refused)}); a run would list them as failed:")
+        lines.extend(f"  - {problem}" for problem in refused)
 
     lines.append("FISH channels:")
     for channel in config.channels:

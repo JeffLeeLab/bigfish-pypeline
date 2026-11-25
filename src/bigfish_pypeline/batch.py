@@ -180,8 +180,12 @@ def _check_channels(label, channels, n_channels):
 
 
 def _check_omero_image(info, layout, channels):
-    """Raise ImageReadError when an OMERO image does not fit the layout or lacks a channel."""
+    """Raise ImageReadError when an OMERO image's pixel type cannot be used, or the image
+    does not fit the layout or lacks a channel."""
     label = f"OMERO image {info.image_id}"
+    problem = io.pixel_type_problem(info)
+    if problem is not None:
+        raise io.ImageReadError(problem)
     if info.size_t > 1:
         raise io.ImageReadError(f"{label}: the image has {info.size_t} time points; only one is accepted")
     if sorted(layout) != sorted(info.axes):
@@ -227,8 +231,8 @@ def _open_image(config, image_source, channels, omero_host=None, omero_port=None
 
     path = Path(image_source)
     info = io.get_image_info(path)
-    # Reading no channel checks the layout, time points, positions and pixel type.
-    io.read_channels(path, layout, [])
+    # The pixel type, layout, time points and positions are checked from the file header.
+    io.check_image(path, layout)
     sizes = dict(zip(layout, info.shape))
     _check_channels(path.name, channels, sizes.get("C", 1))
 

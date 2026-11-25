@@ -9,7 +9,8 @@ import tifffile
 from bigfish_pypeline import io
 
 SIZES = {"Z": 3, "C": 2, "Y": 10, "X": 12}
-DTYPES = [np.uint8, np.uint16, np.float32]
+DTYPES = [np.uint8, np.uint16]
+REFUSED_DTYPES = [np.float32, np.int16, np.int32, np.uint32]
 # Pixel sizes written to the metadata, in µm: Z, Y, X.
 VOXEL_UM = (0.2, 0.065, 0.065)
 
@@ -109,12 +110,38 @@ def test_read_several_channels(tmp_path):
         np.testing.assert_array_equal(data, array[channel])
 
 
-def test_confirmed_layout_overrides_metadata(tmp_path):
+@pytest.mark.parametrize("kind", ["imagej", "ome", "shaped"])
+def test_axes_in_metadata_must_match_the_layout(tmp_path, kind):
+    path = write_tiff(tmp_path / "image.tif", make_array("ZCYX", np.uint16), "ZCYX", kind)
+    message = r"image.tif: the file's own information says its axes are stored in the order ZCYX, " \
+              r"which does not match the layout CZYX of this run"
+    with pytest.raises(io.ImageReadError, match=message):
+        io.read_channel(path, "CZYX", 1)
+    with pytest.raises(io.ImageReadError, match=message):
+        io.check_image(path, "CZYX")
+
+
+def test_layout_used_when_metadata_gives_no_axes(tmp_path):
+    # tifffile's own metadata without axes: tifffile calls the first two axes Q.
     array = make_array("ZCYX", np.uint16)
-    path = write_tiff(tmp_path / "image.tif", array, "ZCYX", "imagej")
-    # Read as CZYX, the first axis is taken as the channel axis.
-    data = io.read_channel(path, "CZYX", 1)
-    np.testing.assert_array_equal(data, array[1])
+    path = tmp_path / "image.tif"
+    tifffile.imwrite(path, array, photometric="minisblack")
+    assert io.get_image_info(path).layout is None
+    io.check_image(path, "CZYX", [1])
+    np.testing.assert_array_equal(io.read_channel(path, "CZYX", 1), array[1])
+    np.testing.assert_array_equal(io.read_channel(path, "ZCYX", 1), array[:, 1])
+
+
+def test_imagej_without_axes_read_with_the_layout(tmp_path):
+    # ImageJ metadata giving only the number of images: tifffile calls that axis I.
+    array = make_array("ZYX", np.uint16)
+    path = tmp_path / "image.tif"
+    tifffile.imwrite(path, array, description=f"ImageJ=1.11a\nimages={len(array)}\n", photometric="minisblack",
+                     metadata=None)
+    with tifffile.TiffFile(path) as tif:
+        assert tif.series[0].kind == "imagej" and tif.series[0].axes == "IYX"
+    np.testing.assert_array_equal(io.read_channel(path, "ZYX", 0), array)
+    np.testing.assert_array_equal(io.read_channel(path, "CYX", 2), array[2])
 
 
 @pytest.mark.parametrize("kind", ["imagej", "ome"])
@@ -276,15 +303,115 @@ def test_missing_file(tmp_path):
         io.read_channel(tmp_path / "missing.tif", "ZYX", 0)
 
 
-@pytest.mark.parametrize("value", [np.nan, np.inf])
-def test_float_with_nan_or_infinity_rejected(tmp_path, value):
-    array = make_array("ZCYX", np.float32)
-    array[1, 0, 2, 3] = value
-    path = write_tiff(tmp_path / "image.tif", array, "ZCYX", "imagej")
-    with pytest.raises(io.ImageReadError, match="NaN or infinite"):
+# Pixel types
+
+REFUSED_TEXT = {
+    "float32": "32-bit with decimal values (float32)",
+    "int16": "16-bit signed (int16)",
+    "int32": "32-bit signed (int32)",
+    "uint32": "32-bit (uint32)",
+}
+CONVERT_TEXT = (
+    "only 8-bit, 12-bit and 16-bit images are accepted. Convert the image to 16-bit, for example in Fiji "
+    "with Image › Type › 16-bit (https://imagej.net/ij/docs/menus/image.html#type), then run it again. In Fiji, first untick \"Scale when converting\" under Edit › Options › Conversions, so that the pixel values are kept."
+)
+
+
+@pytest.mark.parametrize("dtype", REFUSED_DTYPES, ids=lambda d: np.dtype(d).name)
+def test_other_pixel_types_refused(tmp_path, dtype):
+    path = write_tiff(tmp_path / "image.tif", make_array("ZCYX", dtype), "ZCYX", "ome")
+    name = np.dtype(dtype).name
+    expected = f"image.tif: the pixel type is {REFUSED_TEXT[name]}, which cannot be used; {CONVERT_TEXT}"
+    info = io.get_image_info(path)
+    assert info.dtype == np.dtype(dtype)
+    assert io.pixel_type_problem(info) == expected
+    with pytest.raises(io.ImageReadError) as caught:
+        io.check_image(path, "ZCYX")
+    assert str(caught.value) == expected
+    with pytest.raises(io.ImageReadError) as caught:
         io.read_channel(path, "ZCYX", 0)
-    # The other channel has no such values and reads normally.
-    np.testing.assert_array_equal(io.read_channel(path, "ZCYX", 1), array[:, 1])
+    assert str(caught.value) == expected
+
+
+@pytest.mark.parametrize("dtype", DTYPES, ids=lambda d: np.dtype(d).name)
+def test_accepted_pixel_types(tmp_path, dtype):
+    path = write_tiff(tmp_path / "image.tif", make_array("ZYX", dtype), "ZYX", "imagej")
+    assert io.pixel_type_problem(io.get_image_info(path)) is None
+
+
+def twelve_bit_array(layout="ZCYX"):
+    """Values from 0 to 4095, as a 12-bit camera gives them."""
+    rng = np.random.default_rng(12)
+    shape = tuple(SIZES[axis] for axis in layout)
+    array = rng.integers(0, 4095, shape, endpoint=True).astype(np.uint16)
+    array.flat[0], array.flat[1] = 0, 4095
+    return array
+
+
+def test_12_bit_values_in_a_16_bit_file(tmp_path):
+    array = twelve_bit_array()
+    path = write_tiff(tmp_path / "image.tif", array, "ZCYX", "imagej")
+    assert io.get_image_info(path).dtype == np.uint16
+    for channel in range(2):
+        data = io.read_channel(path, "ZCYX", channel)
+        assert data.dtype == np.uint16
+        np.testing.assert_array_equal(data, array[:, channel])
+
+
+def test_packed_12_bit_file(tmp_path):
+    array = twelve_bit_array()
+    path = tmp_path / "image.tif"
+    tifffile.imwrite(path, array, bitspersample=12, imagej=True, metadata={"axes": "ZCYX"})
+    with tifffile.TiffFile(path) as tif:
+        assert tif.pages[0].bitspersample == 12
+        # each 12-bit value takes one and a half bytes in the file
+        assert tif.pages[0].databytecounts[0] == SIZES["Y"] * SIZES["X"] * 3 // 2
+    info = io.get_image_info(path)
+    assert info.dtype == np.uint16
+    io.check_image(path, "ZCYX", [0, 1])
+    for channel in range(2):
+        data = io.read_channel(path, "ZCYX", channel)
+        assert data.dtype == np.uint16
+        np.testing.assert_array_equal(data, array[:, channel])
+
+
+# Checking an image without reading its pixels
+
+
+def compressed_in_one_block(path, array):
+    """A compressed file holding each channel's Z stack in one page: the file cannot be mapped."""
+    tifffile.imwrite(path, array, volumetric=True, tile=(SIZES["Z"], 16, 16), compression="zlib",
+                     metadata={"axes": "CZYX"}, photometric="minisblack")
+    with tifffile.TiffFile(path) as tif:
+        assert len(tif.series[0].pages) == SIZES["C"]
+        assert tif.series[0].dataoffset is None
+    return path
+
+
+def no_pixel_reading(monkeypatch):
+    def refuse(*arguments, **keywords):
+        raise AssertionError("pixel data were read")
+
+    monkeypatch.setattr(tifffile, "memmap", refuse)
+    monkeypatch.setattr(tifffile.TiffFile, "asarray", refuse)
+    monkeypatch.setattr(tifffile.TiffPage, "asarray", refuse)
+    monkeypatch.setattr(tifffile.TiffPage, "segments", refuse)
+
+
+@pytest.mark.parametrize("kind", ["one_block", "pages"])
+def test_check_image_reads_no_pixel_data(tmp_path, monkeypatch, kind):
+    array = make_array("CZYX", np.uint16)
+    if kind == "one_block":
+        path = compressed_in_one_block(tmp_path / "image.tif", array)
+    else:
+        path = tmp_path / "image.tif"
+        tifffile.imwrite(path, array, compression="zlib", metadata={"axes": "CZYX"}, photometric="minisblack")
+    np.testing.assert_array_equal(io.read_channel(path, "CZYX", 1), array[1])
+    no_pixel_reading(monkeypatch)
+    io.check_image(path, "CZYX", [0, 1])
+    assert io.read_channels(path, "CZYX", []) == {}
+    with pytest.raises(io.ImageReadError, match="channel 2 does not exist"):
+        io.check_image(path, "CZYX", [2])
 
 
 def test_channel_out_of_range(tmp_path):

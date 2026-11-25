@@ -310,6 +310,58 @@ def test_corrupt_image_and_list_order(tmp_path):
     assert "channels: 8 done, 2 failed, 0 skipped" in text
 
 
+def test_file_stored_in_another_axis_order(tmp_path):
+    """A file stored CZYX in a ZCYX run fails with both orders named; the others are processed."""
+    folder = tmp_path / "input"
+    folder.mkdir()
+    # every channel and Z plane holds its own spots, so that the planes can be told apart
+    channels = [make_image((8, 64, 64), n_spots=8, seed=seed)[0] for seed in (3, 4)]
+    write_image(folder / "a_zcyx.tif", np.stack(channels, axis=1))
+    tifffile.imwrite(folder / "b_czyx.tif", np.stack(channels), metadata={"axes": "CZYX"}, photometric="minisblack")
+    write_image(folder / "c_zcyx.tif", np.stack(channels, axis=1))
+
+    result = batch.run_batch(local_config(folder, tmp_path / "out"))
+    assert result.status == "finished", result.message
+    images = read_table(result.run_folder, "images")
+    assert list(images["status"]) == ["done", "done", "failed", "failed", "done", "done"]
+    reasons = set(images.loc[images["image"] == "b_czyx", "reason"])
+    assert reasons == {
+        "b_czyx.tif: the file's own information says its axes are stored in the order CZYX, which does not "
+        "match the layout ZCYX of this run (`image.axes` in the settings). Save the image with its axes in "
+        "the order ZCYX, or run it with the layout CZYX."
+    }
+    spots = read_table(result.run_folder, "spots")
+    assert list(dict.fromkeys(spots["image"])) == ["a_zcyx", "c_zcyx"]
+
+
+def test_other_pixel_types_in_a_run(tmp_path):
+    folder = tmp_path / "input"
+    folder.mkdir()
+    array = np.stack([make_image((8, 64, 64), n_spots=8, seed=seed)[0] for seed in (5, 6)], axis=1)
+    write_image(folder / "a_uint16.tif", array)
+    write_image(folder / "b_uint8.tif", (array // 4).clip(0, 255).astype(np.uint8))
+    refused = ("float32", "int16", "int32", "uint32")
+    for name in refused:
+        tifffile.imwrite(folder / f"c_{name}.tif", array.astype(name), metadata={"axes": "ZCYX"},
+                         photometric="minisblack")
+
+    result = batch.run_batch(local_config(folder, tmp_path / "out", workers=2))
+    assert result.status == "finished", result.message
+    images = read_table(result.run_folder, "images")
+    for name in ("a_uint16", "b_uint8"):
+        assert list(images.loc[images["image"] == name, "status"]) == ["done", "done"], name
+    text = log_text(result.run_folder)
+    for name in refused:
+        rows = images[images["image"] == f"c_{name}"]
+        assert list(rows["status"]) == ["failed", "failed"], name
+        reason = rows["reason"].iloc[0]
+        assert reason.startswith(f"c_{name}.tif: the pixel type is "), reason
+        assert f"({name}), which cannot be used; only 8-bit, 12-bit and 16-bit images are accepted." in reason
+        assert reason.endswith("(https://imagej.net/ij/docs/menus/image.html#type), then run it again. In Fiji, first untick \"Scale when converting\" under Edit › Options › Conversions, so that the pixel values are kept.")
+        assert f"c_{name}: failed: {reason}" in text
+    assert "channels: 4 done, 8 failed, 0 skipped" in text
+
+
 # ---------------------------------------------------------------------------
 # What run.log holds (spec 8.4)
 # ---------------------------------------------------------------------------
@@ -320,13 +372,18 @@ def test_log_holds_every_item(tmp_path):
     a voxel size that differs from the file, and an image that cannot be read."""
     folder = tmp_path / "input"
     folder.mkdir()
-    few = make_image((8, 64, 64), n_spots=8, seed=2)[0].astype(np.float32)
-    broken = few.copy()
-    broken[3, 20, 20] = np.nan
-    many = make_image((8, 64, 64), n_spots=30, min_spacing=5, seed=1)[0].astype(np.float32)
-    array = np.stack([few, broken, many], axis=1)
-    tifffile.imwrite(folder / "a_mixed.tif", array, imagej=True, metadata={"axes": "ZCYX", "unit": "um", "spacing": 0.3},
-                     resolution=(1 / 0.065, 1 / 0.065))
+    few = make_image((8, 64, 64), n_spots=8, seed=2)[0]
+    many = make_image((8, 64, 64), n_spots=30, min_spacing=5, seed=1)[0]
+    array = np.stack([few, few, many], axis=1)
+    mixed = folder / "a_mixed.tif"
+    tifffile.imwrite(mixed, array, imagej=True, metadata={"axes": "ZCYX", "unit": "um", "spacing": 0.3},
+                     resolution=(1 / 0.065, 1 / 0.065), compression="zlib")
+    # channel 1 cannot be read: the data of its first plane are overwritten
+    with tifffile.TiffFile(mixed) as tif:
+        start, length = tif.pages[1].dataoffsets[0], tif.pages[1].databytecounts[0]
+    data = bytearray(mixed.read_bytes())
+    data[start:start + length] = bytes(length)
+    mixed.write_bytes(bytes(data))
     generated_image(folder / "b_corrupt.tif", n_channels=3)
     corrupt = folder / "b_corrupt.tif"
     corrupt.write_bytes(corrupt.read_bytes()[:3000])
@@ -364,7 +421,7 @@ def test_log_holds_every_item(tmp_path):
         "b_corrupt: failed: b_corrupt.tif: the file is damaged or incomplete",
         # threshold used for each image and channel
         "a_mixed, channel 0: done, threshold 50, 8 spots, 0 clusters",
-        "a_mixed, channel 1: failed, threshold none (a_mixed.tif: channel 1 contains NaN or infinite values)",
+        "a_mixed, channel 1: failed, threshold none (a_mixed.tif: the pixel data cannot be read (",
         f"a_mixed, channel 2: skipped, threshold {threshold_2:g} (bailout: 30 spots detected, above the limit of 20)",
         "b_corrupt, channel 0: failed, threshold none (b_corrupt.tif: the file is damaged or incomplete",
         # warnings, each naming its image

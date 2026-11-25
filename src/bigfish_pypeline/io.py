@@ -45,6 +45,15 @@ NM_PER_UNIT = {
 # Voxel sizes closer than this fraction are treated as equal (rounding in the metadata).
 VOXEL_SIZE_TOLERANCE = 0.001
 
+# Pixel types that can be used: 8-bit and 16-bit unsigned. A 12-bit image is read as 16-bit.
+ACCEPTED_DTYPES = (np.dtype(np.uint8), np.dtype(np.uint16))
+CONVERT_HELP = (
+    "Convert the image to 16-bit, for example in Fiji with Image › Type › 16-bit "
+    "(https://imagej.net/ij/docs/menus/image.html#type), then run it again. "
+    'In Fiji, first untick "Scale when converting" under Edit › Options › Conversions, '
+    "so that the pixel values are kept."
+)
+
 
 class ImageReadError(Exception):
     """An image that cannot be used, with a plain one-line reason."""
@@ -229,7 +238,12 @@ def _counts(tif, series):
 
 
 def _suggested_layout(series):
-    """Layout given by the file's metadata, or None."""
+    """Layout given by the file's metadata, or None.
+
+    Only ImageJ, OME and tifffile's own metadata record the axes. For a plain TIFF,
+    or metadata without axes, tifffile guesses letters such as I or Q, which are
+    not layouts.
+    """
     if series.kind not in ("imagej", "ome", "shaped"):
         return None
     axes = series.axes
@@ -291,11 +305,56 @@ def _check_layout(layout):
         raise ValueError(f"Layout must be one of {', '.join(LAYOUTS)}, not {layout}")
 
 
+def _pixel_type_text(dtype, omero_type=None):
+    """The pixel type in words, e.g. `32-bit with decimal values (float32)`."""
+    if dtype is None:
+        return f"'{omero_type}'"
+    dtype = np.dtype(dtype)
+    bits = dtype.itemsize * 8
+    if dtype.kind == "f":
+        return f"{bits}-bit with decimal values ({dtype.name})"
+    if dtype.kind == "i":
+        return f"{bits}-bit signed ({dtype.name})"
+    if dtype.kind == "u":
+        return f"{bits}-bit ({dtype.name})"
+    if dtype.kind == "b":
+        return "1-bit (black and white)"
+    return dtype.name
+
+
+def pixel_type_problem(info):
+    """The reason an image's pixel type cannot be used, or None when it can.
+
+    `info` is the information of a TIFF file (ImageInfo) or of an OMERO image (OmeroImageInfo).
+    """
+    if isinstance(info, OmeroImageInfo):
+        label, dtype, omero_type = f"OMERO image {info.image_id}", info.dtype, info.pixel_type
+    else:
+        label, dtype, omero_type = Path(info.path).name, info.dtype, None
+    return _pixel_type_message(label, dtype, omero_type)
+
+
+def _pixel_type_message(label, dtype, omero_type=None):
+    if dtype is not None and np.dtype(dtype).newbyteorder("=") in ACCEPTED_DTYPES:
+        return None
+    return (
+        f"{label}: the pixel type is {_pixel_type_text(dtype, omero_type)}, which cannot be used; "
+        f"only 8-bit, 12-bit and 16-bit images are accepted. {CONVERT_HELP}"
+    )
+
+
+def _check_pixel_type(label, dtype, omero_type=None):
+    message = _pixel_type_message(label, dtype, omero_type)
+    if message is not None:
+        raise ImageReadError(message)
+
+
 def _plane_sizes(path, tif, series, layout):
     """Size of each axis of the layout other than Y and X, in the order stored in the file.
 
     Raises ImageReadError when the file has several time points or positions,
-    holds colour (RGB) pixels, or has a different number of axes from the layout.
+    holds colour (RGB) pixels, or has a different number of axes from the layout,
+    or when its metadata gives its axes in another order than the layout.
     """
     n_timepoints, n_positions = _counts(tif, series)
     if n_timepoints > 1:
@@ -312,7 +371,40 @@ def _plane_sizes(path, tif, series, layout):
             f"{path.name}: the file has {len(series.shape)} axes ({shape}) but the layout {layout} "
             f"needs {len(layout)}"
         )
+    # A file whose metadata does not give its axes is read with the layout as it is.
+    axes = _suggested_layout(series)
+    if axes is not None and axes != layout:
+        raise ImageReadError(
+            f"{path.name}: the file's own information says its axes are stored in the order {axes}, "
+            f"which does not match the layout {layout} of this run (`image.axes` in the settings). "
+            f"Save the image with its axes in the order {layout}, or run it with the layout {axes}."
+        )
     return dict(zip(layout[:-2], series.shape[:-2]))
+
+
+def _check_image(path, tif, series, layout, channels):
+    """Check the pixel type, the layout and the channels from the file header; returns the plane sizes."""
+    _check_pixel_type(path.name, series.dtype)
+    sizes = _plane_sizes(path, tif, series, layout)
+    n_channels = sizes.get("C", 1)
+    available = "1 channel (channel 0)" if n_channels == 1 else f"{n_channels} channels (0–{n_channels - 1})"
+    for channel in channels:
+        if not 0 <= channel < n_channels:
+            raise ImageReadError(f"{path.name}: channel {channel} does not exist; the image has {available}")
+    return sizes
+
+
+def check_image(path, layout, channels=()):
+    """Check that an image can be read with `layout` and holds `channels`, without reading its pixels.
+
+    Raises ImageReadError when the pixel type cannot be used, the file does not fit
+    the layout, or a channel is missing.
+    """
+    path = Path(path)
+    _check_layout(layout)
+    channels = [int(c) for c in channels]
+    with _damaged_file_check(path), _open(path) as tif:
+        _check_image(path, tif, _first_series(path, tif), layout, channels)
 
 
 def _channel_planes(sizes, channel):
@@ -357,22 +449,13 @@ def read_channels(path, layout, channels):
     arrays = {}
     with _damaged_file_check(path), _open(path) as tif:
         series = _first_series(path, tif)
-
+        sizes = _check_image(path, tif, series, layout, channels)
         dtype = np.dtype(series.dtype)
-        if dtype.kind not in "uif":
-            raise ImageReadError(f"{path.name}: pixel type {dtype} is not accepted")
-
-        sizes = _plane_sizes(path, tif, series, layout)
-        n_channels = sizes.get("C", 1)
-        available = "1 channel (channel 0)" if n_channels == 1 else f"{n_channels} channels (0–{n_channels - 1})"
-        for channel in channels:
-            if not 0 <= channel < n_channels:
-                raise ImageReadError(f"{path.name}: channel {channel} does not exist; the image has {available}")
 
         height, width = series.shape[-2:]
         # Usually each plane is one page of the file; some files hold the whole image in one page.
         one_block = series.is_truncated or len(series.pages) < math.prod(sizes.values())
-        stack = _whole_series(path, tif, series) if one_block else None
+        stack = _whole_series(path, tif, series) if one_block and channels else None
         for channel in channels:
             if one_block:
                 index = [slice(None)] * len(layout)
@@ -389,8 +472,6 @@ def read_channels(path, layout, channels):
                 data = data.reshape(len(planes), height, width)
                 if "Z" not in layout:
                     data = data[0]
-            if dtype.kind == "f" and not np.isfinite(data).all():
-                raise ImageReadError(f"{path.name}: channel {channel} contains NaN or infinite values")
             arrays[channel] = data
         # Release the file mapping so the file is not held open (needed on Windows).
         del stack
@@ -568,7 +649,7 @@ class OmeroImageInfo:
     """Information about an OMERO image, read from the server without loading the pixels.
 
     Sizes count the planes, channels and time points as stored on the server.
-    `dtype` is None when the pixel type cannot be used.
+    `dtype` is None when the pixel type has no matching numpy type (e.g. `bit`).
     Voxel sizes are in nm, or None when the server does not give them.
     """
 
@@ -839,8 +920,7 @@ def _read_omero_channels(conn, image_id, layout, channels):
     label = f"OMERO image {image_id}"
     if info.size_t > 1:
         raise ImageReadError(f"{label}: the image has {info.size_t} time points; only one is accepted")
-    if info.dtype is None or info.dtype.kind not in "uif":
-        raise ImageReadError(f"{label}: pixel type {info.pixel_type} is not accepted")
+    _check_pixel_type(label, info.dtype, info.pixel_type)
 
     # Axes of length 1 are not counted. OMERO stores no order, so ZCYX and CZYX are the same here.
     if sorted(layout) != sorted(info.axes):
@@ -862,8 +942,6 @@ def _read_omero_channels(conn, image_id, layout, channels):
         data = stack[:, 0]
         if "Z" not in layout:
             data = data[0]
-        if info.dtype.kind == "f" and not np.isfinite(data).all():
-            raise ImageReadError(f"{label}: channel {channel} contains NaN or infinite values")
         arrays[channel] = data
     return arrays
 
@@ -990,11 +1068,13 @@ def join_session(host, port, key):
     The connection has no keep-alive and is not closed on exit: the process that logged
     in keeps the session alive and closes it. Finish with `detach_session(conn)`.
     Raises OmeroSessionEnded when the server refuses to rejoin the session, and
-    ConnectionError when the server cannot be reached.
+    ConnectionError when the server cannot be reached or does not answer in time.
     """
+    import Ice
     from omero.gateway import BlitzGateway
 
     conn = BlitzGateway(host=host, port=int(port), secure=True)
+    join_errors = _keep_join_errors(conn)
     try:
         joined = conn.connect(sUuid=key)
     except Exception as error:
@@ -1004,8 +1084,38 @@ def join_session(host, port, key):
         ) from None
     if not joined:
         detach_session(conn)
-        raise OmeroSessionEnded("The OMERO session has ended. Log in again and start a new run.")
+        # BlitzGateway answers "not joined" both when the server refuses the session
+        # and when the server cannot be reached in time. Only an answer from the
+        # server (an Ice.UserException, e.g. Glacier2.PermissionDeniedException)
+        # means that the session has ended.
+        if any(isinstance(error, Ice.UserException) for error in join_errors):
+            raise OmeroSessionEnded("The OMERO session has ended. Log in again and start a new run.")
+        reason = _omero_reason(join_errors[-1], key) if join_errors else "no answer from the server"
+        raise ConnectionError(f"cannot reach the OMERO server at {host}:{port} ({reason})")
     return conn
+
+
+def _keep_join_errors(conn):
+    """A list that receives every error met by `conn` while it joins a session.
+
+    BlitzGateway.connect does not pass these errors on; it only answers whether
+    the session was joined.
+    """
+    errors = []
+    client = getattr(conn, "c", None)
+    join = getattr(client, "joinSession", None)
+    if join is None:
+        return errors
+
+    def join_and_keep_errors(*arguments, **keywords):
+        try:
+            return join(*arguments, **keywords)
+        except Exception as error:
+            errors.append(error)
+            raise
+
+    client.joinSession = join_and_keep_errors
+    return errors
 
 
 def detach_session(conn):
