@@ -2016,3 +2016,42 @@ Rolling ball at 10 px is about four times slower than at 5 or 15 px: as in Image
 - This is one image and its crop. Which count in a bright focus is nearer the truth is not settled, as in 2.6.
 
 **Waiting on the user:** the default radius for FISH channels (5 px now). If it changes, `config.py`, the spec and the test kit's expected tables are updated after 3.15.
+
+### 3.15 Fixes in the settings and the runner (25 Nov 2026)
+
+Done by Opus 5.5 (medium) in `config.py`, `detection.py`, `batch.py`, `cli.py`, `outputs.py` and `segmentation.py`, commit `b36f827`. The orchestrator read the changes and ran the whole suite without the full-size image: 1,147 pass (127 in the batch-run, Cellpose and output files, 1,020 in the rest).
+
+**Settings** (findings 5, 12 and 25). Refused by `check`, each with a message that names the setting and the value found: `decomposition.alpha` outside 0 to 1; `decomposition.beta` of 0 or less; a background radius below 1 px (FISH channels and segmentation); `clusters.min_spots` below 2; `cellpose.min_size` below −1; an empty `cellpose.model`; `.inf` or `.nan` in any number, including the threshold value and its lower limit. Example: "`channels[0].threshold.value` must be a number, not infinite and not `.nan` (found `.nan`)."
+
+**Threshold** (finding 22). An elbow curve of one point, or one without a bend, gives "no automatic threshold" with the usual warning instead of failing the channel. With a manual or calibrated threshold, a problem in the elbow values leaves out the elbow plot only; the spots are the same with the plot on and off (the second part added by the orchestrator, with its test).
+
+**`calibration.csv`** (finding 4). New column `elbow_threshold` after `auto_threshold`: the elbow method's value before the lower limit. On the crop with a lower limit of 15 the row holds 15 and 13. A calibrated run with a lower limit now marks the raised images on the calibration plot.
+
+**The runner**
+
+- A stopped run (finding 6): its message appears once in the terminal and once in `run.log`, at the end, after the summary.
+- Once a reason to stop is found (findings 11 and 15), no further result is taken, the workers are stopped at once, and the files of every image not finished are removed, including an image lost with its worker in the same pass. A result that arrives in that pass after the stop is not kept.
+- A worker that stops just before the next image is handed out (finding 24) leads to the usual restart with half the workers; the image stays first in the queue.
+- Worker numbers (finding 13) leave out images the run will refuse: a pixel type that is not accepted, several time points or positions, axes that do not fit the layout, a missing channel.
+- The total time of `run.log` and the duration of `run_info.yaml` (finding 27) are one figure, taken once when the run ends.
+- The final message (decision 5), in the terminal, `run.log` and `run_info.yaml`: "The run finished: 2 image(s) processed; 4 channel(s) failed and 1 skipped. See images.csv and run.log in the run folder." Nothing is added when no channel failed or was skipped. The command still ends with 0. The separate line the command printed about failed images is removed, since the message now says it.
+- An image the runner marks failed (finding 17) keeps its segmentation status and warnings in `images.csv` in a Cellpose run.
+- An image refused when Cellpose reads it (from 3.13) fails with the reason only; the repeated warning is gone.
+
+**`run.log`** (findings 9 and 20): "1 spot", "1 cluster", "1 cell"; for each channel "spot radius 1.12 px in Z, 0.99 px in Y and X"; with `drop_border_cells` on, "44 cells in the label image, 26 kept (18 touching the image border left out, as `segmentation.drop_border_cells` is on)".
+
+**`run_info.yaml`** (finding 10, decision 6): the versions of scikit-learn, pandas, pydantic and plotly, read without loading the packages; and `files_read`, with the kind, path, size in bytes, date last changed and SHA-256 checksum of each label file given by the user and of a Cellpose model file of the user's own. Label files are read once each, in the worker that reads the labels; the model file once, in the main process, in pieces of 1 MB. A built-in model such as `cpsam_v2` gets no entry, and neither do the label files the run writes itself.
+
+**Other outputs:** the Cellpose QC figure shows the channel name when the segmentation channel is also a named FISH channel (finding 16); label files written by the runner carry the pixel size in the way ImageJ stores it (finding 18); `log_intensity` is written as whole numbers when every value is whole (finding 19).
+
+**Tables.** The comparisons with the v1 reference pass unchanged. The test kit's tables differ only in the text of `log_intensity` and the new column of `calibration.csv`.
+
+**Choices the plan does not settle**
+
+- `run.log` holds the message of a stopped run at the end, not at the moment of the stop.
+- Finding 20 also named the Cellpose QC figure, which still counts every cell Cellpose found. The plan asked for `run.log` only.
+- For a run with label files, `images.csv` leaves the segmentation status empty for an image the runner marks failed, because the runner cannot tell whether the worker had read the file.
+
+**Not tested:** a stop reported by the Cellpose step while a worker's result is ready.
+
+**Manual check for the user:** open a label file written by a Cellpose run in Fiji and see that Image › Properties shows the pixel size in µm. Only `tifffile` was used to read it back here.
