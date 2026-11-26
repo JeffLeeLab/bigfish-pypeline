@@ -4,17 +4,17 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 
 ## State
 
-- **Phases 0, 1 and 2:** done, signed off, merged into `main` and pushed. Phase 2 was signed off and merged on 24 Nov 2026 (devlog 2.8).
-- **Phase 3 (outputs, logs and QC):** every task is done and committed on `msp`. Tasks 3.1 to 3.11 are in devlog 3.1–3.11. Three independent reviews (devlog 3.12, findings 1–28) led to tasks 3.13 to 3.17 (devlog 3.13–3.17) and the review of 3.18. The user answered the open points on 26 Nov 2026 (devlog 3.18, at its end): the rolling-ball radius stays 5 px, the samples are fine, the tests may run in parallel. A fourth review, by GPT-6.2 Astra through Codex (devlog 3.19, findings 29–40), was asked for before sign-off; all its findings are fixed (devlog 3.20, 3.21) and the state after the fixes is in devlog 3.22. Task 3.23 (planes for the Cellpose projection), planned on 26 Nov 2026 with the cultured-cell crop, is not started.
+- **Phases 0, 1, 2 and 3:** done, signed off, merged into `main` and pushed. Phase 3 (outputs, logs and QC) was signed off and merged on 26 Nov 2026 (devlog 3.22, at its end). Its record: tasks in devlog 3.1–3.11, three independent reviews in 3.12 (findings 1–28) with their fixes in 3.13–3.17, the review of the phase in 3.18, a fourth review in 3.19 (findings 29–40) with its fixes in 3.20 and 3.21, and the state at sign-off in 3.22.
+- **Task 3.23** (planes for the Cellpose projection, planned on 26 Nov 2026 with the cultured-cell crop): not started. The user decided that it is done on `msp` after the Phase 3 merge.
+- **Phase 4 (Optimise notebook):** not yet planned in detail.
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
 - 1,197 tests pass in `bigfish-msp` with the full-size image (devlog 3.22). Run the suite in parallel, in two commands, about 5 and a half minutes in all: `conda run -n bigfish-msp python -m pytest -n 6 -m "not full_image"`, then `conda run -n bigfish-msp python -m pytest -m full_image` (the full-size tests need about 5 GB each and must not run side by side). One test at a time the suite takes 13 minutes, and a foreground command is cut off after 10 minutes, so run it in the background.
-- Everything of Phase 3 is committed on `msp` and not pushed.
+- `main` and `msp` are at the same commit, and both are pushed.
 
 ## Next step
 
-1. Task 3.23 (plan): a setting that limits the projection for Cellpose to some planes, tested on the cultured-cell crop in `tests/data/` (devlog, "Cultured-cell test image and task 3.23 planned"). It is planned and not started. Its plan speaks of "the check of the first image", which task 3.21 replaced by a check of every image when a run is planned; the plane numbers are checked there.
-2. The user reads devlog 3.19 to 3.22 (the fourth review, its fixes and the changes in behaviour they bring), signs off Phase 3 and says when to merge `msp` into `main` and push. Nothing is merged or pushed before that.
-3. After the merge, Phase 4 (Optimise notebook) is planned in detail in `msp-plan.md`, starting from the points carried forward in devlog 3.11, 3.18 and 3.22.
+1. Task 3.23, as briefed in the plan: the setting `segmentation.z_planes`, tested on the cultured-cell crop in `tests/data/` (devlog, "Cultured-cell test image and task 3.23 planned"). The user looks at the Cellpose QC figure of the cultured-cell kit and says when it is merged into `main`.
+2. Plan Phase 4 (Optimise notebook; spec section 9 and section 11, Phase 4) in detail in `msp-plan.md`: tasks, who does each, the checks, and the decisions the user must take first. Start from the points carried forward in devlog 3.11 (points 1 to 3), 3.18 (points 11 to 13) and 3.22 (point 30), and from devlog 2.8. Bring the plan to the user before any task starts.
 
 ## How the work is run
 
@@ -27,7 +27,7 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 
 - **OMERO on the real server, on a day with a stable VPN:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) to see both images finish, the "rejoining" line if the connection drops, and no session key or `WARNING:` lines in the terminal. The rejoining code changed in 3.13 and 3.20; what the server sends for an expired session key could not be checked without it.
 - **The Cellpose 4 mask review** on the cultured-cell image in `~/bigfish-testdata/cultured_cells/` (planes 12–30), after task 3.23 and before Phase 8.
-- **The sign-off of Phase 3** (devlog 3.18 and 3.22).
+- **Manual checks of the Phase 3 review** that the user has not reported on (devlog 3.18 and 3.22): the HTML final QC in a browser, `check` on a settings file with a value out of range and on a folder with a 32-bit image, and the "choices the plan does not settle" in 3.13 to 3.15, 3.20 and 3.21.
 - **Manual checks of the Phase 2 review** (devlog 2.8): Cellpose on the test kit, a look at a full-size run folder, and the "choices the spec does not settle" in 2.1, 2.3 and 2.4.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.
 
@@ -58,6 +58,7 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 - The final QC shows only the cells of `cells.csv`, and clusters are drawn as outlines (devlog 3.14).
 - Cellpose pre-treatment clips after background subtraction, and cluster centres always have decimals (devlog 3.16). Both depart from v1 by the user's decision.
 - An executor cut off by a lost connection can be resumed with its context by sending it a message; its edits stay in the working tree.
+- Another session may commit to `msp` while executors work (the cultured-cell crop and task 3.23 arrived that way). Read `git log` before rewriting a section of this file or of the plan, and change only the lines that are yours.
 
 - The user reviewed the rolling ball comparison and kept rolling ball as the default for FISH channels (devlog 2.6). It gives about a third more clusters than top-hat on the full-size exon channel, because decomposition places more spots in each bright focus on the rolling ball image.
 - OMERO output names leave out a `.tif` or `.tiff` ending (user's decision, devlog): image 5806 gives `5806_20240308_sypN_DAPI_Phal_jim-exon_jim-intron_100x_00001`.

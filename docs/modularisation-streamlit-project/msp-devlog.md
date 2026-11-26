@@ -2369,3 +2369,5 @@ In parallel the whole suite takes about 5 and a half minutes, within the aim of 
 **Not verified, for the user's OMERO check on the real server:** what the server sends when a session key has expired (3.20).
 
 **Housekeeping:** `msp` is 53 commits ahead of GitHub; nothing of Phase 3 has been pushed.
+
+**Sign-off (26 Nov 2026):** the user signed off Phase 3 and asked for `msp` to be merged into `main` and pushed. Task 3.23 (planes for the Cellpose projection), planned the same day and not started, is done on `msp` after the merge, by the user's decision. Still open and not holding up the next work: the OMERO check on the real server, which now also covers the rejoining code of 3.13 and 3.20, and the Cellpose mask review on the cultured-cell image (after 3.23, before Phase 8).
