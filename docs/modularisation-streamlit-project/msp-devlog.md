@@ -2371,3 +2371,16 @@ In parallel the whole suite takes about 5 and a half minutes, within the aim of 
 **Housekeeping:** `msp` is 53 commits ahead of GitHub; nothing of Phase 3 has been pushed.
 
 **Sign-off (26 Nov 2026):** the user signed off Phase 3 and asked for `msp` to be merged into `main` and pushed. Task 3.23 (planes for the Cellpose projection), planned the same day and not started, is done on `msp` after the merge, by the user's decision. Still open and not holding up the next work: the OMERO check on the real server, which now also covers the rejoining code of 3.13 and 3.20, and the Cellpose mask review on the cultured-cell image (after 3.23, before Phase 8).
+
+## Phase 4: Optimise notebook
+
+### 4.0 Decisions (26 Nov 2026)
+
+The user agreed the plan of Phase 4 and its five proposals as written in `msp-plan.md`:
+
+1. The steps of one channel move into a new module, `steps.py`, called by the batch, the notebook and later the app. The spec's list of modules (4.1) gains this line.
+2. The notebook saves an image's results by running it through the same function as the batch, into a run folder of the usual layout. A test checks that the saved results equal what the notebook showed step by step.
+3. The notebook shows the automatic threshold of the open image; a separate, optional cell runs the calibration over the images whose names contain the filter and shows the calibration plot.
+4. OMERO: one cell asks for the password in the notebook's own password box. Tested with stand-ins for the server only; the check on the real server is the user's.
+5. The notebook keeps one channel's images in memory at a time and frees them when the channel is changed.
+
