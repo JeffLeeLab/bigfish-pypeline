@@ -5,6 +5,8 @@
 calibration pass of the calibrated threshold mode.
 `run_batch` runs every image of a batch in a pool of worker processes. With
 Cellpose, the main process segments each image before handing it to a worker.
+`save_image_results` runs one image the way a batch does, in the calling
+program itself, and saves its results in a run folder of the usual layout.
 """
 
 import atexit
@@ -17,6 +19,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -28,6 +31,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import psutil
 
 from bigfish_pypeline import __version__, io
@@ -35,6 +39,7 @@ from bigfish_pypeline import outputs
 from bigfish_pypeline import segmentation
 from bigfish_pypeline import steps
 from bigfish_pypeline.cells import border_labels
+from bigfish_pypeline.config import parse_config
 from bigfish_pypeline.detection import (
     calibrate_threshold,
     detect_spots,
@@ -1165,6 +1170,52 @@ class _WorkerPool:
             executor.shutdown(wait=True)
 
 
+class _CallingProcess:
+    """
+    Takes the place of the pool of workers when one image is processed in the
+    calling program itself (see save_image_results): no process is started.
+
+    A task handed over is carried out by `carry_out`, called just before the
+    run waits for results. An error of the task is kept as its result, as a
+    worker's would be; KeyboardInterrupt and MemoryError are raised at once.
+    """
+
+    n_workers = 1
+
+    def __init__(self):
+        self._waiting = {}
+
+    def submit(self, function, **arguments):
+        future = Future()
+        self._waiting[future] = (function, arguments)
+        return future
+
+    def carry_out(self, futures):
+        """Carry out, one after the other, the tasks among `futures` not yet done."""
+        for future in futures:
+            call = self._waiting.pop(future, None)
+            if call is None:
+                continue
+            function, arguments = call
+            try:
+                result = function(**arguments)
+            except MemoryError:
+                raise
+            except Exception as error:
+                future.set_exception(error)
+            else:
+                future.set_result(result)
+
+    def stop_now(self):
+        """Drop the tasks not yet carried out."""
+        for future in self._waiting:
+            future.cancel()
+        self._waiting.clear()
+
+    def close(self):
+        self.stop_now()
+
+
 # -- checks before the run ---------------------------------------------------
 
 
@@ -1425,7 +1476,9 @@ class CellposeSetup:
     report: a sentence for the log naming the device.
     warnings: sentences for the log (a GPU passed over; slow on the CPU).
     threads: processor threads Cellpose may use on the CPU.
-    load_seconds: time taken to choose the device and load the model.
+    load_seconds: time taken to choose the device and load the model; None
+        when the model was loaded before the run, or the cells were found
+        before it (see save_image_results).
     model_file: the record of a model file of the user's own (see
         outputs.file_record), or None for one of Cellpose's models.
     """
@@ -1600,21 +1653,29 @@ class _Segmenter:
             return True
 
     def _segment(self, task, future):
-        """Read, pre-treat and segment one image, then write its label file and QC figure."""
+        """Read, pre-treat and segment one image, then write its label file and QC figure.
+
+        When the run was given the image's segmentation (see _Run), that is
+        used as it is and Cellpose is not run.
+        """
         image = task.image
+        given = self.run.given_segmentation
         outcome = {"error": None, "details": None, "session_ended": None, "warnings": [],
-                   "notes": [], "n_cells": None, "seconds": None, "total_seconds": None}
+                   "notes": [], "n_cells": None, "seconds": None, "total_seconds": None,
+                   "given": given is not None}
         started = time.perf_counter()
         try:
-            channel = self.run.read_segmentation_channel(image, notes=outcome["notes"])
-            if channel.ndim == 3:
-                label = (f"OMERO image {image.source}" if self.run.config.run.input.source == "omero"
-                         else Path(image.source).name)
-                _check_planes(self.run.config, label, channel.shape[0])
-            prepared = segmentation.pretreat_channel(channel, **self.pretreatment)
-            del channel
-            result = segmentation.segment_cells(self.setup.model, prepared, **self.eval_settings)
-            del prepared
+            result = given
+            if result is None:
+                channel = self.run.read_segmentation_channel(image, notes=outcome["notes"])
+                if channel.ndim == 3:
+                    label = (f"OMERO image {image.source}" if self.run.config.run.input.source == "omero"
+                             else Path(image.source).name)
+                    _check_planes(self.run.config, label, channel.shape[0])
+                prepared = segmentation.pretreat_channel(channel, **self.pretreatment)
+                del channel
+                result = segmentation.segment_cells(self.setup.model, prepared, **self.eval_settings)
+                del prepared
             self._write(lambda: segmentation.write_label_file(
                 result["masks"], self.run.label_folder, image.name,
                 pixel_size_nm=self.run.config.image.voxel_size_nm.yx))
@@ -1828,7 +1889,8 @@ class _Run:
 
     def __init__(self, config, run_folder, images, label_folder, subsets, thresholds,
                  n_workers, omero, show, image_function, calibration_function,
-                 cellpose=None, omero_conn=None, start=None):
+                 cellpose=None, omero_conn=None, start=None, in_process=False,
+                 given_segmentation=None):
         """
         label_folder: the folder the workers read label files from: the
             user's folder for label files, a folder in the run folder for
@@ -1837,6 +1899,12 @@ class _Run:
         omero_conn: the OMERO connection of the main process (OMERO runs).
         start: the time the run started (time.monotonic()), shared with the
             run record so that both give the same duration; now when None.
+        in_process: True when the images are processed in the calling
+            program, one after the other, with no worker process (see
+            _CallingProcess and save_image_results).
+        given_segmentation: the result of segmentation.segment_cells for the
+            run's one image, made before the run; its masks are written as
+            the image's label file and Cellpose is not run. None otherwise.
         """
         self.config = config
         self.run_folder = Path(run_folder)
@@ -1844,7 +1912,9 @@ class _Run:
         self.label_folder = label_folder
         self.subsets = subsets
         self.thresholds = dict(thresholds)
-        self.pool = _WorkerPool(n_workers)
+        self.in_process = in_process
+        self.given_segmentation = given_segmentation
+        self.pool = _CallingProcess() if in_process else _WorkerPool(n_workers)
         self.omero = omero
         self.omero_conn = omero_conn
         self.show = show
@@ -2111,6 +2181,8 @@ class _Run:
                 waiting_for.append(segmenter.future)
             done = []
             if waiting_for:
+                if self.in_process:
+                    self.pool.carry_out(waiting_for)
                 done, _ = wait(waiting_for, timeout=CHECK_INTERVAL_S, return_when=FIRST_COMPLETED)
                 done = [future for future in done if future in running]
 
@@ -2434,11 +2506,17 @@ class _Run:
             self.log(outcome["details"], details=True)
             task.arguments["segmentation_error"] = reason
             return
-        self.log(
-            f"{name}: segmented with Cellpose in {outcome['seconds']:.1f} s, "
-            f"{outcome['n_cells']} cell(s) ({outcome['total_seconds']:.1f} s with reading, "
-            "pre-treatment and saving)"
-        )
+        if outcome.get("given"):
+            self.log(
+                f"{name}: {outcome['n_cells']} cell(s) found with Cellpose before saving, "
+                "used as they are (Cellpose was not run again)"
+            )
+        else:
+            self.log(
+                f"{name}: segmented with Cellpose in {outcome['seconds']:.1f} s, "
+                f"{outcome['n_cells']} cell(s) ({outcome['total_seconds']:.1f} s with reading, "
+                "pre-treatment and saving)"
+            )
         for warning in outcome["warnings"]:
             self.log(f"{name}: warning: {warning}")
         if outcome["details"]:
@@ -2868,16 +2946,38 @@ def _run_batch(config, config_file, omero_conn, show, image_function, calibratio
     calibration_function = calibration_function or calibration_threshold
 
     plan = plan_run(config, omero_conn)
+
+    def get_cellpose():
+        if show is not None:
+            show("Getting Cellpose ready: testing the device and loading the model...")
+        return prepare_cellpose(config, device_chooser, model_loader)
+
+    return _run_planned(config, plan, config_file, show, image_function, calibration_function,
+                        get_cellpose, command)
+
+
+def _run_planned(config, plan, config_file, show, image_function, calibration_function,
+                 get_cellpose, command, in_process=False, given_segmentation=None):
+    """
+    Carry out a run whose checks have been made (see plan_run), from getting
+    Cellpose ready to the end; returns a BatchResult.
+
+    get_cellpose: function called with no argument that gives the run's
+        CellposeSetup; called only when the run uses Cellpose.
+    in_process, given_segmentation: see _Run. In the calling program, the
+        number of workers is not lowered for Cellpose on the CPU.
+
+    The Cellpose setup is let go at the end, and `plan` is closed.
+    """
     started_text, start = _record_time(), time.monotonic()
     cellpose = None
     run = None
     try:
         if uses_cellpose(config):
-            if show is not None:
-                show("Getting Cellpose ready: testing the device and loading the model...")
-            cellpose = prepare_cellpose(config, device_chooser, model_loader)
+            cellpose = get_cellpose()
         n_workers, workers_reason = plan.n_workers, plan.workers_reason
-        if cellpose is not None and cellpose.device == "cpu" and config.run.workers == "auto":
+        if (not in_process and cellpose is not None and cellpose.device == "cpu"
+                and config.run.workers == "auto"):
             # the device was chosen automatically, after the workers were counted
             cores = worker_cores(os.cpu_count(), cellpose_on_cpu=True)
             if n_workers > cores:
@@ -2920,7 +3020,8 @@ def _run_batch(config, config_file, omero_conn, show, image_function, calibratio
             run_config = config.with_full_paths().with_resolved([image.listed for image in plan.images], thresholds)
             run = _Run(run_config, run_folder, plan.images, label_folder, plan.subsets, thresholds,
                        n_workers, plan.omero, show, image_function, calibration_function,
-                       cellpose=cellpose, omero_conn=plan.omero_conn, start=start)
+                       cellpose=cellpose, omero_conn=plan.omero_conn, start=start,
+                       in_process=in_process, given_segmentation=given_segmentation)
             return _run(run, config_file, workers_reason, plan.workers_warning)
         except BaseException as error:
             ending = error
@@ -2971,12 +3072,19 @@ def _unexpected_problem(error, run_folder, run, key):
 
 
 def _run(run, config_file, workers_reason, workers_warning):
-    """Carry out a run whose folder has been made; returns a BatchResult."""
+    """Carry out a run whose folder has been made; returns a BatchResult.
+
+    A run in the calling program (run.in_process) starts no worker process,
+    so the thread variables are left as they are, and Ctrl+C (or stopping a
+    notebook cell) raises KeyboardInterrupt as usual rather than cancelling.
+    """
     config = run.config
-    old_variables = _set_thread_variables()
+    old_variables = {}
     old_handler = None
-    if threading.current_thread() is threading.main_thread():
-        old_handler = signal.signal(signal.SIGINT, run.interrupt)
+    if not run.in_process:
+        old_variables = _set_thread_variables()
+        if threading.current_thread() is threading.main_thread():
+            old_handler = signal.signal(signal.SIGINT, run.interrupt)
     keep_awake = _KeepAwake()
     try:
         run.log(f"Run folder: {run.run_folder}")
@@ -3107,10 +3215,11 @@ def _log_cellpose(run):
     run.log(setup.report)
     for warning in setup.warnings:
         run.log(f"Warning: {warning}")
-    text = f"Cellpose ready in {setup.load_seconds:.1f} s (device tested and model loaded)"
-    if setup.device == "cpu":
-        text += f"; it uses {setup.threads} processor thread(s)"
-    run.log(text + ".")
+    if setup.load_seconds is not None:
+        text = f"Cellpose ready in {setup.load_seconds:.1f} s (device tested and model loaded)"
+        if setup.device == "cpu":
+            text += f"; it uses {setup.threads} processor thread(s)"
+        run.log(text + ".")
     if run.config.outputs.label_images:
         run.log(f"Label images: saved in {run.label_folder}")
     else:
@@ -3118,3 +3227,322 @@ def _log_cellpose(run):
             "Label images: not kept (`outputs.label_images` is off); each is deleted "
             "once its image is finished."
         )
+
+
+# ---------------------------------------------------------------------------
+# The results of one image, saved from the notebook or the app
+# ---------------------------------------------------------------------------
+
+IN_PROCESS_WORKERS_REASON = (
+    "1 worker(s): the image was processed by the program that saved its results "
+    "(no worker process was started)"
+)
+CELLPOSE_DEVICE_NOT_KNOWN = "not known (the cells were found before saving)"
+SAVED_FROM_PYTHON = "saved from Python (save_image_results), not from the command line"
+
+
+@dataclass
+class SavedImage:
+    """Outcome of save_image_results.
+
+    run_folder: the run folder.
+    status: how the run ended, "finished" or "stopped" (see BatchResult). A
+        run is "finished" also when the image or a channel failed; the
+        `images` rows say so.
+    message: a plain sentence saying how the run ended.
+    images: the image's rows of the `images` table, one per channel, as a
+        pandas table (empty when the image did not finish).
+    """
+
+    run_folder: Path
+    status: str
+    message: str
+    images: object
+
+
+def save_image_results(config, image, omero_conn=None, cellpose_result=None, cellpose_model=None,
+                       command=None, show=None):
+    """
+    Run one image through every step, exactly as a batch run does, and save
+    its results in a new run folder of the usual layout.
+
+    The image is processed in this program itself (for example the
+    notebook), without worker processes. The run folder is made where a
+    batch run would make it (`run.output_folder`, or `bigfish_results/` in
+    the image's folder) and holds the same files as a batch run of this one
+    image: the tables, `per_image/`, the label image, the QC files switched
+    on in `outputs.qc`, the `.npz` files when switched on, `run_config.yaml`,
+    `run_info.yaml`, `progress.json` and `run.log`. Passing `run_config.yaml`
+    to `bigfish-pypeline batch` repeats the run.
+
+    config: the settings (a Config). For a local image, the run's input
+        folder is the image's folder. A calibrated threshold must already be
+        in `resolved.thresholds` (run the calibration first).
+    image: the image file (a path), or an OMERO image ID (a whole number).
+    omero_conn: for an OMERO image, the connection that is already logged
+        in. This function never logs in and never asks for a password.
+    cellpose_result: with `segmentation.source: cellpose`, the result of
+        segmentation.segment_cells for this image, made with the settings in
+        `config`. Its masks are used as they are and saved as the label
+        image, and the Cellpose QC figure is drawn from it; Cellpose is not
+        run again. When None, Cellpose is run here, as in a batch run.
+    cellpose_model: a Cellpose model already loaded (for example in the
+        notebook), used instead of loading the model again. It must be the
+        model named in `segmentation.cellpose.model`.
+    command: the command or notebook that saved the results, written in
+        `run_info.yaml`. When None, the file says the results were saved
+        from Python.
+    show: a function called with each log line (e.g. print), or None.
+
+    Problems found before the image is processed raise BatchError with a
+    plain message, and no run folder is made. A failure of the image or of
+    one of its channels is recorded in the tables and in `run.log`, as in a
+    batch run; it does not raise. An unexpected problem during the run
+    raises RunStoppedError, as run_batch does. Ctrl+C, or stopping the
+    notebook cell, stops the run and is passed on (KeyboardInterrupt).
+
+    The thread settings of this program are the same afterwards as before.
+
+    Returns a SavedImage with the run folder, the status, a plain message and
+    the image's rows of the `images` table.
+    """
+    with io.plain_logging(), warnings.catch_warnings():
+        hide_mean_intensity_warning()
+        torch_threads = _torch_threads()
+        try:
+            return _save_image_results(config, image, omero_conn, cellpose_result, cellpose_model,
+                                       command, show)
+        finally:
+            _restore_torch_threads(torch_threads)
+
+
+def _save_image_results(config, image, omero_conn, cellpose_result, cellpose_model, command, show):
+    config, plan, given = _plan_image(config, image, omero_conn, cellpose_result)
+
+    def get_cellpose():
+        if given is not None or cellpose_model is not None:
+            return _cellpose_without_loading(config, cellpose_model, cells_given=given is not None)
+        if show is not None:
+            show("Getting Cellpose ready: testing the device and loading the model...")
+        return prepare_cellpose(config)
+
+    # The images are read through the caller's OMERO connection, as a worker
+    # reads through its own; a connection made to rejoin the session after a
+    # drop is let go at the end.
+    omero_before = dict(_omero)
+    if plan.omero_conn is not None:
+        _omero["conn"] = plan.omero_conn
+        _omero["session"] = (plan.omero["host"], int(plan.omero["port"]), plan.omero["key"])
+    try:
+        result = _run_planned(config, plan, None, show, process_image, calibration_threshold,
+                              get_cellpose, command or SAVED_FROM_PYTHON, in_process=True,
+                              given_segmentation=given)
+    finally:
+        if plan.omero_conn is not None:
+            if _omero["conn"] is not None and _omero["conn"] is not plan.omero_conn:
+                io.detach_session(_omero["conn"])
+            _omero.clear()
+            _omero.update(omero_before)
+
+    table = result.run_folder / "images.csv"
+    images = pd.read_csv(table) if table.is_file() else pd.DataFrame(columns=outputs.IMAGE_COLUMNS)
+    return SavedImage(result.run_folder, result.status, result.message, images)
+
+
+def _changed_config(config, change):
+    """Copy of a config after `change(data)` has edited its settings."""
+    data = config.to_dict()
+    change(data)
+    return parse_config(data, config.config_folder)
+
+
+def _plan_image(config, image, omero_conn, cellpose_result):
+    """
+    Every check made before a run, for one image (see plan_run).
+
+    Returns (config, plan, given): the config of the run, whose `resolved`
+    block names the image; the RunPlan; and the checked segmentation passed
+    in, or None. Raises BatchError with a plain message for any problem.
+    """
+    thresholds = dict(config.resolved.thresholds) if config.resolved is not None else {}
+    omero_image = isinstance(image, (int, np.integer)) and not isinstance(image, bool)
+    if not omero_image and not isinstance(image, (str, os.PathLike)):
+        raise BatchError("Give the image as the path of its file, or as an OMERO image ID (a whole number).")
+
+    if omero_image:
+        image_id = int(image)
+
+        def change(data):
+            data["run"]["input"]["source"] = "omero"
+            data["run"]["input"]["omero"].update(dataset_id=None, image_ids=[image_id])
+            data.pop("resolved", None)
+
+        config = _changed_config(config, change)
+    else:
+        path = Path(os.path.abspath(Path(image).expanduser()))
+        if not path.is_file():
+            raise BatchError(f"The image {path} does not exist.")
+
+        def change(data):
+            data["run"]["input"].update(source="local", folder=str(path.parent))
+
+        config = _changed_config(config, change).with_resolved([path.name], thresholds)
+
+    # checks that need only the config
+    label_folder = _check_segmentation(config)
+    _check_output_folder(config)
+    _check_calibrated_thresholds(config)
+    if cellpose_result is not None and not uses_cellpose(config):
+        raise BatchError(
+            "A Cellpose segmentation was passed in, but these settings do not use Cellpose: "
+            "set `segmentation.enabled` to true and `segmentation.source` to `cellpose`."
+        )
+
+    omero = {"host": None, "port": None, "key": None}
+    if omero_image:
+        settings = config.run.input.omero
+        if not settings.host.strip():
+            raise BatchError("Set the OMERO server (`run.input.omero.host`).")
+        if omero_conn is None:
+            raise BatchError(
+                "An OMERO image needs the OMERO connection that is already logged in "
+                "(`omero_conn`). Log in to OMERO first, then save again."
+            )
+        try:
+            key = io.session_key(omero_conn)
+        except ConnectionError:
+            raise BatchError(
+                "The OMERO connection passed in is not logged in. Log in to OMERO first, then save again."
+            ) from None
+        omero = {"host": settings.host, "port": settings.port, "key": key}
+        try:
+            images, headers, reasons = _omero_images(config, omero_conn)
+        except io.OmeroSessionEnded as error:
+            raise BatchError(str(error)) from None
+        config = config.with_resolved([images[0].listed], thresholds)
+    else:
+        images, headers, reasons = _local_images(config)
+
+    problem = _image_problem(config, headers[0], reasons[0])
+    if problem is not None:
+        raise BatchError(f"The image cannot be used with these settings: {problem}")
+    given = None
+    if cellpose_result is not None:
+        given = _checked_segmentation(config, cellpose_result, _image_size_yx(config, headers[0]))
+
+    plan = RunPlan(images, headers, label_folder, {}, 1, IN_PROCESS_WORKERS_REASON, None, omero,
+                   omero_conn if omero_image else None, None, [None])
+    return config, plan, given
+
+
+def _check_calibrated_thresholds(config):
+    """Raise BatchError when a channel uses a calibrated threshold whose value is not in
+    `resolved.thresholds`: one image cannot be calibrated on its own."""
+    known = config.resolved.thresholds if config.resolved is not None else {}
+    missing = [str(channel.index) for channel in config.channels
+               if channel.threshold.mode == "calibrated" and channel.index not in known]
+    if not missing:
+        return
+    if len(missing) == 1:
+        start, value = f"Channel {missing[0]} uses", "it"
+    else:
+        start, value = f"Channels {', '.join(missing)} use", "them"
+    raise BatchError(
+        f"{start} a calibrated threshold (`threshold.mode: calibrated`), but the settings hold "
+        f"no calibrated value for {value} yet (`resolved.thresholds`). Run the calibration first, "
+        "or set `threshold.mode` to `manual` with the threshold value shown in the notebook."
+    )
+
+
+def _image_size_yx(config, header):
+    """(Y, X) size of an image, from its header."""
+    if isinstance(header, io.OmeroImageInfo):
+        return header.size_y, header.size_x
+    sizes = dict(zip(config.image.axes, header.shape))
+    return sizes["Y"], sizes["X"]
+
+
+def _checked_segmentation(config, result, size_yx):
+    """
+    The Cellpose result passed in, checked against the image, with the masks
+    as a label image (see segmentation.check_labels) and the number of cells
+    counted from them. Raises BatchError when it cannot be used.
+    """
+    masks = result.get("masks") if isinstance(result, dict) else None
+    if masks is None:
+        raise BatchError(
+            "The Cellpose segmentation passed in holds no masks: pass the result of "
+            "`segmentation.segment_cells` for this image."
+        )
+    try:
+        masks = segmentation.check_labels(masks, size_yx, name="Cellpose masks passed in")
+    except LabelFileError as error:
+        raise BatchError(f"{error}. Pass the masks Cellpose made for this image.") from None
+    if config.outputs.qc.cellpose and (result.get("model_input") is None or result.get("flows") is None):
+        raise BatchError(
+            "The Cellpose segmentation passed in lacks what the Cellpose QC figure is drawn from "
+            "(`model_input` and `flows`): pass the whole result of `segmentation.segment_cells`, "
+            "or switch off `outputs.qc.cellpose`."
+        )
+    n_cells = len(np.unique(masks[masks > 0]))
+    return {
+        "masks": masks,
+        "model_input": result.get("model_input"),
+        "flows": result.get("flows"),
+        "n_cells": n_cells,
+        "seconds": result.get("seconds"),
+        "warning": segmentation.NO_CELLS_WARNING if n_cells == 0 else None,
+    }
+
+
+def _cellpose_without_loading(config, model, cells_given):
+    """
+    The CellposeSetup of a run whose model was loaded before it (`model`), or
+    whose cells were found before it (`cells_given`; `model` may then be
+    None). The device is the model's, or not known without a model.
+    """
+    settings = config.segmentation
+    device = getattr(getattr(model, "device", None), "type", None)
+    if device not in segmentation.DEVICE_NAMES:
+        device = None
+    where = f" on {segmentation.DEVICE_NAMES[device]}" if device is not None else ""
+    warnings_found = []
+    if cells_given:
+        report = (f"Cellpose: the cells found before saving{where} are used as they are; "
+                  "Cellpose is not run again.")
+    else:
+        report = f"Cellpose runs{where}, with the model loaded before saving."
+        if device == "cpu":
+            warnings_found.append(segmentation.CPU_WARNING)
+    model_file = None
+    model_path = segmentation.custom_model_file(settings.cellpose.model)
+    if model_path is not None:
+        model_file, _ = _model_file_record(model_path)
+    return CellposeSetup(
+        model_name=settings.cellpose.model, model=model,
+        device=device or CELLPOSE_DEVICE_NOT_KNOWN, report=report, warnings=warnings_found,
+        threads=cellpose_threads(os.cpu_count()), load_seconds=None, model_file=model_file,
+    )
+
+
+def _torch_threads():
+    """The number of threads PyTorch uses, or None when PyTorch is not loaded."""
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    try:
+        return torch.get_num_threads()
+    except Exception:
+        return None
+
+
+def _restore_torch_threads(threads):
+    """Set PyTorch back to `threads` threads (see _torch_threads)."""
+    if threads is None:
+        return
+    try:
+        torch = sys.modules["torch"]
+        if torch.get_num_threads() != threads:
+            torch.set_num_threads(threads)
+    except Exception:
+        pass
