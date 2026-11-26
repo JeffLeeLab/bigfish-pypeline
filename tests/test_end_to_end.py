@@ -179,6 +179,15 @@ def run_folder_of(command):
     return folder
 
 
+def check_last_lines(command, run_folder, message):
+    """The run folder is shown just before the summary, and the last line is the
+    run's final message, which starts with `message`."""
+    lines = command.out.splitlines()
+    assert lines[-1].startswith(message), command.describe()
+    index = max(number for number, line in enumerate(lines) if line == f"Run folder: {run_folder}")
+    assert lines[index + 1].startswith("Summary: "), lines[index:]
+
+
 def batch(arguments, base_folder, timeout=WAIT_S):
     """Run `batch` to its end; returns (command, exit code, run folder or None)."""
     command, code = run_command(["batch"] + list(arguments), base_folder, timeout)
@@ -329,7 +338,7 @@ def test_kit_with_label_files_agrees_with_v1(kit_with_labels, crop_reference_fol
     command, code, folder = kit_with_labels
     assert code == 0, command.describe()
     assert f"{CROP_NAME}, channel 2: done, threshold 18, 692 spots" in command.out
-    assert command.out.splitlines()[-1] == f"Run folder: {folder}"
+    check_last_lines(command, folder, "The run finished: 1 image(s) processed.")
 
     reference_folder = crop_reference_folder / "general_manual18_subpixel-off"
     reference = np.load(next(reference_folder.glob("*_bfoutput.npz")))
@@ -423,10 +432,9 @@ def test_mixed_batch_run(mixed_batch):
     assert code == 0, command.describe()
     assert run_folder is not None
     lines = command.out.splitlines()
-    assert lines[-1] == f"Run folder: {run_folder}"
-    # the last line of the run gives the number of failed and skipped channels
-    assert lines[-2].startswith("The run finished: 8 image(s) processed; 6 channel(s) failed"), lines[-2]
-    assert lines[-2].endswith(". See images.csv and run.log in the run folder."), lines[-2]
+    # the last line gives the number of failed and skipped channels
+    check_last_lines(command, run_folder, "The run finished: 8 image(s) processed; 6 channel(s) failed")
+    assert lines[-1].endswith(". See images.csv and run.log in the run folder."), lines[-1]
     assert "Workers: 2 worker(s), as set in the config" in command.out
     assert progress(run_folder)["status"] == "finished"
     assert not list((run_folder / "per_image").glob("*.tmp"))
@@ -644,8 +652,7 @@ def only_run_folder(base):
 
 
 def check_cancelled_run(command, run_folder, worker_processes):
-    assert command.out.splitlines()[-1] == f"Run folder: {run_folder}"
-    assert "The run was cancelled" in command.out
+    check_last_lines(command, run_folder, "The run was cancelled")
     assert progress(run_folder)["status"] == "cancelled"
     assert "Traceback" not in command.err
     done = finished_images(run_folder)
@@ -730,6 +737,7 @@ def test_worker_killed_during_a_run(tmp_path):
 
 
 def test_first_image_cannot_be_read(tmp_path):
+    """A damaged first image fails on its own; the other images are processed."""
     folder = tmp_path / "input"
     folder.mkdir()
     damaged = write_tif(folder / "a_damaged.tif", spots_stack(), "ZCYX")
@@ -738,15 +746,15 @@ def test_first_image_cannot_be_read(tmp_path):
     settings = write_settings(tmp_path / "settings.yaml", folder, tmp_path / "out")
 
     command, code, run_folder = batch([settings], tmp_path)
-    assert code == 1, command.describe()
-    assert run_folder is None
-    assert "The first image cannot be used" in command.err
-    assert "a_damaged.tif" in command.err
+    assert code == 0, command.describe()
+    images = read_table(run_folder, "images")
+    assert set(images[images["image"] == "a_damaged"]["status"]) == {"failed"}
+    assert "failed" not in set(images[images["image"] == "b_good"]["status"])
     assert "Traceback" not in command.err
-    assert not (tmp_path / "out").exists()
 
 
 def test_first_image_with_another_layout(tmp_path):
+    """A first image with another layout fails on its own; the other images are processed."""
     folder = tmp_path / "input"
     folder.mkdir()
     write_tif(folder / "a_one_channel.tif", spots_stack(n_channels=1)[:, 0], "ZYX")
@@ -754,9 +762,25 @@ def test_first_image_with_another_layout(tmp_path):
     settings = write_settings(tmp_path / "settings.yaml", folder, tmp_path / "out")
 
     command, code, run_folder = batch([settings], tmp_path)
+    assert code == 0, command.describe()
+    images = read_table(run_folder, "images")
+    assert set(images[images["image"] == "a_one_channel"]["status"]) == {"failed"}
+    assert "failed" not in set(images[images["image"] == "b_good"]["status"])
+
+
+def test_no_image_can_be_used(tmp_path):
+    """Settings that fit no image: the run stops before it starts, naming the first image's problem."""
+    folder = tmp_path / "input"
+    folder.mkdir()
+    write_tif(folder / "a_one_channel.tif", spots_stack(n_channels=1)[:, 0], "ZYX")
+    damaged = write_tif(folder / "b_damaged.tif", spots_stack(), "ZCYX")
+    damaged.write_bytes(damaged.read_bytes()[:3000])
+    settings = write_settings(tmp_path / "settings.yaml", folder, tmp_path / "out")
+
+    command, code, run_folder = batch([settings], tmp_path)
     assert code == 1, command.describe()
     assert run_folder is None
-    assert "The first image cannot be used" in command.err
+    assert "Problem: None of the images can be used with these settings. The first image: a_one_channel.tif" in command.err
     assert "Traceback" not in command.err
     assert not (tmp_path / "out").exists()
 

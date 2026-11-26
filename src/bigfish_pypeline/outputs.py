@@ -776,28 +776,35 @@ def run_info_text(info):
     return RUN_INFO_HEADER + body
 
 
-def file_record(path, kind):
+def file_record(path, kind, data=None, details=None):
     """What `run_info.yaml` records of a file read in a run, so that a later run can
     tell whether it has changed: its kind (e.g. "label file"), full path, size in
     bytes, date last changed and SHA-256 checksum.
 
-    The file is read in pieces, so a large file needs little memory.
+    data, details: the bytes of the file and its os.fstat, when the file has
+        already been read whole; the file is then not opened again, and the
+        size is that of the bytes.
+
+    Otherwise the file is read in pieces, so a large file needs little memory.
     Raises OSError when the file cannot be read.
     """
     path = Path(os.path.abspath(path))
     checksum = hashlib.sha256()
-    with open(path, "rb") as source:
-        while True:
-            piece = source.read(CHECKSUM_PIECE_BYTES)
-            if not piece:
-                break
-            checksum.update(piece)
-        details = os.fstat(source.fileno())
+    if data is not None:
+        checksum.update(data)
+    else:
+        with open(path, "rb") as source:
+            while True:
+                piece = source.read(CHECKSUM_PIECE_BYTES)
+                if not piece:
+                    break
+                checksum.update(piece)
+            details = os.fstat(source.fileno())
     changed = datetime.fromtimestamp(details.st_mtime).astimezone()
     return {
         "kind": kind,
         "path": str(path),
-        "size_bytes": int(details.st_size),
+        "size_bytes": len(data) if data is not None else int(details.st_size),
         "last_changed": changed.isoformat(sep=" ", timespec="seconds"),
         "sha256": checksum.hexdigest(),
     }

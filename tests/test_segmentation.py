@@ -117,6 +117,22 @@ def test_label_file_written_with_the_pixel_size(tmp_path):
     np.testing.assert_array_equal(tifffile.imread(path), labels)
 
 
+def test_label_file_contents(tmp_path):
+    """The labels, the bytes they were read from and the details of the open file."""
+    import os
+
+    from bigfish_pypeline.segmentation import read_label_file_contents
+
+    _write(tmp_path, _labels())
+    path = label_file_path(tmp_path, IMAGE)
+    masks, data, details = read_label_file_contents(tmp_path, IMAGE, SHAPE)
+    np.testing.assert_array_equal(masks, _labels())
+    assert data == path.read_bytes()
+    assert details.st_size == len(data) and details.st_mtime == os.stat(path).st_mtime
+    with pytest.raises(LabelFileError, match="Label file not found"):
+        read_label_file_contents(tmp_path, "other", SHAPE)
+
+
 def test_custom_model_file(tmp_path):
     from bigfish_pypeline.segmentation import custom_model_file
 

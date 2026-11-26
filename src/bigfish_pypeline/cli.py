@@ -196,8 +196,7 @@ def describe_plan(config, plan, config_path):
     width = len(str(len(plan.images)))
     for number, image in enumerate(plan.images, start=1):
         lines.append(f"  {number:>{width}}. {image.listed}")
-    refused = [io.pixel_type_problem(header) for header in plan.headers if header is not None]
-    refused = [problem for problem in refused if problem is not None]
+    refused = [problem for problem in plan.problems if problem is not None]
     if refused:
         lines.append(f"Images that cannot be used ({len(refused)}); a run would list them as failed:")
         lines.extend(f"  - {problem}" for problem in refused)
@@ -254,10 +253,10 @@ def _check(arguments):
 
 def _batch(arguments):
     config = _load(arguments)
-    # The runner shows how the run ended, with the number of failed and skipped channels.
+    # The runner shows the run folder, then how the run ended, with the number of
+    # failed and skipped channels, as the last line.
     result = run_batch(config, config_file=Path(os.path.abspath(arguments.config)), show=_say,
                        command=arguments.command_line)
-    _say(f"Run folder: {result.run_folder}")
     if result.status == "finished":
         return EXIT_OK
     if result.status == "cancelled":
@@ -288,8 +287,8 @@ def main(argv=None):
         _complain(error)
         return EXIT_PROBLEM
     except RunStoppedError as error:
-        print(str(error), file=sys.stderr, flush=True)
         _say(f"Run folder: {error.run_folder}")
+        print(str(error), file=sys.stderr, flush=True)
         return EXIT_PROBLEM
     except KeyboardInterrupt:
         print("Cancelled.", file=sys.stderr, flush=True)

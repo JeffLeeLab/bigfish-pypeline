@@ -31,6 +31,7 @@ from test_batch_run import generated_image, run_info, with_changes
 from test_end_to_end import (
     batch as run_command_batch,
     channel_settings,
+    check_last_lines,
     finished_images,
     image_names,
     log_text,
@@ -190,7 +191,7 @@ def test_kit_every_output(kit_runs, final):
     run = kit_runs[final]
     assert run.code == 0, run.command.describe()
     folder = run.folder
-    assert run.command.out.splitlines()[-1] == f"Run folder: {folder}"
+    check_last_lines(run.command, folder, "The run finished: 1 image(s) processed")
 
     assert set(names_in(folder)) == RUN_FILES
     assert names_in(folder / "per_image") == sorted(

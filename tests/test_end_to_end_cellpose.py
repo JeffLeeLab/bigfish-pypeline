@@ -35,6 +35,7 @@ from test_batch_cellpose import (
 )
 from test_batch_run import generated_image, local_config, log_text, progress, read_table, with_changes, write_image
 from test_end_to_end import batch as start_batch
+from test_end_to_end import check_last_lines
 from test_end_to_end import sorted_tables_equal
 
 def qc_files(run_folder):
@@ -150,7 +151,7 @@ def test_command_on_the_test_kit_with_cellpose(tmp_path):
     text = check_real_run(command, code, run_folder)
     assert "Cellpose model cpsam_v2" in text
     assert DEVICE_LINE.search(text), text
-    assert command.out.splitlines()[-1] == f"Run folder: {run_folder}"
+    check_last_lines(command, run_folder, "The run finished: 1 image(s) processed.")
 
 
 @pytest.mark.cellpose

@@ -101,6 +101,12 @@ def run_folder_from(output):
     return folder
 
 
+def assert_run_folder_before_summary(lines, run_folder):
+    """The run folder is shown again just before the summary at the end of the run."""
+    index = max(number for number, line in enumerate(lines) if line == f"Run folder: {run_folder}")
+    assert lines[index + 1].startswith("Summary: "), lines[index:]
+
+
 def folder_contents(folder):
     return sorted(str(path.relative_to(folder)) for path in Path(folder).rglob("*"))
 
@@ -175,8 +181,10 @@ def test_batch_test_kit_messages(tmp_path, capsys):
     assert code == 0, err
     assert f"{CROP_NAME}, channel 2: done, threshold 18, 692 spots" in out
     lines = out.splitlines()
-    assert lines[-2] == "The run finished: 1 image(s) processed."
-    assert lines[-1] == f"Run folder: {run_folder_from(out)}"
+    # the run folder comes before the summary, and the message with the counts is the last line
+    assert lines[-1] == "The run finished: 1 image(s) processed."
+    assert_run_folder_before_summary(lines, run_folder_from(out))
+    assert lines[-2].startswith("Summary: 1 of 1 image(s) finished")
     assert run_folder_from(out).parent == tmp_path / "out"
 
 
@@ -309,13 +317,13 @@ def test_failed_image_is_reported(images, tmp_path, capsys):
     code, out, err = run_command(capsys, "batch", config, "--output-folder", tmp_path / "out")
     assert code == 0, err
     lines = out.splitlines()
-    assert lines[-2] == (
+    assert lines[-1] == (
         "The run finished: 2 image(s) processed; 2 channel(s) failed. "
         "See images.csv and run.log in the run folder."
     )
-    assert lines[-1].startswith("Run folder: ")
+    assert_run_folder_before_summary(lines, run_folder_from(out))
     info = yaml.safe_load((run_folder_from(out) / "run_info.yaml").read_text(encoding="utf-8"))
-    assert info["message"] == lines[-2]
+    assert info["message"] == lines[-1]
 
 
 def test_stopped_run_gives_its_message_once(tmp_path, capsys, monkeypatch):
@@ -332,8 +340,9 @@ def test_stopped_run_gives_its_message_once(tmp_path, capsys, monkeypatch):
     message = batch.OMERO_SESSION_ENDED_MESSAGE
     lines = out.splitlines()
     assert out.count(message) == 1 and err.count(message) == 0
-    assert lines[-2] == message
+    assert lines[-1] == message
     run_folder = run_folder_from(out)
+    assert_run_folder_before_summary(lines, run_folder)
     assert (run_folder / "run.log").read_text(encoding="utf-8").count(message) == 1
     assert "c: started" not in out
 
@@ -409,21 +418,87 @@ def test_check_lists_images_of_other_pixel_types(images, tmp_path, capsys):
 
 
 @pytest.mark.parametrize("dtype", REFUSED_PIXEL_TYPES)
-def test_check_refuses_a_first_image_of_another_pixel_type(tmp_path, capsys, dtype):
+def test_first_image_of_another_pixel_type_fails_on_its_own(tmp_path, capsys, dtype):
     folder = tmp_path / "input"
     folder.mkdir()
     write_other_pixel_type(folder / "a.tif", dtype)
     write_image(folder / "b.tif")
     config = write_config(tmp_path / "settings.yaml", folder)
+    code, out, err = run_command(capsys, "check", config, "--output-folder", tmp_path / "out")
+    assert code == 0, err
+    lines = out.splitlines()
+    start = lines.index("Images that cannot be used (1); a run would list them as failed:")
+    assert lines[start + 1] == f"  - {refusal('a.tif', REFUSED_PIXEL_TYPES[dtype])}"
+    assert not (tmp_path / "out").exists()
+
+    code, out, err = run_command(capsys, "batch", config, "--output-folder", tmp_path / "out")
+    assert code == 0, err
+    assert out.splitlines()[-1] == (
+        "The run finished: 2 image(s) processed; 2 channel(s) failed. "
+        "See images.csv and run.log in the run folder."
+    )
+    images = pd.read_csv(run_folder_from(out) / "images.csv")
+    assert list(images["status"]) == ["failed", "failed", "done", "done"]
+    assert set(images[images["image"] == "a"]["reason"]) == {refusal("a.tif", REFUSED_PIXEL_TYPES[dtype])}
+
+
+def test_no_image_can_be_used(tmp_path, capsys):
+    folder = tmp_path / "input"
+    folder.mkdir()
+    write_other_pixel_type(folder / "a.tif", "float32")
+    write_other_pixel_type(folder / "b.tif", "int16")
+    config = write_config(tmp_path / "settings.yaml", folder)
     for command in ("check", "batch"):
         code, out, err = run_command(capsys, command, config, "--output-folder", tmp_path / "out")
         assert code == 1
+        assert out == ""
         assert err.splitlines() == [
-            f"Problem: The first image cannot be used with these settings: "
-            f"{refusal('a.tif', REFUSED_PIXEL_TYPES[dtype])}",
+            "Problem: None of the images can be used with these settings. "
+            f"The first image: {refusal('a.tif', REFUSED_PIXEL_TYPES['float32'])}",
             "Nothing was run.",
         ]
     assert not (tmp_path / "out").exists()
+
+
+def test_odd_files_at_the_front_of_a_folder(tmp_path, capsys):
+    """A packed 10-bit file, a 3-sample file saved as YXC and a colour file come
+    before the test kit crop: `check` lists the three and ends with 0; the run
+    processes the crop and lists the three as failed, each with its reason."""
+    folder = tmp_path / "input"
+    folder.mkdir()
+    tifffile.imwrite(folder / "a_10bit.tif", np.ones((11, 3, 64, 64), np.uint16), bitspersample=10,
+                     imagej=True, metadata={"axes": "ZCYX"})
+    tifffile.imwrite(folder / "b_yxc.tif", np.ones((64, 64, 3), np.uint16), photometric="minisblack",
+                     planarconfig="contig", metadata={"axes": "YXC"})
+    tifffile.imwrite(folder / "c_rgb.tif", np.ones((64, 64, 3), np.uint8), photometric="rgb")
+    shutil.copy(TEST_DATA / f"{CROP_NAME}.tif", folder)
+    settings = kit_settings_without_qc(tmp_path / "settings.yaml")
+    data = yaml.safe_load(settings.read_text(encoding="utf-8"))
+    data["run"]["input"].update(folder=str(folder), filter="")
+    settings.write_text(yaml.safe_dump(data), encoding="utf-8")
+    colour = "colour (RGB) images are not accepted; save the channels as separate planes"
+    reasons = {
+        "a_10bit": refusal("a_10bit.tif", "10-bit"),
+        "b_yxc": f"b_yxc.tif: {colour}",
+        "c_rgb": f"c_rgb.tif: {colour}",
+    }
+
+    code, out, err = run_command(capsys, "check", settings, "--output-folder", tmp_path / "out")
+    assert code == 0, err
+    lines = out.splitlines()
+    start = lines.index("Images that cannot be used (3); a run would list them as failed:")
+    assert lines[start + 1:start + 4] == [f"  - {reason}" for reason in reasons.values()]
+    assert not (tmp_path / "out").exists()
+
+    code, out, err = run_command(capsys, "batch", settings, "--output-folder", tmp_path / "out")
+    assert code == 0, err
+    assert out.splitlines()[-1].startswith("The run finished: 4 image(s) processed; 3 channel(s) failed.")
+    images = pd.read_csv(run_folder_from(out) / "images.csv")
+    assert list(images["image"]) == list(reasons) + [CROP_NAME]
+    assert list(images["status"]) == ["failed", "failed", "failed", "done"]
+    assert list(images["reason"].iloc[:3]) == list(reasons.values())
+    spots = pd.read_csv(run_folder_from(out) / "spots.csv")
+    assert len(spots) == 692
 
 
 # ---------------------------------------------------------------------------

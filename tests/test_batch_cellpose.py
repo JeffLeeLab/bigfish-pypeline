@@ -962,6 +962,65 @@ def test_image_marked_failed_keeps_its_segmentation(tmp_path):
     assert set(failed["warnings"]) == {f"no cell results: segmentation failed: {reason}"}
 
 
+class OutcomeSegmenter:
+    """Stand-in for batch._Segmenter whose segmentations end as soon as they start.
+    For an image with `seg_session_ended` in its name, it reports that the OMERO
+    session has ended."""
+
+    def __init__(self, run, setup):
+        self.task = None
+        self.future = None
+
+    @property
+    def busy(self):
+        return self.task is not None
+
+    def start(self, task):
+        from concurrent.futures import Future
+
+        outcome = {"error": None, "details": None, "session_ended": None, "warnings": [],
+                   "notes": [], "n_cells": 0, "seconds": 0.0, "total_seconds": 0.0}
+        if "seg_session_ended" in task.image.name:
+            outcome["session_ended"] = "The OMERO session has ended."
+        self.task, self.future = task, Future()
+        self.future.set_result(outcome)
+
+    def take(self):
+        if self.task is None or not self.future.done():
+            return None, None
+        task, outcome = self.task, self.future.result()
+        self.task = self.future = None
+        return task, outcome
+
+    def abandon(self):
+        task, self.task, self.future = self.task, None, None
+        return task
+
+
+def test_stop_from_the_segmentation_takes_no_worker_result_of_the_same_pass(tmp_path, monkeypatch):
+    """The Cellpose step reports that the OMERO session has ended in the same pass
+    as a worker's result: that result is not kept and its files are removed."""
+    from test_batch_run import InProcessPool
+
+    monkeypatch.setattr(batch, "_Segmenter", OutcomeSegmenter)
+    monkeypatch.setattr(batch, "_WorkerPool", InProcessPool)
+    folder = tiny_images(tmp_path / "input", ["a", "b_seg_session_ended", "c"])
+    config = with_cellpose(local_config(folder, tmp_path / "out", workers=2), qc=False)
+    shown = []
+    result = run_cellpose(config, StandInModel(n_cells=0), image_function=fake_process_image,
+                          show=shown.append)
+    assert result.status == "stopped"
+    assert result.message == batch.OMERO_SESSION_ENDED_MESSAGE
+    run_folder = result.run_folder
+    text = log_text(run_folder)
+    assert "a: started" in text
+    assert "a: finished" not in text
+    assert "Discarded (in progress): a" in text
+    assert sorted(path.name for path in (run_folder / "per_image").iterdir()) == []
+    assert not (run_folder / "images.csv").exists()
+    assert shown[-1] == batch.OMERO_SESSION_ENDED_MESSAGE
+
+
 def test_label_files_carry_the_pixel_size(tmp_path):
     folder = tiny_images(tmp_path / "input", ["a"])
     config = with_cellpose(local_config(folder, tmp_path / "out"), qc=False)

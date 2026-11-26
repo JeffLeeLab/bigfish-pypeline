@@ -591,6 +591,43 @@ def test_image_refused_by_cellpose_fails_with_the_reason_only(tmp_path):
         assert row["warnings"] == "no cell results: segmentation failed: Cellpose ran out of memory"
 
 
+def test_image_segmented_then_refused_by_its_worker_keeps_its_segmentation(tmp_path):
+    """With Cellpose, an image segmented in the main process that its worker cannot
+    open (here a FISH channel is missing) keeps its segmentation status and warnings."""
+    image = make_image((8, 64, 64), n_spots=5)[0]
+    path = write_image(tmp_path / "two.tif", stack_channels([image, image]), "ZCYX")
+    labels = tmp_path / "labels"
+    labels.mkdir()
+    tifffile.imwrite(labels / "two_seglabels.tif", np.ones((64, 64), dtype=np.uint32))
+    config = synthetic_config(channels=[{"index": 0}, {"index": 3}],
+                              segmentation={"enabled": True, "source": "cellpose"})
+    reason = "two.tif: channel 3 does not exist; the image has 2 channels (0–1)"
+    summary = batch.process_image(config, "two", path, tmp_path / "run", label_folder=labels,
+                                  segmentation_warnings=["Cellpose found few cells"])
+    for row in summary["rows"]:
+        assert row["status"] == "failed"
+        assert row["reason"] == reason
+        assert row["segmentation_source"] == "cellpose"
+        assert row["segmentation_status"] == "done"
+        assert row["warnings"] == "Cellpose found few cells"
+
+    # a segmentation that failed for another reason
+    summary = batch.process_image(config, "two", path, tmp_path / "run2", label_folder=labels,
+                                  segmentation_error="Cellpose ran out of memory")
+    for row in summary["rows"]:
+        assert row["segmentation_status"] == "failed"
+        assert row["warnings"] == "no cell results: segmentation failed: Cellpose ran out of memory"
+
+    # with label files, no label file has been read when the image is refused
+    config = synthetic_config(channels=[{"index": 0}, {"index": 3}],
+                              segmentation={"enabled": True, "source": "label_files",
+                                            "label_folder": str(labels)})
+    summary = batch.process_image(config, "two", path, tmp_path / "run3", label_folder=labels)
+    for row in summary["rows"]:
+        assert row["segmentation_source"] == "label_files"
+        assert row["segmentation_status"] == ""
+
+
 def test_packed_12_bit_image(tmp_path):
     image = make_image((8, 64, 64), n_spots=8, seed=4)[0]
     assert image.max() < 4096
@@ -719,6 +756,60 @@ def test_label_file_recorded_and_border_cells_counted(tmp_path, labelled_image):
     tifffile.imwrite(label_path, np.ones((32, 32), dtype=np.uint16))
     summary = batch.process_image(config, "cells", labelled_image, tmp_path / "run3", label_folder=tmp_path)
     assert summary["files_read"] == []
+
+
+def label_files_config(label_folder):
+    segmentation = {"enabled": True, "source": "label_files", "label_folder": str(label_folder)}
+    return synthetic_config(channels=[{"index": 0}, {"index": 1}], segmentation=segmentation)
+
+
+def test_label_file_recorded_from_the_bytes_the_labels_come_from(tmp_path, labelled_image, monkeypatch):
+    """The label file is replaced just after its labels are read: the record
+    describes the file the labels came from."""
+    import hashlib
+
+    labels = np.zeros((64, 64), dtype=np.uint16)
+    labels[30:40, 30:40] = 3
+    label_path = tmp_path / "cells_seglabels.tif"
+    tifffile.imwrite(label_path, labels)
+    original = label_path.read_bytes()
+    imread = tifffile.imread
+
+    def read_then_replace(*arguments, **keywords):
+        result = imread(*arguments, **keywords)
+        if label_path.read_bytes() == original:
+            replacement = np.zeros((64, 64), dtype=np.uint16)
+            replacement[5:60, 5:60] = 8
+            tifffile.imwrite(label_path, replacement)
+        return result
+
+    monkeypatch.setattr(tifffile, "imread", read_then_replace)
+    summary = batch.process_image(label_files_config(tmp_path), "cells", labelled_image, tmp_path / "run",
+                                  label_folder=tmp_path)
+    assert row_of(summary, 0)["n_cells"] == 1
+    [record] = summary["files_read"]
+    assert record["sha256"] == hashlib.sha256(original).hexdigest()
+    assert record["size_bytes"] == len(original)
+
+
+def test_labels_kept_when_the_label_file_cannot_be_recorded(tmp_path, labelled_image, monkeypatch):
+    labels = np.zeros((64, 64), dtype=np.uint16)
+    labels[30:40, 30:40] = 3
+    tifffile.imwrite(tmp_path / "cells_seglabels.tif", labels)
+
+    def broken(*arguments, **keywords):
+        raise OSError("the disk went away")
+
+    monkeypatch.setattr(outputs, "file_record", broken)
+    summary = batch.process_image(label_files_config(tmp_path), "cells", labelled_image, tmp_path / "run",
+                                  label_folder=tmp_path)
+    for row in summary["rows"]:
+        assert row["segmentation_status"] == "done"
+        assert row["n_cells"] == 1
+        assert "label file" not in row["warnings"]
+    assert summary["files_read"] == []
+    assert ("cells: warning: the label file could not be recorded in run_info.yaml "
+            "(OSError: the disk went away)") in summary["log_lines"]
 
 
 def test_voxel_sizes_differ_from_config(tmp_path):

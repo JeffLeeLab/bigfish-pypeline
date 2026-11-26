@@ -1493,6 +1493,92 @@ def test_worker_stopped_before_an_image_is_handed_out(tmp_path, monkeypatch):
     assert "b" not in restart["images_lost"]
 
 
+def bare_run(tmp_path, names, workers=2):
+    """A _Run of small images whose folder is made, and one task per image, each in progress."""
+    folder = tiny_images(tmp_path / "input", names)
+    config = local_config(folder, tmp_path / "out", workers=workers)
+    run_folder = tmp_path / "run"
+    (run_folder / "per_image").mkdir(parents=True)
+    images = [batch.RunImage(name, f"{name}.tif", folder / f"{name}.tif") for name in names]
+    run = batch._Run(config, run_folder, images, None, {}, {}, workers,
+                     {"host": None, "port": None, "key": None}, None, fake_process_image, None)
+    tasks = [batch._Task(order=order, image=image, label=image.name, function=fake_process_image,
+                         arguments={}) for order, image in enumerate(images)]
+    for task in tasks:
+        (run_folder / "per_image" / f"{task.label}_spots.csv").write_text("image\n", encoding="utf-8")
+        run.in_progress.append(task.label)
+    return run, tasks
+
+
+def finished_future(result=None, error=None):
+    from concurrent.futures import Future
+
+    future = Future()
+    if error is not None:
+        future.set_exception(error)
+    else:
+        future.set_result(result)
+    return future
+
+
+class Taken:
+    """What restart_pool hands on: results, errors and tasks lost twice, by image."""
+
+    def __init__(self):
+        self.results, self.errors, self.lost_twice = [], [], []
+
+    def on_result(self, task, result):
+        self.results.append(task.label)
+
+    def on_error(self, task, error):
+        self.errors.append((task.label, str(error)))
+
+    def on_lost_twice(self, task):
+        self.lost_twice.append(task.label)
+
+
+@pytest.mark.parametrize("error, message", [
+    (outputs.OutputError("disk full"), "Results cannot be written: disk full"),
+    (io.OmeroSessionEnded("The OMERO session has ended."), batch.OMERO_SESSION_ENDED_MESSAGE),
+])
+def test_stop_found_after_a_worker_stopped(tmp_path, error, message):
+    """A worker stopped, and a result that came in after the pass was taken says the
+    run must stop: the run stops, nothing is tried again and no further result is
+    kept; the files of every image not finished are removed."""
+    run, (a, b, c, d) = bare_run(tmp_path, ["a", "b", "c", "d"])
+    running = {finished_future(error=error): b, finished_future(result={"rows": []}): c}
+    taken = Taken()
+    pending, stopped = run.restart_pool(running, [a], [d], set(), taken.on_result, taken.on_error,
+                                        taken.on_lost_twice)
+    assert stopped
+    assert run.message == message
+    assert (taken.results, taken.errors, taken.lost_twice) == ([], [], [])
+    assert run.restarts == []
+    assert per_image_files(run.run_folder) == ["d_spots.csv"]
+    text = log_text(run.run_folder)
+    assert "Discarded (in progress): a, b, c" in text
+    assert "A worker process stopped unexpectedly" not in text
+    assert "tried once more" not in text
+
+
+def test_results_that_came_in_after_a_worker_stopped(tmp_path):
+    """Results that came in after the pass was taken: a result is kept, an error goes
+    to on_error as in the pass and is not tried again; only the lost image is."""
+    run, (a, b, c, d) = bare_run(tmp_path, ["a", "b", "c", "d"])
+    running = {finished_future(error=RuntimeError("bad pixels")): b,
+               finished_future(result={"rows": []}): c}
+    taken = Taken()
+    pending, stopped = run.restart_pool(running, [a], [d], set(), taken.on_result, taken.on_error,
+                                        taken.on_lost_twice)
+    assert not stopped
+    assert taken.results == ["c"]
+    assert taken.errors == [("b", "bad pixels")]
+    assert [task.label for task in pending] == ["a", "d"]
+    [restart] = run.restarts
+    assert restart["images_lost"] == ["a"]
+    assert "Lost: a." in log_text(run.run_folder)
+
+
 def test_worker_numbers_leave_out_images_that_will_be_refused(tmp_path):
     folder = tmp_path / "input"
     folder.mkdir()
@@ -1507,12 +1593,29 @@ def test_worker_numbers_leave_out_images_that_will_be_refused(tmp_path):
     plan = batch.plan_run(config)
     assert [header is not None for header in plan.headers] == [True, True, True]
     assert batch._largest_channel(config, plan.headers) == 2 * 16 * 16
+    assert batch._largest_channel(config, plan.headers, plan.problems) == 2 * 16 * 16
+    assert [problem is None for problem in plan.problems] == [True, False, False]
     assert [batch._will_be_refused(config, header) for header in plan.headers] == [False, True, True]
     # an image with more channels or another layout than the run is refused too
     write_image(folder / "d_zyx.tif", np.ones((4, 64, 64), dtype=np.uint16), axes="ZYX")
     assert batch._will_be_refused(config, io.get_image_info(folder / "d_zyx.tif"))
     one_channel = local_config(folder, tmp_path / "out", channels=[{"index": 5}])
     assert batch._will_be_refused(one_channel, io.get_image_info(folder / "a_small.tif"))
+
+
+def test_worker_numbers_leave_out_colour_images(tmp_path):
+    """A colour (RGB) file is refused by the reader, so it does not count when the
+    number of workers is worked out, although its shape has as many axes as the layout."""
+    folder = tmp_path / "input"
+    folder.mkdir()
+    write_image(folder / "a_small.tif", np.ones((2, 2, 16, 16), dtype=np.uint16))
+    tifffile.imwrite(folder / "b_rgb.tif", np.ones((4, 64, 64, 3), dtype=np.uint8), photometric="rgb")
+    config = local_config(folder, tmp_path / "out")
+    headers = [io.get_image_info(folder / name) for name in ("a_small.tif", "b_rgb.tif")]
+    with pytest.raises(io.ImageReadError, match="colour"):
+        io.check_image(folder / "b_rgb.tif", config.image.axes, [0, 1])
+    assert [batch._will_be_refused(config, header) for header in headers] == [False, True]
+    assert batch._largest_channel(config, headers) == 2 * 16 * 16
 
 
 def test_total_time_and_duration_are_the_same(tmp_path, monkeypatch):
@@ -1629,6 +1732,116 @@ def test_custom_cellpose_model_in_the_run_record(tmp_path):
     result = batch.run_batch(config, image_function=fake_process_image, device_chooser=device,
                              model_loader=loader)
     assert run_info(result.run_folder, "finished")["files_read"] == "none"
+
+
+def test_custom_cellpose_model_recorded_before_it_is_loaded(tmp_path):
+    from cellpose_standin import StandInModel
+
+    model_file = tmp_path / "my_model"
+    model_file.write_bytes(b"model weights" * 1000)
+    before = outputs.file_record(model_file, "Cellpose model")
+    config = with_changes(local_config(tmp_path, tmp_path / "out"), lambda data: data["segmentation"].update(
+        enabled=True, source="cellpose", label_folder="", cellpose={"model": str(model_file)}))
+
+    def device(setting):
+        return "cpu", "Cellpose runs on the CPU.", []
+
+    def loader(model_name, device, threads=None):
+        return StandInModel(n_cells=2)
+
+    # the file is read before the model is loaded: a file that goes while loading is still recorded
+    def removing_loader(model_name, device, threads=None):
+        model_file.unlink()
+        return StandInModel(n_cells=2)
+
+    setup = batch.prepare_cellpose(config, device, removing_loader)
+    assert setup.model_file == before
+    assert setup.warnings == [
+        f"The Cellpose model file {model_file} changed while it was being loaded and can no longer "
+        "be read. run_info.yaml records it as it was before loading."
+    ]
+    model_file.write_bytes(b"model weights" * 1000)
+
+    # an unchanged file gives no warning
+    setup = batch.prepare_cellpose(config, device, loader)
+    assert setup.model_file == outputs.file_record(model_file, "Cellpose model")
+    assert setup.warnings == []
+
+    # a file that changes while it is loaded is recorded again, with a warning
+    def changing_loader(model_name, device, threads=None):
+        model_file.write_bytes(b"other weights" * 2000)
+        return StandInModel(n_cells=2)
+
+    setup = batch.prepare_cellpose(config, device, changing_loader)
+    assert setup.model_file == outputs.file_record(model_file, "Cellpose model")
+    assert setup.warnings == [
+        f"The Cellpose model file {model_file} changed while it was being loaded. run_info.yaml "
+        "records it as it was after loading, which may not be the model used."
+    ]
+
+
+def test_images_that_cannot_be_used_fail_on_their_own(tmp_path):
+    """Every image is checked from its header at planning. Images that cannot be
+    used (another pixel type, a missing channel, a damaged file) fail one by one
+    in the run, wherever they are in the list; the run stops before it starts
+    only when no image can be used."""
+    folder = tmp_path / "input"
+    folder.mkdir()
+    float_image = np.ones((2, 2, 16, 16), dtype=np.float32)
+    tifffile.imwrite(folder / "a_float.tif", float_image, metadata={"axes": "ZCYX"}, photometric="minisblack")
+    write_image(folder / "b_one_channel.tif", np.ones((2, 1, 16, 16), dtype=np.uint16))
+    damaged = write_image(folder / "c_damaged.tif", np.ones((2, 2, 16, 16), dtype=np.uint16))
+    damaged.write_bytes(damaged.read_bytes()[:100])
+    write_image(folder / "d.tif", np.ones((2, 2, 16, 16), dtype=np.uint16))
+    config = local_config(folder, tmp_path / "out")
+    plan = batch.plan_run(config)
+    assert [image.name for image in plan.images] == ["a_float", "b_one_channel", "c_damaged", "d"]
+    assert plan.problems[0] == io.pixel_type_problem(plan.headers[0])
+    assert plan.problems[1].startswith("b_one_channel.tif: ")
+    assert plan.problems[2].startswith("c_damaged.tif: ")
+    assert plan.problems[3] is None
+    assert batch._largest_channel(config, plan.headers, plan.problems) == 2 * 16 * 16
+
+    result = batch.run_batch(config)
+    assert result.status == "finished", result.message
+    images = read_table(result.run_folder, "images")
+    for number, name in enumerate(["a_float", "b_one_channel"]):
+        rows = images[images["image"] == name]
+        assert list(rows["status"]) == ["failed", "failed"]
+        assert set(rows["reason"]) == {plan.problems[number]}
+    assert list(images[images["image"] == "c_damaged"]["status"]) == ["failed", "failed"]
+    assert "failed" not in set(images[images["image"] == "d"]["status"])
+
+    # settings that fit no image stop the run before it starts
+    three = local_config(folder, tmp_path / "out3", channels=[{"index": 0}, {"index": 3}])
+    with pytest.raises(batch.BatchError) as raised:
+        batch.run_batch(three)
+    assert str(raised.value) == (
+        f"None of the images can be used with these settings. The first image: {plan.problems[0]}"
+    )
+    assert not (tmp_path / "out3").exists()
+
+    # no image can be used
+    (folder / "d.tif").unlink()
+    with pytest.raises(batch.BatchError, match="None of the images can be used with these settings. "
+                                               "The first image: a_float.tif: the pixel type is"):
+        batch.run_batch(local_config(folder, tmp_path / "out4"))
+    assert not (tmp_path / "out4").exists()
+
+
+def test_each_header_checked_once_when_a_run_is_planned(tmp_path, monkeypatch):
+    folder = tiny_images(tmp_path / "input", ["a", "b", "c"])
+    checked = []
+    check_image = io.check_image
+
+    def counting(path, *arguments, **keywords):
+        checked.append(Path(path).name)
+        return check_image(path, *arguments, **keywords)
+
+    monkeypatch.setattr(io, "check_image", counting)
+    plan = batch.plan_run(local_config(folder, tmp_path / "out", workers="auto"))
+    assert plan.problems == [None, None, None]
+    assert sorted(checked) == ["a.tif", "b.tif", "c.tif"]
 
 
 def test_counts_in_the_log(tmp_path):

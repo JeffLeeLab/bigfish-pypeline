@@ -779,6 +779,25 @@ def test_file_record(tmp_path, monkeypatch):
         outputs.file_record(tmp_path / "missing", "label file")
 
 
+def test_file_record_from_bytes_already_read(tmp_path):
+    """With the bytes and details of a file read earlier, the file is not opened again."""
+    import hashlib
+
+    path = tmp_path / "cells_seglabels.tif"
+    path.write_bytes(b"first labels")
+    os.utime(path, (1_700_000_000, 1_700_000_000))
+    with open(path, "rb") as source:
+        data = source.read()
+        details = os.fstat(source.fileno())
+    path.write_bytes(b"other labels, written later")
+    record = outputs.file_record(path, "label file", data=data, details=details)
+    assert record["size_bytes"] == len(b"first labels")
+    assert record["sha256"] == hashlib.sha256(b"first labels").hexdigest()
+    assert datetime.fromisoformat(record["last_changed"]).timestamp() == 1_700_000_000
+    path.unlink()
+    assert outputs.file_record(path, "label file", data=data, details=details) == record
+
+
 def test_write_run_info_keeps_the_order(tmp_path):
     info = {"status": "finished", "started": "2026-11-24 10:00:00+00:00", "workers": 2,
             "package_versions": {"numpy": "2.0"}, "calibrated_thresholds": {"channel 2": 14.0}}

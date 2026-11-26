@@ -12,6 +12,7 @@ import re
 import sys
 import time
 import warnings
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -520,15 +521,32 @@ def read_label_file(label_folder, image_name, image_shape_yx):
     unreadable, not 2D, of a different size from the image, or holds values
     that are not whole numbers of 0 or more.
     """
+    return read_label_file_contents(label_folder, image_name, image_shape_yx)[0]
+
+
+def read_label_file_contents(label_folder, image_name, image_shape_yx):
+    """
+    As read_label_file, and also give what the file held when it was read.
+
+    The file is opened once and read whole into memory; the labels are read
+    from those bytes, so a checksum worked out from them (see
+    outputs.file_record) describes the very labels used.
+
+    Returns (masks, data, details): the labels, the bytes of the file, and
+    the size and dates of the open file (os.fstat).
+    """
     path = label_file_path(label_folder, image_name)
     if not path.is_file():
         raise LabelFileError(f"Label file not found: {path}")
     try:
-        labels = tifffile.imread(path)
+        with open(path, "rb") as source:
+            data = source.read()
+            details = os.fstat(source.fileno())
+        labels = tifffile.imread(BytesIO(data))
     except Exception as error:
         detail = " ".join(str(error).split())
         raise LabelFileError(f"Label file could not be read: {path} ({detail})") from error
-    return check_labels(labels, image_shape_yx, name=path.name)
+    return check_labels(labels, image_shape_yx, name=path.name), data, details
 
 
 def check_labels(labels, image_shape_yx, name="label image"):

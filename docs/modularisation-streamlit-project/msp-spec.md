@@ -78,7 +78,7 @@ _quarto.yml                 Quarto website project (renders docs/guide/ only)
 
 ### 4.2 Commands
 
-- `bigfish-pypeline batch <config.yaml> [--input-folder …] [--filter …] [--output-folder …] [--workers …]`: values given on the command line override the file (brief: F2). The last lines in the terminal say how the run ended, with the number of failed and skipped channels; the command ends with 0 when the run finished, also when images failed.
+- `bigfish-pypeline batch <config.yaml> [--input-folder …] [--filter …] [--output-folder …] [--workers …]`: values given on the command line override the file (brief: F2). The run folder is shown before the summary, and the last line in the terminal says how the run ended, with the number of failed and skipped channels; the command ends with 0 when the run finished, also when images failed.
 - `bigfish-pypeline check <config.yaml>`: validates a config and lists the images it would process, without running anything. Images whose pixel type cannot be used are listed with the reason.
 - `bigfish-pypeline app`: starts the Streamlit app. The command finds `app/` in the repository folder and starts Streamlit with `app/` as its working folder, so it can be run from anywhere.
 - Installed from the repository folder with `pip install -e .`, which the environment file runs (entry point declared in `pyproject.toml`).
@@ -314,7 +314,7 @@ A repeated run on the same computer gives the same tables. Tables are compared a
 
 ### 7.1 Run flow
 
-1. Validate the config; list the images; check that the output folder can be written; check channel indices against the first image. Any problem stops the run before processing with a plain message.
+1. Validate the config; list the images; check that the output folder can be written; check every image from its file header against the settings (pixel type, layout, channels). The run stops before processing with a plain message when the settings are not valid, the output folder cannot be written, or no image at all can be used. An image that cannot be used among images that can is left to fail in the run with its reason, and `check` lists it.
 2. Create the run folder, start `run.log`, and write `run_config.yaml` (all defaults filled in, with the image list) and the first part of `run_info.yaml`.
 3. Start a pool of worker processes (`concurrent.futures.ProcessPoolExecutor`, "spawn" start method). Before the pool starts, `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` and `MKL_NUM_THREADS` are set to 1 so workers do not compete for cores.
 4. If any channel uses `calibrated` thresholds, run `auto` on the subset in the pool, write `calibration.csv` and its plot, fix the threshold values and add them to `run_config.yaml`. This step is skipped when the config already holds calibrated values from an earlier run (section 6.3).
@@ -342,6 +342,7 @@ Each image is complete as soon as its detection finishes, so a stopped run keeps
 - Each image, and each channel within it, is processed inside its own error handling. A failure in one channel marks that channel "failed" with a one-line reason in `run.log` and `images.csv` (full details in the log); the other channels are kept. A failure that affects the whole image (e.g. an unreadable file) marks all its channels failed. The run continues in both cases.
 - If a worker process stops unexpectedly (e.g. out of memory), every image in progress at that moment is lost, and it is not possible to tell which one caused it. A new pool is started with half as many workers (at least one) and those images are tried again once. An image caught in a second such stop is marked failed ("worker stopped unexpectedly, probably out of memory"). If it happens with a single worker, the run ends with a plain message and the finished images are combined. Each restart is logged (brief: R4).
 - If the OMERO connection drops, the image is retried once after rejoining the session, then marked failed. If the session itself has ended, no new images start, the finished images are combined and the run ends with a message to log in and run again.
+- Once a reason to stop the run is found (the OMERO session has ended, or results cannot be written), no further result is kept: the workers are stopped at once and the files of every image not yet recorded as finished are removed, whichever worker or step reported the reason.
 - Cancel (Ctrl+C on the command line, or Cancel in the app): no new images start, the worker processes are stopped at once, images in progress are discarded, finished images are combined into the run tables, and the run is marked "cancelled" (brief: R4). The app cancels by writing a `cancel` file in the run folder, which the runner checks every second; this works the same on macOS, Windows and Linux.
 - With `keep_awake: true`, the computer is kept awake for the length of the run (`caffeinate` on macOS, the system keep-awake request on Windows; Linux logs that this is not available).
 
@@ -399,7 +400,7 @@ Each has its own switch (brief: E3). Names start with `<image>_ch<index>_`.
 
 ### 8.4 Run record and log
 
-- `run_info.yaml`: start and end time, pipeline version and git commit (when available), Python and key package versions (big-fish, cellpose, torch, numpy, scipy, scikit-image, scikit-learn, pandas, tifffile, pydantic, plotly, omero-py), OS, CPU count, memory, Cellpose device, workers, the command used, the random seed, any worker restarts, final status with a message that gives the number of failed and skipped channels, and calibrated threshold values. For each label file given by the user and each Cellpose model file of the user's own that the run read: its path, size, date last changed and SHA-256 checksum, so that a later run can tell whether a file has changed.
+- `run_info.yaml`: start and end time, pipeline version and git commit (when available), Python and key package versions (big-fish, cellpose, torch, numpy, scipy, scikit-image, scikit-learn, pandas, tifffile, pydantic, plotly, omero-py), OS, CPU count, memory, Cellpose device, workers, the command used, the random seed, any worker restarts, final status with a message that gives the number of failed and skipped channels, and calibrated threshold values. For each label file given by the user and each Cellpose model file of the user's own that the run read: its path, size, date last changed and SHA-256 checksum, so that a later run can tell whether a file has changed. A label file's checksum is worked out from the same bytes its labels are read from; a model file is recorded before it is loaded and checked again afterwards.
 - `run.log`: config file used, image list, the spot radius in pixels of each channel, each image started / finished / skipped / failed with the reason, threshold used per image and channel, the cells found and kept when `drop_border_cells` is on, warnings (metadata mismatch, missing labels, CPU segmentation), and a summary (counts per status, total time). The total time is the duration given in `run_info.yaml`.
 
 ## 9. Optimise notebook (brief: I1)
@@ -585,7 +586,8 @@ Only on the user's instruction, after Phase 7 and the Cellpose 4 mask review (Ph
 | Single-plane (2D) image | 2D processing; no z columns | unit |
 | Different image sizes in one batch | Each processed at its own size | end-to-end |
 | Image layout differs from the config (e.g. missing channel) | Image fails with the reason | end-to-end |
-| Channel index out of range | Stopped before processing (checked on the first image); per image afterwards | unit |
+| Channel index out of range | Stopped before processing when no image holds the channel; an image that lacks it among images that hold it fails with the reason | unit, end-to-end |
+| A file that cannot be used at the front of the list (other pixel type, colour, other axes, damaged) | That image fails with the reason and the run continues; the run stops before processing only when no image can be used | unit, end-to-end |
 | Two inputs giving the same output name | Stopped before processing with the clashing names | unit |
 | Calibration filter matches no image | Stopped before processing | unit |
 | No usable automatic threshold in a calibration image | Left out of the median with the reason; run stopped if none is usable | unit |

@@ -21,7 +21,7 @@ import threading
 import time
 import traceback
 import warnings
-from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, CancelledError, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from datetime import datetime
@@ -45,7 +45,7 @@ from bigfish_pypeline.detection import (
     get_spot_radius_px,
 )
 from bigfish_pypeline.measurements import measure_spots
-from bigfish_pypeline.segmentation import LabelFileError, read_label_file
+from bigfish_pypeline.segmentation import LabelFileError, read_label_file_contents
 from bigfish_pypeline.subpixel import fit_subpixel
 
 # Problems that stop the whole run rather than one image or channel.
@@ -705,15 +705,21 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
         if hide(segmentation_error or "") == reason:
             # Cellpose could not read the image for the same reason: the reason is enough.
             noted = [warning for warning in noted if warning != segmentation_failed]
+        # With Cellpose, the image was segmented before it came here, so its
+        # segmentation status is kept; label files have not been read yet.
+        status = ""
+        if label_folder is not None and segmentation_error is not None:
+            status = "failed"
+        elif (label_folder is not None and config.segmentation.source == "cellpose"
+              and segmentation.label_file_path(label_folder, image_name).is_file()):
+            status = "done"
         for channel in channels:
             rows.append(outputs.image_row(
                 image_name, channel.index, channel.name, "failed",
                 reason=reason,
                 threshold_mode=channel.threshold.mode,
                 segmentation_source=segmentation_source,
-                segmentation_status=(
-                    "failed" if label_folder is not None and segmentation_error is not None else ""
-                ),
+                segmentation_status=status,
                 warnings=noted,
                 runtime_s=runtime,
             ))
@@ -736,19 +742,28 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
         segmentation_status = "failed"
     elif label_folder is not None:
         try:
-            masks = read_label_file(label_folder, image_name, info.shape[-2:])
-            if config.segmentation.source == "label_files":
-                # A label file given by the user is recorded in run_info.yaml.
-                files_read.append(outputs.file_record(
-                    segmentation.label_file_path(label_folder, image_name), "label file"
-                ))
+            masks, data, details = read_label_file_contents(label_folder, image_name, info.shape[-2:])
             segmentation_status = "done"
         except PASS_THROUGH:
             raise
         except Exception as error:
-            masks = None
             segmentation_status = "no_labels"
             image_warnings.append(f"no cell results: {_one_line(error)}")
+        else:
+            if config.segmentation.source == "label_files":
+                # A label file given by the user is recorded in run_info.yaml, from
+                # the bytes its labels were read from.
+                try:
+                    files_read.append(outputs.file_record(
+                        segmentation.label_file_path(label_folder, image_name), "label file",
+                        data=data, details=details,
+                    ))
+                except Exception as error:
+                    log_lines.append(
+                        f"{image_name}: warning: the label file could not be recorded in "
+                        f"{outputs.RUN_INFO_NAME} ({hide(_one_line(error))})"
+                    )
+            del data
     for warning in image_warnings:
         log_lines.append(f"{image_name}: warning: {hide(warning)}")
     if masks is not None and config.segmentation.drop_border_cells:
@@ -1273,7 +1288,8 @@ def _check_output_folder(config):
 
 
 def _local_images(config):
-    """Images of a local run, and the header of each (None when it cannot be read)."""
+    """Images of a local run, the header of each (None when it cannot be read) and,
+    for a header that cannot be read, the reason (else None)."""
     folder = config.full_input_folder()
     if folder is None:
         raise BatchError("There is no input folder: set `run.input.folder`.")
@@ -1300,13 +1316,15 @@ def _local_images(config):
         raise BatchError(str(error)) from None
 
     images = [RunImage(io.output_name(path), path.name, path) for path in paths]
-    headers = []
+    headers, reasons = [], []
     for path in paths:
         try:
             headers.append(io.get_image_info(path))
-        except Exception:
+            reasons.append(None)
+        except Exception as error:
             headers.append(None)
-    return images, headers
+            reasons.append(_one_line(error))
+    return images, headers, reasons
 
 
 def _omero_ids(config):
@@ -1321,7 +1339,8 @@ def _omero_ids(config):
 
 
 def _omero_images(config, conn):
-    """Images of an OMERO run, and the information of each (None when it cannot be read)."""
+    """Images of an OMERO run, the information of each (None when it cannot be read)
+    and, for information that cannot be read, the reason (else None)."""
     omero = config.run.input.omero
     try:
         if config.resolved is not None:
@@ -1345,34 +1364,66 @@ def _omero_images(config, conn):
     if not images:
         raise BatchError(f"OMERO dataset {omero.dataset_id} holds no images.")
 
-    headers = []
+    headers, reasons = [], []
     for image in images:
         try:
             headers.append(io.get_omero_image_info(conn, image.source))
+            reasons.append(None)
         except io.OmeroSessionEnded:
             raise
-        except Exception:
+        except Exception as error:
             headers.append(None)
-    return images, headers
+            reasons.append(_hide_session_key(
+                f"OMERO image {image.source}: its information cannot be read ({_one_line(error)})", None
+            ))
+    return images, headers, reasons
 
 
-def _check_first_image(config, image, header):
-    """Stop when the first image does not fit the layout or lacks a channel of the config
-    (a FISH channel, or the segmentation channel when Cellpose is used)."""
+def _needed_channels(config):
+    """The channels the run reads: the FISH channels, and the segmentation channel when
+    Cellpose is used."""
     channels = [channel.index for channel in config.channels]
     if uses_cellpose(config) and config.segmentation.channel not in channels:
         channels.append(config.segmentation.channel)
+    return channels
+
+
+def _image_problem(config, header, reason=None, channels=None):
+    """
+    The reason an image cannot be used with the settings, or None when it can,
+    found from its header with the same checks the run makes: the pixel type,
+    the layout and the channels (see _needed_channels). A TIFF file is checked
+    by the reader itself (io.check_image), which reads the file header only.
+
+    header: the image's ImageInfo or OmeroImageInfo, or None when it could
+        not be read; `reason` then gives why.
+    """
+    if header is None:
+        return reason or "the image information cannot be read"
+    if channels is None:
+        channels = _needed_channels(config)
     try:
-        if config.run.input.source == "omero":
-            if header is None:
-                raise io.ImageReadError(f"OMERO image {image.source}: its information cannot be read")
+        if isinstance(header, io.OmeroImageInfo):
             _check_omero_image(header, config.image.axes, channels)
         else:
-            _open_image(config, image.source, channels)
+            io.check_image(header.path, config.image.axes, channels)
     except io.ImageReadError as error:
+        return _one_line(error)
+    return None
+
+
+def _image_problems(config, headers, reasons):
+    """The reason each image cannot be used, or None (see _image_problem). Raises
+    BatchError when no image can be used, so that settings that fit no image stop
+    the run before it starts."""
+    channels = _needed_channels(config)
+    problems = [_image_problem(config, header, reason, channels)
+                for header, reason in zip(headers, reasons)]
+    if all(problem is not None for problem in problems):
         raise BatchError(
-            f"The first image cannot be used with these settings: {_one_line(error)}"
-        ) from None
+            f"None of the images can be used with these settings. The first image: {problems[0]}"
+        )
+    return problems
 
 
 def _calibration_subsets(config, images):
@@ -1394,32 +1445,22 @@ def _calibration_subsets(config, images):
 
 
 def _will_be_refused(config, header):
-    """True when an image's header shows that the run will refuse the image: its
-    pixel type, time points, positions or axes do not fit, or a channel is missing."""
-    layout = config.image.axes
-    channels = [channel.index for channel in config.channels]
-    if isinstance(header, io.OmeroImageInfo):
-        try:
-            _check_omero_image(header, layout, channels)
-        except io.ImageReadError:
-            return True
-        return False
-    if io.pixel_type_problem(header) is not None:
-        return True
-    if header.n_timepoints > 1 or header.n_positions > 1 or len(header.shape) != len(layout):
-        return True
-    if header.layout is not None and header.layout != layout:
-        return True
-    n_channels = dict(zip(layout, header.shape)).get("C", 1)
-    return any(not 0 <= channel < n_channels for channel in channels)
+    """True when an image's header shows that the run will refuse the image (see _image_problem)."""
+    return header is None or _image_problem(config, header) is not None
 
 
-def _largest_channel(config, headers):
+def _largest_channel(config, headers, problems=None):
     """Voxels in one channel of the largest image whose header could be read,
-    leaving out the images the run will refuse (see _will_be_refused)."""
+    leaving out the images the run will refuse.
+
+    problems: the reason each image cannot be used, or None (see
+    _image_problems); found from the headers when not given.
+    """
+    if problems is None:
+        problems = [_image_problem(config, header) for header in headers]
     sizes = [0]
-    for header in headers:
-        if header is None or _will_be_refused(config, header):
+    for header, problem in zip(headers, problems):
+        if header is None or problem is not None:
             continue
         if isinstance(header, io.OmeroImageInfo):
             sizes.append(header.size_z * header.size_y * header.size_x)
@@ -1515,6 +1556,12 @@ def prepare_cellpose(config, device_chooser=None, model_loader=None):
     settings = config.segmentation
     threads = cellpose_threads(os.cpu_count())
     started = time.perf_counter()
+    # A model file given by its path is recorded before it is loaded; a model
+    # added in the Cellpose window is found only once Cellpose is loaded.
+    model_path = segmentation.custom_model_file(settings.cellpose.model)
+    model_file = model_state = None
+    if model_path is not None:
+        model_file, model_state = _model_file_record(model_path)
     old_variables = _set_thread_variables(str(threads))
     try:
         device, report, warnings = device_chooser(settings.device)
@@ -1524,17 +1571,48 @@ def prepare_cellpose(config, device_chooser=None, model_loader=None):
     finally:
         _restore_variables(old_variables)
     load_seconds = time.perf_counter() - started
-    model_path = segmentation.custom_model_file(settings.cellpose.model)
-    model_file = None
-    if model_path is not None:
+    warnings = list(warnings)
+    if model_path is None:
+        model_path = segmentation.custom_model_file(settings.cellpose.model)
+        if model_path is not None:
+            model_file, _ = _model_file_record(model_path)
+    elif _file_state(model_path) != model_state:
         try:
             model_file = outputs.file_record(model_path, "Cellpose model")
-        except OSError as error:
-            raise BatchError(f"The Cellpose model file {model_path} could not be read: {error}") from None
+        except OSError:
+            warnings.append(
+                f"The Cellpose model file {model_path} changed while it was being loaded and can "
+                f"no longer be read. {outputs.RUN_INFO_NAME} records it as it was before loading."
+            )
+        else:
+            warnings.append(
+                f"The Cellpose model file {model_path} changed while it was being loaded. "
+                f"{outputs.RUN_INFO_NAME} records it as it was after loading, which may not be "
+                "the model used."
+            )
     return CellposeSetup(
         model_name=settings.cellpose.model, model=model, device=device, report=report,
-        warnings=list(warnings), threads=threads, load_seconds=load_seconds, model_file=model_file,
+        warnings=warnings, threads=threads, load_seconds=load_seconds, model_file=model_file,
     )
+
+
+def _file_state(path):
+    """(size, time last changed) of a file, or None when it cannot be found."""
+    try:
+        details = os.stat(path)
+    except OSError:
+        return None
+    return details.st_size, details.st_mtime_ns
+
+
+def _model_file_record(model_path):
+    """The record of a Cellpose model file of the user's own (see outputs.file_record),
+    and its size and date just before it was read (see _file_state)."""
+    state = _file_state(model_path)
+    try:
+        return outputs.file_record(model_path, "Cellpose model"), state
+    except OSError as error:
+        raise BatchError(f"The Cellpose model file {model_path} could not be read: {error}") from None
 
 
 class _Segmenter:
@@ -2061,7 +2139,9 @@ class _Run:
         Once a reason to stop is found (the OMERO session has ended, or
         results cannot be written), no further result is taken: the workers
         are stopped at once and the files of every task in progress are
-        removed, also those of a task lost in the same pass.
+        removed, also those of a task lost in the same pass. A finished
+        segmentation is looked at before the workers' results of the same
+        pass, so a stop it reports keeps those results out too.
 
         When a worker stops, the pool is started again with half the workers
         (see restart_pool). This also happens when the pool is found broken
@@ -2080,22 +2160,8 @@ class _Run:
                 self.discard(running.values())
                 return "cancelled"
 
-            stop_message = None
-            if segmenter is not None:
-                task, outcome = segmenter.take()
-                if task is not None:
-                    self.segmenting = None
-                    if outcome["session_ended"] is not None:
-                        stop_message = OMERO_SESSION_ENDED_MESSAGE
-                    else:
-                        self.record_segmentation(task, outcome)
-                        task.ready = True
-                        pending = sorted(pending + [task], key=lambda item: item.order)
-                    self.write_progress()
-
             broken = False
-            while (stop_message is None and pending and pending[0].ready
-                   and len(running) < self.pool.n_workers):
+            while pending and pending[0].ready and len(running) < self.pool.n_workers:
                 task = pending[0]
                 try:
                     future = self.pool.submit(task.function, **task.arguments)
@@ -2109,8 +2175,8 @@ class _Run:
                 self.log(f"{task.label}: started")
                 self.write_progress()
 
-            if (stop_message is None and not broken and segmenter is not None
-                    and not segmenter.busy and not any(task.ready for task in pending)):
+            if (not broken and segmenter is not None and not segmenter.busy
+                    and not any(task.ready for task in pending)):
                 task = next((task for task in pending if not task.ready), None)
                 if task is not None:
                     pending.remove(task)
@@ -2119,37 +2185,18 @@ class _Run:
                     self.log(f"{task.label}: segmenting with Cellpose")
                     self.write_progress()
 
+            waiting_for = list(running)
+            if segmenter is not None and segmenter.busy:
+                waiting_for.append(segmenter.future)
             done = []
-            if stop_message is None:
-                waiting_for = list(running)
-                if segmenter is not None and segmenter.busy:
-                    waiting_for.append(segmenter.future)
-                if waiting_for:
-                    done, _ = wait(waiting_for, timeout=CHECK_INTERVAL_S, return_when=FIRST_COMPLETED)
-                    done = [future for future in done if future in running]
+            if waiting_for:
+                done, _ = wait(waiting_for, timeout=CHECK_INTERVAL_S, return_when=FIRST_COMPLETED)
+                done = [future for future in done if future in running]
+
+            pending, stop_message = self.take_segmentation(pending)
             lost = []
-            for future in sorted(done, key=lambda item: running[item].order):
-                task = running[future]
-                try:
-                    result = future.result()
-                except (BrokenProcessPool, MemoryError):
-                    lost.append(task)
-                except io.OmeroSessionEnded:
-                    stop_message = OMERO_SESSION_ENDED_MESSAGE
-                except outputs.OutputError as error:
-                    stop_message = f"Results cannot be written: {error}"
-                except Exception as error:
-                    self.take_out(running, future)
-                    on_error(task, error)
-                    continue
-                else:
-                    self.take_out(running, future)
-                    on_result(task, result)
-                    continue
-                if stop_message is not None:
-                    # The other results of this pass are not taken.
-                    break
-                self.take_out(running, future)
+            if stop_message is None:
+                lost, stop_message = self.take_results(done, running, on_result, on_error)
 
             if stop_message is not None:
                 self.discard(list(running.values()) + lost)
@@ -2158,7 +2205,7 @@ class _Run:
 
             if lost or broken:
                 pending, stopped = self.restart_pool(
-                    running, lost, pending, lost_before, on_result, on_lost_twice
+                    running, lost, pending, lost_before, on_result, on_error, on_lost_twice
                 )
                 if stopped:
                     return "stopped"
@@ -2166,26 +2213,89 @@ class _Run:
                 self.write_progress()
         return None
 
+    def take_segmentation(self, pending):
+        """
+        Look at the segmentation that has finished, if any: a segmented image
+        joins the queue, in order, ready for a worker.
+
+        Returns (pending, stop_message): the tasks still to do, and the message
+        of the stop when the segmentation found a reason to stop the run (the
+        OMERO session has ended), else None.
+        """
+        if self.segmenter is None:
+            return pending, None
+        task, outcome = self.segmenter.take()
+        if task is None:
+            return pending, None
+        self.segmenting = None
+        stop_message = None
+        if outcome["session_ended"] is not None:
+            stop_message = OMERO_SESSION_ENDED_MESSAGE
+        else:
+            self.record_segmentation(task, outcome)
+            task.ready = True
+            pending = sorted(pending + [task], key=lambda item: item.order)
+        self.write_progress()
+        return pending, stop_message
+
+    def take_results(self, futures, running, on_result, on_error):
+        """
+        Take the results of finished tasks in order: a result goes to
+        on_result, an error the task function raised to on_error.
+
+        Returns (lost, stop_message): the tasks lost with a stopped worker,
+        and the message of the stop when a result shows the run must stop
+        (the OMERO session has ended, or results cannot be written), else
+        None. Once a reason to stop is found, no further result is taken;
+        the task that gave it stays in `running`.
+        """
+        lost = []
+        for future in sorted(futures, key=lambda item: running[item].order):
+            task = running[future]
+            try:
+                result = future.result()
+            except (BrokenProcessPool, MemoryError, CancelledError):
+                self.take_out(running, future)
+                lost.append(task)
+            except io.OmeroSessionEnded:
+                return lost, OMERO_SESSION_ENDED_MESSAGE
+            except outputs.OutputError as error:
+                return lost, f"Results cannot be written: {error}"
+            except Exception as error:
+                self.take_out(running, future)
+                on_error(task, error)
+            else:
+                self.take_out(running, future)
+                on_result(task, result)
+        return lost, None
+
     def take_out(self, running, future):
         """Take a task whose result has come in out of those in progress."""
         task = running.pop(future)
         self.in_progress.remove(task.label)
         return task
 
-    def restart_pool(self, running, lost, pending, lost_before, on_result, on_lost_twice):
+    def restart_pool(self, running, lost, pending, lost_before, on_result, on_error, on_lost_twice):
         """
         After a worker stopped: stop the pool, remove the files of the tasks it
         lost, and start a pool with half the workers; a task lost a second
         time goes to on_lost_twice. With one worker, the run stops instead.
 
+        Tasks that finished after the pass was taken are first looked at as in
+        the pass (see take_results): their results and errors are taken, and
+        a reason to stop among them stops the run, with nothing tried again.
+
         Returns (pending, stopped): the tasks still to do, with the tasks lost
         once put back in order, and True when the run has stopped.
         """
-        # Tasks that finished just before the worker stopped are kept.
-        for future, task in list(running.items()):
-            if future.done() and not future.cancelled() and future.exception() is None:
-                self.take_out(running, future)
-                on_result(task, future.result())
+        finished = [future for future in running if future.done()]
+        more_lost, stop_message = self.take_results(finished, running, on_result, on_error)
+        lost = lost + more_lost
+        if stop_message is not None:
+            self.discard(list(running.values()) + lost)
+            self.message = stop_message
+            return pending, True
+
         lost = sorted(lost + list(running.values()), key=lambda task: task.order)
         running.clear()
         self.in_progress.clear()
@@ -2519,6 +2629,9 @@ class _Run:
             self.message += f" In the finished images, {problems}. {SEE_TABLES}"
         self.status = status
         self.note_end()
+        # The run folder is given again here, so that the message with the
+        # counts stays the last line.
+        self.log(f"Run folder: {self.run_folder}")
         self.log(
             f"Summary: {len(finished)} of {len(self.images)} image(s) finished, "
             f"{not_processed} not processed; channels: {counts}. "
@@ -2689,6 +2802,8 @@ class RunPlan:
     omero_conn: the OMERO connection of the run, or None.
     owned_conn: the connection the checks logged in, which `close` ends; None
         when the caller brought its own connection.
+    problems: for each image, the reason it cannot be used, or None when it
+        can (see _image_problem).
     """
 
     images: list
@@ -2701,6 +2816,7 @@ class RunPlan:
     omero: dict
     omero_conn: object = None
     owned_conn: object = None
+    problems: list = None
 
     def close(self):
         """End the OMERO session this plan logged in to, if any."""
@@ -2716,9 +2832,11 @@ def plan_run(config, omero_conn=None):
     """
     Carry out every check made before a run, and return what was found.
 
-    With Cellpose, the segmentation channel is checked against the first
-    image, but the device is not tested and the model is not loaded; the
-    run does that (see prepare_cellpose).
+    Every image is checked from its header (see _image_problem). Images that
+    cannot be used fail one by one in the run; only when no image can be used
+    does this raise BatchError. With Cellpose, the segmentation channel is
+    checked too, but the device is not tested and the model is not loaded;
+    the run does that (see prepare_cellpose).
 
     Nothing is created. For OMERO input this logs in (the password is asked
     for) unless `omero_conn` is given; call `close` on the result when done.
@@ -2753,15 +2871,15 @@ def _plan_run(config, omero_conn):
         if source == "omero":
             omero = {"host": settings.host, "port": settings.port, "key": io.session_key(omero_conn)}
             try:
-                images, headers = _omero_images(config, omero_conn)
+                images, headers, reasons = _omero_images(config, omero_conn)
             except io.OmeroSessionEnded as error:
                 raise BatchError(str(error)) from None
         else:
-            images, headers = _local_images(config)
-        _check_first_image(config, images[0], headers[0])
+            images, headers, reasons = _local_images(config)
+        problems = _image_problems(config, headers, reasons)
         subsets = _calibration_subsets(config, images)
         n_workers, workers_reason, workers_warning = choose_workers(
-            config.run.workers, len(images), _largest_channel(config, headers),
+            config.run.workers, len(images), _largest_channel(config, headers, problems),
             os.cpu_count(), psutil.virtual_memory().available, psutil.virtual_memory().total,
             cellpose=uses_cellpose(config),
             cellpose_on_cpu=uses_cellpose(config) and config.segmentation.device == "cpu",
@@ -2774,7 +2892,7 @@ def _plan_run(config, omero_conn):
                 pass
         raise
     return RunPlan(images, headers, label_folder, subsets, n_workers, workers_reason,
-                   workers_warning, omero, omero_conn, owned_conn)
+                   workers_warning, omero, omero_conn, owned_conn, problems)
 
 
 def run_batch(config, config_file=None, omero_conn=None, show=None,
