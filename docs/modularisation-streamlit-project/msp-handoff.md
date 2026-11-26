@@ -14,8 +14,9 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 
 1. Review, check and commit tasks 3.20 and 3.21 (plan), and record them in the devlog. The spec is updated where a fix changes it (5.3, 7.3, 13).
 2. Task 3.22: add `pytest-xdist` to `msp-environment.yml` and to the `bigfish-msp` env, check that the suite passes when run in parallel (full-size tests one at a time) and record the time; rerun the whole suite; make the samples again where a message or a figure changed; update devlog 3.18.
-3. The user signs off Phase 3 and says when to merge `msp` into `main` and push. Nothing is merged or pushed before that.
-4. After the merge, Phase 4 (Optimise notebook) is planned in detail in `msp-plan.md`, starting from the points carried forward in devlog 3.11 and 3.18.
+3. Task 3.23 (plan): a setting that limits the projection for Cellpose to some planes, tested on the cultured-cell crop added to `tests/data/` (devlog, "Cultured-cell test image and task 3.23 planned"). It follows 3.22, because 3.21 changes `segmentation.py`.
+4. The user signs off Phase 3 and says when to merge `msp` into `main` and push. Nothing is merged or pushed before that.
+5. After the merge, Phase 4 (Optimise notebook) is planned in detail in `msp-plan.md`, starting from the points carried forward in devlog 3.11 and 3.18.
 
 ## How the work is run
 
@@ -27,7 +28,7 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 ## Waiting on the user
 
 - **OMERO on the real server, on a day with a stable VPN:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) to see both images finish, the "rejoining" line if the connection drops, and no session key or `WARNING:` lines in the terminal.
-- **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
+- **The Cellpose 4 mask review** on the cultured-cell image in `~/bigfish-testdata/cultured_cells/` (planes 12–30), after task 3.23 and before Phase 8.
 - **The sign-off of Phase 3** (devlog 3.18), after the Codex review.
 - **Manual checks of the Phase 2 review** (devlog 2.8): Cellpose on the test kit, a look at a full-size run folder, and the "choices the spec does not settle" in 2.1, 2.3 and 2.4.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.
@@ -37,6 +38,7 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 | Path | Holds |
 |---|---|
 | `~/bigfish-testdata/` | The full-size test image; set `BIGFISH_TEST_DATA` to this folder for the `full_image` tests |
+| `~/bigfish-testdata/cultured_cells/` | The cultured-cell image for the Cellpose 4 mask review, a substack of planes 12–30, previews, and the scripts that make the substack and the test kit crop |
 | `~/bigfish-testdata/reference_v1/` | v1 reference results for the full-size image |
 | `~/bigfish-testdata/benchmarks/phase0/` | Phase 0 benchmark scripts and numbers, the pattern for task 2.7 |
 | `~/bigfish-testdata/benchmarks/phase2/` | Benchmark scripts, logs and numbers of task 2.7 |

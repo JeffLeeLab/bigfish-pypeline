@@ -1,0 +1,74 @@
+# Test kit config for culture_DAPI_cellmask_exon_crop.tif (cultured cells).
+# Cells are segmented by Cellpose from the cell-mask channel; spots are found in the exon channel.
+config_version: 1
+run:
+  name: culture_crop
+  input:
+    source: local
+    folder: .
+    filter: culture_DAPI_cellmask_exon_crop
+    extension: .tif
+    omero:
+      host: ""
+      port: 4064
+      username: ""
+      dataset_id:
+      image_ids: []
+  output_folder: ""
+  workers: 1
+  keep_awake: false
+  seed: 0
+image:
+  axes: ZCYX
+  voxel_size_nm: {z: 200, yx: 65}
+microscope:
+  type: confocal
+  NA: 1.45
+  RI: 1.45
+channels:
+  - index: 2
+    name: exon-Q570
+    ex: 570
+    em: 610
+    background: {method: rolling_ball, radius_px: 5}
+    threshold:
+      mode: auto
+      value:
+      lower_limit:
+      calibration_filter: ""
+    bailout: {enabled: false, max_spots: }
+    decomposition: {enabled: true, alpha: 0.5, beta: 1}
+    subpixel: {enabled: false}
+    clusters: {enabled: true, radius_nm: 500, min_spots: 4}
+    measurements: {snr: false, intensity: false}
+segmentation:
+  enabled: true
+  source: cellpose
+  label_folder: ""
+  channel: 1
+  projection: max
+  clip: {enabled: false, value: 100}
+  background: {enabled: true, method: rolling_ball, radius_px: 200}
+  median_px:
+  gaussian_sigma_px:
+  cellpose:
+    model: cpsam_v2
+    diameter:
+    flow_threshold: 0.4
+    cellprob_threshold: 0
+    min_size: 15
+    max_size_fraction: 0.4
+    normalize: true
+    batch_size: 1
+    niter:
+  device: auto
+  drop_border_cells: false
+outputs:
+  label_images: true
+  npz: false
+  qc:
+    elbow_plot: true
+    detection: true
+    reference_spot: true
+    cellpose: true
+    final: png

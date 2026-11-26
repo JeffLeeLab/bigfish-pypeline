@@ -2253,3 +2253,21 @@ Also raised with finding 32 and left as it is: the label files of an image whose
 
 - 3.17 and 3.18, point 25: from 10 px up, 18 is the whole-number threshold whose count is nearest to top-hat's at 18 on the exon channel (within 1 %), where 5 px needs 17. On the intron channel the nearest match for top-hat at 30 is 30 at 5 px and 32 at the larger radii. A manual threshold therefore does not carry over exactly at any radius, and should be checked again after a change of background method or radius.
 - 3.15, "Threshold": an elbow curve of one point, or one for which big-fish cannot give a value (such as a flat curve), gives "no automatic threshold". A straight falling line still gets big-fish's value, as in v1.
+
+### Cultured-cell test image and task 3.23 planned (26 Nov 2026)
+
+The user supplied an image of cultured cells for the Cellpose 4 mask review (spec, comparison 2): 31 planes × 4 channels × 2000 × 2000 px, 16-bit, pixel size 65 nm, Z-step 200 nm (given by the user; the file does not record it). Channels, counted from 0: DAPI, cell mask, exon smFISH probes (Quasar 570), intron smFISH probes. The full image, a substack of planes 12–30 and preview figures are in `~/bigfish-testdata/cultured_cells/`, with the scripts that make them.
+
+**What the planes show:** in planes 0–11 the cells spread over the coverslip and the cell-mask stain of neighbouring cells overlaps into one sheet. From plane 12 upwards the cells stand apart with clear outlines, about 60–70 in the field. DAPI is sharpest in planes 9–12, and every nucleus is clear in the projection of planes 12–30. The exon channel holds many spots in planes 0–11, so cutting the stack would lower the counts per cell.
+
+**Decisions by the user:**
+
+- A setting that limits the projection for Cellpose to some planes, while spot detection uses every plane: task 3.23 in the plan, `segmentation.z_planes`, with planes counted from 0 like channel numbers.
+- A small crop goes into the test kit, without the gene name in its file names, settings or README.
+- The exon channel keeps ex 570 nm and em 610 nm, the values of the lab's other Quasar 570 settings (the v1 config of the tissue image, the brief's example), rather than the dye's peaks (about 548 and 566 nm).
+
+**Test kit crop** (`tests/data/culture_DAPI_cellmask_exon_crop.tif`, settings in `culture_DAPI_cellmask_exon_crop_config.yaml`, described in `tests/data/README.md`):
+
+- Top-left corner at y = 640, x = 1344, 384 × 384 px, every plane (31), channels 0–2, so the exon channel keeps index 2 as in the tissue crop. It holds three to four cells, two of which touch, and the lower planes overlap, so that task 3.23 can be tested on it.
+- Saved with lossless (zlib) compression: 14.9 MB, against 27.4 MB without. Every plane is kept because the new setting needs the lower planes; 25 planes would have saved 3 MB. The package's reader gives the layout `ZCYX`, 65 nm pixels, a 200 nm Z-step and pixel values equal to the full image.
+- Settings: Cellpose on channel 1 (maximum projection, rolling ball at 200 px before Cellpose, as the defaults), spots in channel 2 with an automatic threshold, rolling ball at 5 px and the default cluster settings. The file loads with `load_config`. No test uses the crop yet; the tests of 3.23 will. The existing tests select the tissue crop by name, so they are unchanged.

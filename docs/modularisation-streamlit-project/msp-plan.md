@@ -75,6 +75,7 @@ Spec section 11, Phase 3. Run folder: section 8.1. `.npz` files: section 8.2. QC
 | 3.20 | Reading images: fixes after the fourth review (`io.py`, `detection.py`) | Opus 5.5, medium | Each fix has a test that fails without it | – |
 | 3.21 | The runner: fixes after the fourth review (`batch.py`, `cli.py`, `segmentation.py`) | Opus 5.5, medium | Each fix has a test that fails without it; tables unchanged | – |
 | 3.22 | Tests in parallel; review brought up to date | Orchestrator, then the user | Suite passes, also in parallel | Sign off; say when to merge |
+| 3.23 | Planes for the segmentation projection (`config.py`, `segmentation.py`) | Opus 5.5, medium | Only the chosen planes reach Cellpose; spot detection still uses every plane | Look at the Cellpose QC figure of the cultured-cell kit |
 
 **Order:** 3.1 and 3.3 start together (different files). Then 3.2 follows 3.1, and 3.4 → 3.5 follow 3.3. Task 3.6 needs 3.2 and 3.5; then 3.7 → 3.8. Task 3.9 follows 3.6 and runs on its own. Task 3.10 follows 3.6. After 3.12: 3.13 and 3.14 start together (different files); 3.15 follows 3.14, because the calibration plot shows the new column of `calibration.csv`; 3.16 follows 3.15 (both change `segmentation.py`). Task 3.17 changes no code and can run at any point, but not at the same time as a full-size test run or benchmark (memory). If the user chooses a new default radius, it is changed in `config.py` after 3.15. Task 3.18 comes last.
 
@@ -265,6 +266,15 @@ Spec section 11, Phase 3. Run folder: section 8.1. `.npz` files: section 8.2. QC
 - `pytest-xdist` is added to `msp-environment.yml` and to the env (user's answer, devlog 3.18). The orchestrator checks that the suite passes when run in parallel, with the full-size tests one at a time, and records the time.
 - The orchestrator reruns the suite after 3.20 and 3.21, makes the samples again where a message or a figure changed, and updates devlog 3.18.
 
+### 3.23 Planes for the segmentation projection
+
+- Done by Opus 5.5, medium, in `config.py` and `segmentation.py`, after 3.22 (3.21 changes `segmentation.py`).
+- Reason: in cultured cells the lower planes hold the cells spread over the coverslip, where the cell-mask stain of neighbouring cells overlaps into one sheet. Cellpose separates the cells better on a projection of the upper planes only, but the spots in the lower planes still belong in the counts.
+- A new setting, `segmentation.z_planes`: the first and last plane of the projection made for Cellpose, counted from 0 like channel numbers, both included. Left empty, every plane is used, as now. Spot detection always uses every plane.
+- The check of the first image fails with a clear message when a plane number is beyond the image's planes, or the first is after the last. `run.log` and `run_config.yaml` record the planes used; the Cellpose QC figure shows the projection Cellpose received.
+- The spec's list of settings gains `z_planes`.
+- Checks: a test that the projection uses only the chosen planes; a run of the cultured-cell test kit (`tests/data/culture_DAPI_cellmask_exon_crop.tif`, planes 12–30) whose spot table is the same with and without the setting.
+
 **Done when** (spec): a full run on the test kit produces every output; repeating the run from `run_config.yaml` gives the same tables; the user has reviewed sample QC images and the log. In addition, the `workers: auto` estimate is confirmed with the QC outputs on, the confirmed findings of 3.12 are fixed, and the decisions after 3.12 are carried out.
 
 ### Waiting on the user
@@ -272,7 +282,7 @@ Spec section 11, Phase 3. Run folder: section 8.1. `.npz` files: section 8.2. QC
 None of these holds up Phase 3.
 
 - **OMERO fix on the real server** (devlog 2.8, manual check 1): `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` on a day with a stable VPN.
-- **Cellpose 4 mask review** (spec, comparison 2): needs an image that suits Cellpose-SAM (e.g. cultured cells). Must be done before Phase 8.
+- **Cellpose 4 mask review** (spec, comparison 2): on the cultured-cell image supplied on 26 Nov 2026 (`~/bigfish-testdata/cultured_cells/`, Z-step 200 nm, Cellpose on planes 12–30), after 3.23. Must be done before Phase 8.
 - The other manual checks of devlog 2.8.
 
 ## Later phases
