@@ -5,15 +5,16 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 ## State
 
 - **Phases 0, 1 and 2:** done, signed off, merged into `main` and pushed. Phase 2 was signed off and merged on 24 Nov 2026 (devlog 2.8).
-- **Phase 3 (outputs, logs and QC):** every task is done and committed on `msp`. Tasks 3.1 to 3.11 are in devlog 3.1–3.11. Three independent reviews (devlog 3.12, findings 1–28) led to tasks 3.13 to 3.17 (devlog 3.13–3.17) and the review of 3.18. The user answered the open points on 26 Nov 2026 (devlog 3.18, at its end): the rolling-ball radius stays 5 px, the samples are fine, the tests may run in parallel. A fourth review, by GPT-6.2 Astra through Codex (devlog 3.19, findings 29–40), was asked for before sign-off; all its findings are fixed (devlog 3.20, 3.21) and the state after the fixes is in devlog 3.22. Phase 3 now waits for the user's sign-off.
+- **Phase 3 (outputs, logs and QC):** every task is done and committed on `msp`. Tasks 3.1 to 3.11 are in devlog 3.1–3.11. Three independent reviews (devlog 3.12, findings 1–28) led to tasks 3.13 to 3.17 (devlog 3.13–3.17) and the review of 3.18. The user answered the open points on 26 Nov 2026 (devlog 3.18, at its end): the rolling-ball radius stays 5 px, the samples are fine, the tests may run in parallel. A fourth review, by GPT-6.2 Astra through Codex (devlog 3.19, findings 29–40), was asked for before sign-off; all its findings are fixed (devlog 3.20, 3.21) and the state after the fixes is in devlog 3.22. Task 3.23 (planes for the Cellpose projection), planned on 26 Nov 2026 with the cultured-cell crop, is not started.
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
 - 1,197 tests pass in `bigfish-msp` with the full-size image (devlog 3.22). Run the suite in parallel, in two commands, about 5 and a half minutes in all: `conda run -n bigfish-msp python -m pytest -n 6 -m "not full_image"`, then `conda run -n bigfish-msp python -m pytest -m full_image` (the full-size tests need about 5 GB each and must not run side by side). One test at a time the suite takes 13 minutes, and a foreground command is cut off after 10 minutes, so run it in the background.
 - Everything of Phase 3 is committed on `msp` and not pushed.
 
 ## Next step
 
-1. The user reads devlog 3.19 to 3.22 (the fourth review, its fixes and the changes in behaviour they bring), signs off Phase 3 and says when to merge `msp` into `main` and push. Nothing is merged or pushed before that.
-2. After the merge, Phase 4 (Optimise notebook) is planned in detail in `msp-plan.md`, starting from the points carried forward in devlog 3.11, 3.18 and 3.22.
+1. Task 3.23 (plan): a setting that limits the projection for Cellpose to some planes, tested on the cultured-cell crop in `tests/data/` (devlog, "Cultured-cell test image and task 3.23 planned"). It is planned and not started. Its plan speaks of "the check of the first image", which task 3.21 replaced by a check of every image when a run is planned; the plane numbers are checked there.
+2. The user reads devlog 3.19 to 3.22 (the fourth review, its fixes and the changes in behaviour they bring), signs off Phase 3 and says when to merge `msp` into `main` and push. Nothing is merged or pushed before that.
+3. After the merge, Phase 4 (Optimise notebook) is planned in detail in `msp-plan.md`, starting from the points carried forward in devlog 3.11, 3.18 and 3.22.
 
 ## How the work is run
 
