@@ -2,7 +2,8 @@
 
 `process_image` is the function a batch worker runs for one image.
 `calibration_threshold` gives one image's automatic threshold for the
-calibration pass of the calibrated threshold mode.
+calibration pass of the calibrated threshold mode, and `calibrate_images`
+runs that pass for one channel in the calling program (the notebook).
 `run_batch` runs every image of a batch in a pool of worker processes. With
 Cellpose, the main process segments each image before handing it to a worker.
 `save_image_results` runs one image the way a batch does, in the calling
@@ -10,6 +11,7 @@ program itself, and saves its results in a run folder of the usual layout.
 """
 
 import atexit
+import contextlib
 import gc
 import json
 import math
@@ -46,7 +48,7 @@ from bigfish_pypeline.detection import (
     filter_channel,
     get_spot_radius_px,
 )
-from bigfish_pypeline.segmentation import LabelFileError, read_label_file_contents
+from bigfish_pypeline.segmentation import LabelFileError
 from bigfish_pypeline.steps import ChannelError, get_ndim, get_voxel_size, run_spot_columns
 
 # Problems that stop the whole run rather than one image or channel.
@@ -136,6 +138,29 @@ def _keep_omero_connection(conn):
         _omero["session"] = None
 
 
+@contextlib.contextmanager
+def _through_connection(conn, host, port, key):
+    """
+    Read OMERO images through the caller's own connection `conn` (already
+    logged in to the session `key`) for the time of a `with` block, as a
+    worker reads through its own. A connection made to rejoin the session
+    after a drop is let go at the end, and the connection this process kept
+    before is kept again. With `conn` None nothing changes.
+    """
+    omero_before = dict(_omero)
+    if conn is not None:
+        _omero["conn"] = conn
+        _omero["session"] = (host, int(port), key)
+    try:
+        yield
+    finally:
+        if conn is not None:
+            if _omero["conn"] is not None and _omero["conn"] is not conn:
+                io.detach_session(_omero["conn"])
+            _omero.clear()
+            _omero.update(omero_before)
+
+
 def _channel_text(n_channels):
     if n_channels == 1:
         return "1 channel (channel 0)"
@@ -156,13 +181,9 @@ def _plane_problem(config, label, n_planes):
     """The reason the planes of `segmentation.z_planes` do not fit an image of
     `n_planes` planes, or None when they do or are not used (no Cellpose, or a
     layout without Z)."""
-    planes = config.segmentation.z_planes
-    if not uses_cellpose(config) or not planes.chosen or "Z" not in config.image.axes:
+    if not uses_cellpose(config):
         return None
-    problem = segmentation.plane_problem(n_planes, (planes.first, planes.last))
-    if problem is None:
-        return None
-    return f"{label}: {problem} (`segmentation.z_planes`)"
+    return steps.z_planes_problem(config, label, n_planes)
 
 
 def _check_planes(config, label, n_planes):
@@ -480,16 +501,16 @@ def _write_channel_qc(config, channel, image_name, staging, result, labels, stag
             staging, image_name, index, material.pop("reference_spot"),
         ))
 
-    clusters = result["clusters"] if channel.clusters.enabled else None
+    spots, clusters, cells = steps.final_qc_tables(channel, result)
     if settings.final == "png":
         attempt(qc.final_png_path(staging, image_name, index), lambda: qc.write_final_qc(
-            staging, image_name, material.pop("picture"), result["spots"], clusters,
-            result["cells"], labels, index, channel_name=name,
+            staging, image_name, material.pop("picture"), spots, clusters,
+            cells, labels, index, channel_name=name,
         ))
     elif settings.final == "html":
         attempt(qc.final_html_path(staging, image_name, index), lambda: qc.write_final_html(
-            staging, image_name, material.pop("picture"), result["spots"], clusters,
-            result["cells"], labels, index, channel_name=name,
+            staging, image_name, material.pop("picture"), spots, clusters,
+            cells, labels, index, channel_name=name,
             plotly_script=FINAL_HTML_PLOTLY_SCRIPT,
         ))
     return warnings, details
@@ -658,7 +679,9 @@ def process_image(config, image_name, image_source, run_folder, label_folder=Non
         segmentation_status = "failed"
     elif label_folder is not None:
         try:
-            masks, data, details = read_label_file_contents(label_folder, image_name, info.shape[-2:])
+            masks, data, details = steps.read_labels_contents(
+                config, image_name, info.shape[-2:], label_folder
+            )
             segmentation_status = "done"
         except PASS_THROUGH:
             raise
@@ -903,6 +926,173 @@ def calibration_threshold(config, image_name, image_source, channel_index,
         result["threshold"] = float(detected["threshold"])
         result["elbow_threshold"] = float(detected["auto_threshold"])
     return result
+
+
+def calibration_rows(channel_index, results):
+    """
+    The calibrated threshold of one channel and its rows of `calibration.csv`.
+
+    results: what `calibration_threshold` gave for each calibration image of
+        the channel, in the order of the images.
+
+    Returns (threshold, rows): the median of the usable automatic thresholds,
+    or None when no image gave one; and one row per image with "image",
+    "channel", "auto_threshold", "elbow_threshold", "used" and "reason" (see
+    outputs.make_calibration_table).
+    """
+    try:
+        threshold, table = calibrate_threshold(results)
+    except ValueError:
+        threshold = None
+        table = [{"image": entry["image"], "threshold": entry["threshold"], "used": False,
+                  "reason": entry["reason"] or "no automatic threshold"} for entry in results]
+    rows = [
+        {
+            "image": entry["image"], "channel": channel_index,
+            "auto_threshold": entry["threshold"],
+            "elbow_threshold": found.get("elbow_threshold"),
+            "used": entry["used"], "reason": entry["reason"] or "",
+        }
+        for entry, found in zip(table, results)
+    ]
+    return threshold, rows
+
+
+@dataclass
+class Calibration:
+    """Outcome of calibrate_images, for one channel.
+
+    channel: the channel's number.
+    threshold: the calibrated threshold (the median of the usable automatic
+        thresholds), or None when no image gave one.
+    reason: why there is no calibrated threshold, or None when there is one.
+    table: the channel's rows of `calibration.csv`, as a batch run writes
+        them (see outputs.make_calibration_table): one row per image, with
+        its automatic threshold, whether it was used, and why not.
+    images: the names of the calibration images as listed (file names for
+        local images).
+    lower_limit, channel_name: the channel's lower limit and name, for the plot.
+    """
+
+    channel: int
+    threshold: float | None
+    reason: str | None
+    table: object
+    images: list
+    lower_limit: float | None = None
+    channel_name: str = ""
+
+    def plot(self):
+        """The calibration plot of the batch (`qc/calibration.png`) for this channel, as a figure."""
+        from bigfish_pypeline import qc
+
+        thresholds = {self.channel: self.threshold} if self.threshold is not None else {}
+        names = {self.channel: self.channel_name} if self.channel_name else {}
+        return qc.draw_calibration_plot(self.table, thresholds, {self.channel: self.lower_limit}, names)
+
+    def with_threshold(self, config):
+        """
+        A copy of `config` whose `resolved` block holds this calibrated
+        threshold, next to those of other channels already there, and names
+        the calibration images. Steps that use the `calibrated` threshold
+        mode then use it. Raises BatchError when there is no calibrated
+        threshold.
+        """
+        if self.threshold is None:
+            raise BatchError(self.reason)
+        known = dict(config.resolved.thresholds) if config.resolved is not None else {}
+        return config.with_resolved(self.images, {**known, self.channel: self.threshold})
+
+
+def calibrate_images(config, channel_index, images, omero_conn=None, show=None):
+    """
+    Calibrate the threshold of one channel on several images, as the
+    calibration pass of a batch run does, in this program itself (for example
+    the notebook), one image at a time.
+
+    config: the settings. Reads the channel's wavelengths, background and
+        `threshold.lower_limit`, the microscope, the voxel sizes and the
+        layout (`image.axes`). The channel's threshold mode is not read: the
+        automatic threshold of each image is found, raised to the lower limit
+        when it is lower.
+    channel_index: the channel's number.
+    images: the calibration images, in order: paths of local files, or
+        OMERO image IDs (whole numbers).
+    omero_conn: for OMERO images, the connection that is already logged in.
+        This function never logs in and never asks for a password.
+    show: a function called with a line for each image (e.g. print), or None.
+
+    An image that cannot be read, or that gives no automatic threshold, is a
+    row of the table with its reason, and is left out of the median.
+
+    Returns a Calibration with the calibrated threshold (or None and the
+    reason), the table as a batch run writes it to `calibration.csv` for this
+    channel, and the names of the images. Raises BatchError when no image is
+    given, or the OMERO images cannot be listed, and ConfigError when the
+    channel is not in the settings. Ctrl+C, or stopping the notebook cell,
+    stops the calibration (KeyboardInterrupt).
+    """
+    channel = config.channel(channel_index)
+    images = list(images)
+    if not images:
+        raise BatchError(f"No calibration images were given for channel {channel_index}.")
+    omero_images = all(isinstance(image, (int, np.integer)) and not isinstance(image, bool)
+                       for image in images)
+    omero = {"host": None, "port": None, "key": None}
+    if omero_images:
+        if omero_conn is None:
+            raise BatchError(
+                "OMERO images need the OMERO connection that is already logged in "
+                "(`omero_conn`). Log in to OMERO first, then calibrate again."
+            )
+        try:
+            key = io.session_key(omero_conn)
+            listed = io.list_omero_images(omero_conn, image_ids=[int(image) for image in images])
+        except (ValueError, ConnectionError) as error:
+            raise BatchError(_hide_session_key(str(error), None)) from None
+        settings = config.run.input.omero
+        omero = {"host": settings.host, "port": settings.port, "key": key}
+        sources = [image_id for image_id, _ in listed]
+        names = listed_names = [io.omero_output_name(image_id, name) for image_id, name in listed]
+        source = "omero"
+    else:
+        sources = [Path(os.path.abspath(Path(image).expanduser())) for image in images]
+        names = [io.output_name(path) for path in sources]
+        listed_names = [path.name for path in sources]
+        source = "local"
+    if config.run.input.source != source:
+        config = _changed_config(config, lambda data: data["run"]["input"].update(source=source))
+
+    results = []
+    with io.plain_logging(), warnings.catch_warnings(), _through_connection(
+        omero_conn if omero_images else None, omero["host"], omero["port"], omero["key"]
+    ):
+        hide_mean_intensity_warning()
+        for name, image_source in zip(names, sources):
+            arguments = ({"omero_host": omero["host"], "omero_port": omero["port"], "omero_key": omero["key"]}
+                         if omero_images else {})
+            result = calibration_threshold(config, name, image_source, channel_index, **arguments)
+            results.append(result)
+            if show is not None:
+                label = f"{name}, channel {channel_index} (calibration)"
+                if result["threshold"] is None:
+                    show(f"{label}: no value ({result['reason']})")
+                else:
+                    show(f"{label}: automatic threshold {_threshold_text(result['threshold'])}")
+
+    threshold, rows = calibration_rows(channel_index, results)
+    reason = None
+    if threshold is None:
+        reason = (
+            f"No calibrated threshold for channel {channel_index}: none of the calibration images "
+            "gave a usable automatic threshold (see the table). Change the calibration images or "
+            "the threshold settings and calibrate again."
+        )
+    return Calibration(
+        channel=channel_index, threshold=threshold, reason=reason,
+        table=outputs.make_calibration_table(rows), images=listed_names,
+        lower_limit=channel.threshold.lower_limit, channel_name=channel.name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1452,20 +1642,7 @@ def _log_in_to_omero(config):
 # -- Cellpose in the main process --------------------------------------------
 
 
-def _pretreatment_settings(config):
-    """The pre-treatment settings of the config, as arguments of segmentation.pretreat_channel."""
-    settings = config.segmentation
-    return dict(
-        projection=settings.projection,
-        clip=settings.clip.enabled,
-        clip_value=settings.clip.value,
-        background=settings.background.enabled,
-        bg_method=settings.background.method,
-        bg_radius=settings.background.radius_px,
-        median_px=settings.median_px,
-        gaussian_sigma_px=settings.gaussian_sigma_px,
-        z_planes=(settings.z_planes.first, settings.z_planes.last),
-    )
+_pretreatment_settings = steps.pretreatment_settings
 
 
 @dataclass
@@ -1601,15 +1778,8 @@ class _Segmenter:
     def __init__(self, run, setup):
         self.run = run
         self.setup = setup
-        self.pretreatment = _pretreatment_settings(run.config)
-        self.pretreatment_text = segmentation.describe_pretreatment(**self.pretreatment)
-        self.eval_settings = segmentation.cellpose_eval_settings(run.config.segmentation.cellpose)
+        self.qc_settings = steps.cellpose_qc_settings(run.config)
         self.write_qc = run.config.outputs.qc.cellpose
-        channel = run.config.segmentation.channel
-        # the name of the FISH channel of the same number, when there is one
-        self.channel_name = next(
-            (item.name for item in run.config.channels if item.index == channel and item.name), None
-        )
         self.lock = threading.Lock()
         self.abandoned = False
         self.task = None
@@ -1667,15 +1837,13 @@ class _Segmenter:
         try:
             result = given
             if result is None:
-                channel = self.run.read_segmentation_channel(image, notes=outcome["notes"])
-                if channel.ndim == 3:
-                    label = (f"OMERO image {image.source}" if self.run.config.run.input.source == "omero"
-                             else Path(image.source).name)
-                    _check_planes(self.run.config, label, channel.shape[0])
-                prepared = segmentation.pretreat_channel(channel, **self.pretreatment)
-                del channel
-                result = segmentation.segment_cells(self.setup.model, prepared, **self.eval_settings)
-                del prepared
+                label = (f"OMERO image {image.source}" if self.run.config.run.input.source == "omero"
+                         else Path(image.source).name)
+                # the channel is passed straight on, so that it is let go once pre-treated
+                result = steps.segment(
+                    self.run.config, self.run.read_segmentation_channel(image, notes=outcome["notes"]),
+                    self.setup.model, label,
+                )
             self._write(lambda: segmentation.write_label_file(
                 result["masks"], self.run.label_folder, image.name,
                 pixel_size_nm=self.run.config.image.voxel_size_nm.yx))
@@ -1687,9 +1855,7 @@ class _Segmenter:
                 try:
                     from bigfish_pypeline import qc
                     self._write(lambda: qc.write_cellpose_qc(
-                        self.run.run_folder, image.name, result,
-                        self.run.config.segmentation.channel, self.pretreatment_text,
-                        self.eval_settings["diameter"], channel_name=self.channel_name,
+                        self.run.run_folder, image.name, result, **self.qc_settings,
                     ))
                 except Exception as error:
                     outcome["warnings"].append(
@@ -2407,28 +2573,17 @@ class _Run:
         unusable = []
         for channel_index in self.subsets:
             entries = [results[task.order] for task in tasks if task.channel == channel_index]
-            try:
-                threshold, table = calibrate_threshold(entries)
-            except ValueError:
-                threshold = None
-                table = [{"image": entry["image"], "threshold": entry["threshold"], "used": False,
-                          "reason": entry["reason"] or "no automatic threshold"} for entry in entries]
-            for entry, found in zip(table, entries):
-                rows.append({
-                    "image": entry["image"], "channel": channel_index,
-                    "auto_threshold": entry["threshold"],
-                    "elbow_threshold": found.get("elbow_threshold"),
-                    "used": entry["used"], "reason": entry["reason"] or "",
-                })
+            threshold, channel_rows = calibration_rows(channel_index, entries)
+            rows.extend(channel_rows)
             if threshold is None:
                 unusable.append(channel_index)
                 self.log(f"Channel {channel_index}: none of the calibration images gave a usable threshold.")
             else:
                 self.thresholds[channel_index] = threshold
-                n_used = sum(entry["used"] for entry in table)
+                n_used = sum(row["used"] for row in channel_rows)
                 self.log(
                     f"Channel {channel_index}: calibrated threshold {_threshold_text(threshold)} "
-                    f"(median of {n_used} image(s); {len(table) - n_used} left out)"
+                    f"(median of {n_used} image(s); {len(channel_rows) - n_used} left out)"
                 )
         outputs.write_calibration(self.run_folder, rows)
         if self.config.outputs.qc.elbow_plot:
@@ -3327,22 +3482,11 @@ def _save_image_results(config, image, omero_conn, cellpose_result, cellpose_mod
         return prepare_cellpose(config)
 
     # The images are read through the caller's OMERO connection, as a worker
-    # reads through its own; a connection made to rejoin the session after a
-    # drop is let go at the end.
-    omero_before = dict(_omero)
-    if plan.omero_conn is not None:
-        _omero["conn"] = plan.omero_conn
-        _omero["session"] = (plan.omero["host"], int(plan.omero["port"]), plan.omero["key"])
-    try:
+    # reads through its own.
+    with _through_connection(plan.omero_conn, plan.omero["host"], plan.omero["port"], plan.omero["key"]):
         result = _run_planned(config, plan, None, show, process_image, calibration_threshold,
                               get_cellpose, command or SAVED_FROM_PYTHON, in_process=True,
                               given_segmentation=given)
-    finally:
-        if plan.omero_conn is not None:
-            if _omero["conn"] is not None and _omero["conn"] is not plan.omero_conn:
-                io.detach_session(_omero["conn"])
-            _omero.clear()
-            _omero.update(omero_before)
 
     table = result.run_folder / "images.csv"
     images = pd.read_csv(table) if table.is_file() else pd.DataFrame(columns=outputs.IMAGE_COLUMNS)

@@ -862,6 +862,60 @@ def apply_overrides(
     return parse_config(data, config.config_folder)
 
 
+def batch_settings(
+    config,
+    input_folder=None,
+    filter="",
+    output_folder="",
+    workers="auto",
+    extension=None,
+    dataset_id=None,
+    image_ids=None,
+):
+    """The settings for a batch run of every image of a folder or of OMERO, ready to save.
+
+    The analysis settings of `config` are kept. Its `resolved` block is left
+    out, so the batch lists its images afresh and calibrates again any channel
+    whose threshold mode is `calibrated`.
+
+    input_folder: the folder holding the images (local images); written as
+        a full path.
+    filter: only images whose names contain this text are analysed; "" for all.
+    output_folder: the folder in which the run folder is made; "" makes it in
+        `bigfish_results/` of the input folder. Written as a full path.
+    workers: "auto", or how many images are processed at the same time.
+    extension: ".tif" or ".tiff"; None keeps the config's.
+    dataset_id, image_ids: for OMERO images, a dataset ID or a list of image
+        IDs (not both); the server and user name are those of
+        `run.input.omero`. With either, `input_folder` is not needed.
+
+    Every folder of the result is a full path, so the saved file works from
+    any folder. Returns a new config; raises `ConfigError` for a value that is
+    not valid.
+    """
+    data = config.without_resolved().with_full_paths().to_dict()
+    run = data["run"]
+    if dataset_id is not None and image_ids is not None:
+        raise ConfigError("Give either a dataset ID or image IDs for OMERO, not both.")
+    if dataset_id is not None or image_ids is not None:
+        run["input"]["source"] = "omero"
+        run["input"]["omero"]["dataset_id"] = None if dataset_id is None else _whole_number(dataset_id)
+        run["input"]["omero"]["image_ids"] = (
+            [] if image_ids is None else [_whole_number(value) for value in image_ids]
+        )
+    else:
+        if input_folder is None or not str(input_folder).strip():
+            raise ConfigError("Give the input folder: the folder holding the images to analyse.")
+        run["input"]["source"] = "local"
+        run["input"]["folder"] = _command_line_folder(input_folder)
+    run["input"]["filter"] = filter
+    if extension is not None:
+        run["input"]["extension"] = extension
+    run["output_folder"] = _command_line_folder(output_folder)
+    run["workers"] = _whole_number(workers)
+    return parse_config(data, config.config_folder)
+
+
 # ---------------------------------------------------------------------------
 # Starting and changing a config in a notebook or an app
 # ---------------------------------------------------------------------------

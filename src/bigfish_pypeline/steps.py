@@ -12,14 +12,20 @@ follow spec section 5.1:
     fit_subpixel       step 6: subpixel fitting
     find_clusters      step 7: clusters
     measure            step 8: SNR and LoG intensity of each spot
+    segment            step 9: the cells of an image, with Cellpose
+    read_labels        step 9: the cells of an image, from its label file
     assign_to_cells    step 10: cell of each spot and cluster, and the cell counts
     make_tables        the spots, clusters and cells tables, and the `.npz` arrays
 
-Each function takes the config (`config.Config`), the channel's settings
-(one entry of `config.channels`) and what the step before gave. A step that
-is switched off for the channel gives back what the next step needs all the
-same (for example the detected spots unchanged when decomposition is off),
-so the steps can always be called in this order.
+Each function of steps 2 to 8 and 10 takes the config (`config.Config`), the
+channel's settings (one entry of `config.channels`) and what the step before
+gave. A step that is switched off for the channel gives back what the next
+step needs all the same (for example the detected spots unchanged when
+decomposition is off), so the steps can always be called in this order.
+Step 9 is made once for an image and takes the config only.
+
+`draw_cellpose_qc` and `draw_final_qc` draw the Cellpose QC figure and the
+final QC of a channel as the batch draws them.
 
 Example, for one channel of one image (`image` is the channel as read, and
 `masks` the label image of the cells, or None):
@@ -38,11 +44,21 @@ Example, for one channel of one image (`image` is the channel as read, and
     assigned = steps.assign_to_cells(config, channel, masks, spots, clustered)
     tables = steps.make_tables(config, channel, image_name, spots, fitted, clustered,
                                measured, assigned)
+    figure = steps.draw_final_qc(config, channel, image_name, image, tables, masks)
+
+where `masks` comes from step 9, once for the image:
+
+    cells = steps.segment(config, segmentation_channel, model, image_name)
+    masks = cells["masks"]
+
+or, with label files:
+
+    masks = steps.read_labels(config, image_name, image.shape[-2:])
 """
 
 import numpy as np
 
-from bigfish_pypeline import outputs
+from bigfish_pypeline import io, outputs, segmentation
 from bigfish_pypeline.cells import assign_cells
 from bigfish_pypeline.clusters import detect_clusters
 from bigfish_pypeline.decomposition import NO_SPOT_MODEL_WARNING, decompose_dense_regions, get_seed
@@ -343,6 +359,175 @@ def measure(config, channel, rna, rna_log, spots, spot_radius_px):
     return {}
 
 
+# ---------------------------------------------------------------------------
+# Step 9: the cells of an image
+# ---------------------------------------------------------------------------
+
+
+def pretreatment_settings(config):
+    """
+    The pre-treatment of the segmentation channel, from `config.segmentation`
+    (projection, z_planes, clip, background, median_px, gaussian_sigma_px),
+    as the arguments of `segmentation.pretreat_channel` and
+    `segmentation.describe_pretreatment`.
+    """
+    settings = config.segmentation
+    return dict(
+        projection=settings.projection,
+        clip=settings.clip.enabled,
+        clip_value=settings.clip.value,
+        background=settings.background.enabled,
+        bg_method=settings.background.method,
+        bg_radius=settings.background.radius_px,
+        median_px=settings.median_px,
+        gaussian_sigma_px=settings.gaussian_sigma_px,
+        z_planes=(settings.z_planes.first, settings.z_planes.last),
+    )
+
+
+def z_planes_problem(config, image_label, n_planes):
+    """
+    Why the planes of `segmentation.z_planes` do not fit an image of
+    `n_planes` planes, or None when they do, when no planes are chosen, or
+    when the layout has no Z.
+
+    image_label: the image as it is named in the message, such as its file
+        name or "OMERO image 123".
+    """
+    planes = config.segmentation.z_planes
+    if not planes.chosen or "Z" not in config.image.axes:
+        return None
+    problem = segmentation.plane_problem(n_planes, (planes.first, planes.last))
+    if problem is None:
+        return None
+    return f"{image_label}: {problem} (`segmentation.z_planes`)"
+
+
+def segment(config, image, model, image_label="the segmentation channel"):
+    """
+    Step 9 with Cellpose: pre-treat the segmentation channel and find the cells.
+
+    image: the segmentation channel (`segmentation.channel`) as read,
+        (z, y, x) or (y, x). It is let go once the picture given to Cellpose
+        is made.
+    model: a Cellpose model already loaded, for example
+        `batch.prepare_cellpose(config).model`.
+    image_label: the image as it is named in a message, such as its name.
+
+    Reads `config.segmentation`: the pre-treatment (see
+    `pretreatment_settings`) and the Cellpose settings of
+    `segmentation.cellpose` (diameter, flow_threshold, cellprob_threshold,
+    min_size, max_size_fraction, normalize, batch_size, niter).
+
+    Returns the dict of `segmentation.segment_cells` ("masks", the label
+    image of the cells; "model_input", "flows", "n_cells", "seconds" and
+    "warning"), with one more entry, "pretreatment": the pre-treatment in
+    words, as in the title of the Cellpose QC figure. The dict can be given
+    as it is to `draw_cellpose_qc` and to `batch.save_image_results`
+    (`cellpose_result`).
+
+    Raises io.ImageReadError when the planes of `segmentation.z_planes` are
+    not in the image, and segmentation.SegmentationError when Cellpose fails.
+    """
+    settings = pretreatment_settings(config)
+    if np.ndim(image) == 3:
+        problem = z_planes_problem(config, image_label, np.shape(image)[0])
+        if problem is not None:
+            raise io.ImageReadError(problem)
+    prepared = segmentation.pretreat_channel(image, **settings)
+    del image
+    result = segmentation.segment_cells(
+        model, prepared, **segmentation.cellpose_eval_settings(config.segmentation.cellpose)
+    )
+    result["pretreatment"] = segmentation.describe_pretreatment(**settings)
+    return result
+
+
+def cellpose_qc_settings(config):
+    """
+    What the title of the Cellpose QC figure says about the settings, from
+    `config.segmentation` and the channels.
+
+    Returns a dict with "channel" (`segmentation.channel`), "channel_name"
+    (the name of the FISH channel of the same number, or None),
+    "pretreatment" (the pre-treatment in words) and "diameter"
+    (`segmentation.cellpose.diameter`).
+    """
+    number = config.segmentation.channel
+    return {
+        "channel": number,
+        "channel_name": next(
+            (channel.name for channel in config.channels if channel.index == number and channel.name),
+            None,
+        ),
+        "pretreatment": segmentation.describe_pretreatment(**pretreatment_settings(config)),
+        "diameter": segmentation.cellpose_eval_settings(config.segmentation.cellpose)["diameter"],
+    }
+
+
+def draw_cellpose_qc(config, image_name, cells):
+    """
+    The Cellpose QC figure of one image, with the title the batch gives it.
+
+    cells: from `segment`.
+    Reads the settings named in `cellpose_qc_settings`.
+
+    Returns a matplotlib figure (four panels: the picture given to Cellpose,
+    the cell outlines, the cells in colour and Cellpose's flows).
+    """
+    from bigfish_pypeline import qc
+
+    return qc.draw_cellpose_qc(cells, image_name, **cellpose_qc_settings(config))
+
+
+def read_labels_contents(config, image_name, image_shape_yx, label_folder=None):
+    """
+    As `read_labels`, and also give what the label file held when it was
+    read, for the record of the run.
+
+    Returns (masks, data, details): the label image, the bytes of the file,
+    and its size and dates (see segmentation.read_label_file_contents).
+    """
+    if label_folder is None:
+        label_folder = config.full_label_folder()
+        if label_folder is None:
+            raise segmentation.LabelFileError(
+                "There is no label folder: set `segmentation.label_folder`."
+            )
+        if not label_folder.is_dir():
+            raise segmentation.LabelFileError(
+                f"The label folder {label_folder} does not exist (`segmentation.label_folder`)."
+            )
+    return segmentation.read_label_file_contents(label_folder, image_name, image_shape_yx)
+
+
+def read_labels(config, image_name, image_shape_yx, label_folder=None):
+    """
+    Step 9 with label files: the label image of one image.
+
+    image_name: the image's output name; its label file is
+        `<image_name>_seglabels.tif`.
+    image_shape_yx: (Y, X) size of the image, for example `image.shape[-2:]`
+        of a channel as read.
+    label_folder: the folder holding the label file; by default
+        `segmentation.label_folder` of the config.
+
+    Returns the label image (y, x) as whole numbers: 0 for the background and
+    one number for each cell.
+
+    Raises segmentation.LabelFileError with a one-line reason when there is
+    no label folder, or when the file is missing, cannot be read, is not 2D,
+    differs in size from the image or holds values that are not whole numbers
+    of 0 or more.
+    """
+    return read_labels_contents(config, image_name, image_shape_yx, label_folder)[0]
+
+
+# ---------------------------------------------------------------------------
+# Step 10: cell assignment
+# ---------------------------------------------------------------------------
+
+
 def assign_to_cells(config, channel, masks, spots, clustered):
     """
     Step 10: the cell of each spot and cluster, and the counts of each cell.
@@ -443,3 +628,48 @@ def final_positions(spots, fitted):
     whole-pixel positions (`spots`, from `decompose`; `fitted`, from `fit_subpixel`)."""
     spots_subpixel = fitted["spots_subpixel"]
     return spots_subpixel if spots_subpixel is not None else spots
+
+
+# ---------------------------------------------------------------------------
+# Final QC of a channel
+# ---------------------------------------------------------------------------
+
+
+def final_qc_tables(channel, tables):
+    """
+    The tables the final QC is drawn from: (spots, clusters, cells).
+
+    tables: from `make_tables`.
+    Reads `channel.clusters.enabled`: clusters is None when clusters are
+    off, so that the figure does not mention them. The cells table holds
+    only the cells kept (see `drop_border_cells`), and only those are drawn.
+    """
+    clusters = tables["clusters"] if channel.clusters.enabled else None
+    return tables["spots"], clusters, tables["cells"]
+
+
+def draw_final_qc(config, channel, image_name, image, tables, masks, interactive=None):
+    """
+    The final QC of one channel, as the batch draws it.
+
+    image: the channel as read, (z, y, x) or (y, x), before background
+        subtraction; it is drawn as its maximum projection.
+    tables: from `make_tables`.
+    masks: the label image of the cells from step 9, or None.
+    interactive: True for the interactive (plotly) figure of
+        `outputs.qc.final: html`, False for the picture of
+        `outputs.qc.final: png`; None follows `outputs.qc.final` (the
+        picture when it is "png" or "none").
+
+    Reads `channel.clusters.enabled` (see `final_qc_tables`) and, when
+    `interactive` is None, `outputs.qc.final`.
+
+    Returns a matplotlib figure, or a plotly figure when interactive.
+    """
+    from bigfish_pypeline import qc
+
+    if interactive is None:
+        interactive = config.outputs.qc.final == "html"
+    draw = qc.draw_final_html if interactive else qc.draw_final_qc
+    spots, clusters, cells = final_qc_tables(channel, tables)
+    return draw(image, spots, clusters, cells, masks, image_name, channel.index, channel_name=channel.name)
