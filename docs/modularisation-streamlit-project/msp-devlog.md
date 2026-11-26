@@ -2055,3 +2055,34 @@ Done by Opus 5.5 (medium) in `config.py`, `detection.py`, `batch.py`, `cli.py`, 
 **Not tested:** a stop reported by the Cellpose step while a worker's result is ready.
 
 **Manual check for the user:** open a label file written by a Cellpose run in Fiji and see that Image › Properties shows the pixel size in µm. Only `tifffile` was used to read it back here.
+
+### 3.16 Cellpose pre-treatment and cluster centres (26 Nov 2026)
+
+Done by Opus 5.5 (medium) in `segmentation.py` and `clusters.py`, commit `9b7936f`. The orchestrator read the changes and ran the whole suite with the full-size image: 1,160 pass (128 and 1,032).
+
+**Pre-treatment for Cellpose** (decision 2 after 3.12).
+
+- The steps run in the order projection → background subtraction → clip → median → Gaussian. v1 clipped before background subtraction; clip is off by default.
+- After background subtraction, values below 0 are set to 0 whatever the projection, so a mean projection gives no negative values to the later steps and to Cellpose.
+- Test image with a camera offset of 500, a bright block at 800 and a clip value of 150: the block comes out at 150 on a background of 0. With the old order the whole image was flat.
+- The text in the Cellpose QC figure and in `run.log` follows the order, for example "mean projection | rolling ball 200 px | clip 100 | median 3 px".
+
+**Cluster centres** (decision 3 after 3.12).
+
+- big-fish finds the clusters as before. Each centre is then set to the mean position of the cluster's spots, with decimals. The clusters, their numbers, their spots and the spot tables are unchanged.
+- With decimal spot positions (subpixel fitting on) nothing changes: the centres equal big-fish's, with a difference of 0.
+- With subpixel fitting off, each centre lies at v1's whole-pixel centre or up to 1 px above it on each axis. Largest differences:
+
+| Case | z | y | x |
+|---|---|---|---|
+| Crop, manual threshold 18 (6 clusters) | 0.94 | 0.94 | 0.76 |
+| Crop, automatic threshold (6 clusters) | 0.92 | 0.64 | 0.93 |
+| Full-size v1 reference, manual 18 (207 clusters) | 0.96 | 0.95 | 0.94 |
+| Full-size v1 reference, automatic (234 clusters) | 0.97 | 0.96 | 0.94 |
+
+- **Clusters whose cell changes.** A cluster is counted in the cell under the nearest pixel of its centre. On the crop with its label file: 0 of 6, with the manual and the automatic threshold, so the per-cell comparison with v1 passes unchanged. On the full-size v1 reference results, with the Cellpose label file of Phase 2: 6 of 207 at 18 (two move out of a cell, three into one, one from cell 1081 to 1095) and 3 of 234 with the automatic threshold. The number of spots in clusters of each cell does not change, because it is counted from the spots' own positions.
+- The full-size run folder of 3.9 has subpixel fitting on, so its centres were already exact and none of its 265, 272 and 261 clusters changes.
+
+**Departure from v1.** The `clusters` array of the `.npz` files and the centre columns of `clusters.csv` always hold decimal numbers. In v1 they held whole numbers when subpixel fitting was off, and decimals when it was on. The tests that compared the centres exactly with the v1 reference now ask for the same clusters and spot numbers and for each centre less than 1 px above v1's on each axis.
+
+**Tests changed:** the pre-treatment tests of 2.1 (new order, camera offset above the clip value, no negative values after a mean projection with either method); the five comparisons of cluster centres with v1 (test kit as configured and with the automatic threshold, the `.npz` files, the end-to-end run with label files, and decomposition on the crop).
