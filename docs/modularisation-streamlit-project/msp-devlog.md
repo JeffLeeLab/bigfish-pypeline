@@ -2577,3 +2577,24 @@ Done by Sonnet 5.5 (high): `notebooks/bigfish-optimise.ipynb` (49 cells), `tests
 - OMERO on the real server: the password box, the log-in, reading and closing.
 - The notebook on a full-size image (time, memory, the calibration cell).
 
+### 4.6, first part: what steps 10 to 13 need from the package (26 Nov 2026)
+
+Done by Opus 5.5 (medium) in `steps.py`, `batch.py` and `config.py`, with `tests/test_notebook_steps.py` (39 tests), while the user's first look at the notebook was pending. The notebook itself is unchanged; its cells for steps 10 to 13 are written after that look. The orchestrator read the changes. 1,624 tests pass with the full-size image (1,621 in parallel in 3 min 49 s, then the 3 full-size tests in 2 min 11 s).
+
+Each function below is also what the batch itself now calls, so that the notebook and the batch cannot differ:
+
+| For | Function | Note |
+|---|---|---|
+| Calibration in the notebook | `batch.calibrate_images(config, channel_index, images)` | One image at a time in the calling program; gives the value, the table as `calibration.csv` holds it, the plot, and a config holding the value. Local files, or OMERO images with a connection already logged in |
+| Cellpose on one image | `steps.segment(config, image, model)` | Checks `z_planes`, pre-treats and segments from the settings; its result goes straight to `save_image_results` |
+| The Cellpose QC figure | `steps.draw_cellpose_qc(config, image_name, cells)` | The batch's figure, with its title |
+| A label file | `steps.read_labels(config, image_name, image_shape_yx)` | The batch's checks and messages |
+| The final QC | `steps.draw_final_qc(config, channel, image_name, image, tables, masks)` | PNG or interactive, from the tables of `steps.make_tables` |
+| The settings file for a batch | `config.batch_settings(config, input_folder, filter, output_folder, workers)` | Leaves out the `resolved` block, so the batch lists every image and calibrates again; folders as full paths |
+
+- Loading the model from the notebook: `batch.prepare_cellpose(config)` is used as it is. It prints nothing, and it sets the thread variables only while it loads.
+- The calibration from the function equals the batch's: the same bytes in `calibration.csv` and the same calibrated value, for a folder with two usable images, a blank one, an unreadable one and one that is not used.
+- The chain the notebook will follow is tested from end to end with label files, with the stand-in model and with the real model on the cultured-cell crop: the tables shown in memory equal those saved byte for byte, and the masks and the run folder equal those of a batch that runs Cellpose itself.
+
+**Not verified:** OMERO on a real server (stand-ins only).
+
