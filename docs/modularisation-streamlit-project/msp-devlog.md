@@ -1947,7 +1947,7 @@ TH is top-hat, RB is rolling ball. Values are in the order TH 5 / RB 5 / RB 10 /
 | | 18 | 18 | 3,143 / 2,612 / 3,193 / 3,428 / 3,494 | 6,365 / 4,725 / 6,154 / 7,119 / 7,250 | 22 / 4 / 24 / 58 / 62 |
 | | each setting's automatic | 23 / 22 / 23 / 24 / 24 | 1,643 / 1,654 / 1,703 / 1,629 / 1,644 | 2,404 / 2,462 / 2,440 / 2,328 / 2,366 | 0 at every setting |
 
-**Thresholds.** The automatic threshold moves by at most 1 between the rolling-ball radii. To detect the same number of spots as top-hat at 18 on the exon channel, rolling ball needs 17 at 5 px and 18 at 10, 15 and 25 px, so a manual threshold chosen with top-hat carries over at the larger radii. On the intron channel the match for top-hat at 30 is 30 at 5 px and 32 at the larger radii.
+**Thresholds.** The automatic threshold moves by at most 1 between the rolling-ball radii. The whole-number threshold whose count is nearest to top-hat's at 18 on the exon channel is 17 at 5 px and 18 at 10, 15 and 25 px (counts within 1 % of top-hat's, not equal). On the intron channel the nearest match for top-hat at 30 is 30 at 5 px and 32 at the larger radii. So a manual threshold does not carry over exactly at any radius (corrected after the fourth review, 3.19).
 
 **Run-to-run range** (run seeds 0 to 5, full-size exon channel at 18):
 
@@ -2013,7 +2013,7 @@ Rolling ball at 10 px is about four times slower than at 5 or 15 px: as in Image
 **What the comparison shows, for the user's choice**
 
 - The rise in clusters against top-hat (about a quarter to a third more) stays at every radius. A larger radius does not bring rolling ball back to top-hat's cluster count.
-- From 10 px up, a manual threshold chosen with top-hat detects the same number of spots, the shared spots with top-hat rise, and the reference spot has top-hat's size. 5 px is the setting that differs most from top-hat in the spots it detects.
+- From 10 px up, a manual threshold chosen with top-hat detects nearly the same number of spots on the exon channel (within 1 %; on the intron channel the nearest match moves from 30 to 32), the shared spots with top-hat rise, and the reference spot has top-hat's size. 5 px is the setting that differs most from top-hat in the spots it detects.
 - 15 and 25 px give nearly the same results. 10 px gives results between 5 and 15 px and is the slowest.
 - This is one image and its crop. Which count in a bright focus is nearer the truth is not settled, as in 2.6.
 
@@ -2025,7 +2025,7 @@ Done by Opus 5.5 (medium) in `config.py`, `detection.py`, `batch.py`, `cli.py`, 
 
 **Settings** (findings 5, 12 and 25). Refused by `check`, each with a message that names the setting and the value found: `decomposition.alpha` outside 0 to 1; `decomposition.beta` of 0 or less; a background radius below 1 px (FISH channels and segmentation); `clusters.min_spots` below 2; `cellpose.min_size` below −1; an empty `cellpose.model`; `.inf` or `.nan` in any number, including the threshold value and its lower limit. Example: "`channels[0].threshold.value` must be a number, not infinite and not `.nan` (found `.nan`)."
 
-**Threshold** (finding 22). An elbow curve of one point, or one without a bend, gives "no automatic threshold" with the usual warning instead of failing the channel. With a manual or calibrated threshold, a problem in the elbow values leaves out the elbow plot only; the spots are the same with the plot on and off (the second part added by the orchestrator, with its test).
+**Threshold** (finding 22). An elbow curve of one point, or one for which big-fish cannot give a value (such as a flat curve), gives "no automatic threshold" with the usual warning instead of failing the channel (wording corrected after the fourth review, 3.19). With a manual or calibrated threshold, a problem in the elbow values leaves out the elbow plot only; the spots are the same with the plot on and off (the second part added by the orchestrator, with its test).
 
 **`calibration.csv`** (finding 4). New column `elbow_threshold` after `auto_threshold`: the elbow method's value before the lower limit. On the crop with a lower limit of 15 the row holds 15 and 13. A calibrated run with a lower limit now marks the raised images on the calibration plot.
 
@@ -2174,7 +2174,7 @@ Phase 6 (documentation):
 22. The reference-spot picture is not the spot that decomposition fits; each QC picture sets its own contrast.
 23. Counts above 2,000 spots change slightly with the image name (renamed files, a local copy against the OMERO image), because the seed comes from the name.
 24. The defaults were checked on one specimen and its crops.
-25. A manual threshold and a `min_spots` value chosen with top-hat do not carry over to rolling ball at 5 px; from 10 px up the threshold does (3.17).
+25. A manual threshold and a `min_spots` value chosen with top-hat do not carry over unchanged to rolling ball, at any radius: they should be checked again after a change of background method or radius (2.6, 3.17, 3.19).
 
 Small points left as they are:
 
@@ -2212,3 +2212,44 @@ Small points left as they are:
 4. The tests may run in parallel: `pytest-xdist` is added to `msp-environment.yml`.
 5. A label file written by a Cellpose run shows µm in Fiji.
 6. Before sign-off, GPT-6.2 Astra (high effort, through Codex) reviews the work of tasks 3.13 to 3.18.
+
+### 3.19 Fourth review (26 Nov 2026)
+
+GPT-6.2 Astra (high effort), run through Codex in a read-only sandbox, reviewed the 14 commits of tasks 3.13 to 3.18 on `msp` (`25f8270` to `840e08f`) at the user's request. It could read the repository, the installed packages and `~/bigfish-testdata/`, and run small Python checks and single test files (100 tests passed in the files it ran). It changed nothing and contacted no OMERO server. Its advice was to hold the sign-off of Phase 3 until the first three findings are fixed.
+
+It found a test for the original example of each of findings 1 to 28, and found the science of 3.16 (pre-treatment order, exact cluster centres) as the devlog states it. The findings below are cases the fixes of 3.13 to 3.15 do not cover, and claims that say more than the code does.
+
+| # | Severity | Finding | Where | Checked by the reviewer |
+|---|---|---|---|---|
+| 29 | High | A TIFF file whose metadata gives axes that are not one of the five layouts (e.g. `YXC`) is read with the layout of the run, as if it gave none. A `YXC` file of shape 10 × 12 × 2 read as `CYX` gave a 12 × 2 picture that mixes the two channels, without a message. The check of finding 21 only compares two of the five layouts. | `io.py` (`_suggested_layout`, `_plane_sizes`) | run |
+| 30 | High | When a worker is lost, results that came in after the pass was taken are collected only if they succeeded. A result that says the results cannot be written, or that the OMERO session has ended, is counted as one more lost image and tried again, so the run does not stop. | `batch.py` (`restart_pool`) | run |
+| 31 | High | Any answer from the OMERO server when the session is rejoined is taken as "the session has ended", also an answer that the session service is not available. Only a refused session key shows that the session has ended. | `io.py` (`join_session`) | run, with a stand-in |
+| 32 | Medium | A label file is read, then opened again for its checksum. If the file is replaced in between, `run_info.yaml` describes a file other than the one used. If the second reading fails, the labels already read are thrown away and the image gets no cell results. A custom Cellpose model is recorded after it is loaded. | `batch.py` (`process_image`, `prepare_cellpose`) | read |
+| 33 | Medium | The pixel-type check looks at the type of the values after reading, not at the bit depth stored in the file. Packed 4-bit and 10-bit TIFF files are accepted, while the user's decision and the spec name 8, 12 and 16 bits only. | `io.py` (`_check_image`) | run |
+| 34 | Medium | A stop reported by the Cellpose step is looked at only after the worker results of the same pass have been kept, which departs from "no further result is taken" (3.15, where the case is listed as not tested). | `batch.py` (`run_tasks`) | run |
+| 35 | Medium | When the first image of a batch has a pixel type that is not accepted, the run stops before it starts, although the other images could be processed. Anywhere else in the list the image fails and the run goes on, as the plan and spec section 13 say. | `batch.py` (the check of the first image) | read |
+| 36 | Medium | A colour (RGB) TIFF file is refused when it is read, but still counts when the number of workers is worked out. Part of finding 13 left open. | `batch.py` (`_will_be_refused`) | read |
+| 37 | Medium | In a Cellpose run, an image that is segmented and then fails when the worker opens it (e.g. a FISH channel missing) has an empty segmentation status in `images.csv`. The fix of finding 17 covers images the runner marks failed, not this case. | `batch.py` (`process_image`) | read |
+| 38 | Medium | Devlog 3.17 and point 25 of 3.18 say that from 10 px up a manual threshold chosen with top-hat carries over. On the exon channel 18 is the nearest whole threshold, not an equal count (24,631 against 24,570, 24,825 and 24,866), and on the intron channel the match for 30 is 32. | devlog 3.17, 3.18 | read |
+| 39 | Low | "A curve without a bend gives no automatic threshold" (3.15) says too much: a straight falling line still gets a value from big-fish. What is handled is a curve of one point and a curve for which big-fish fails, such as a flat one. | `detection.py` (`_breaking_point`), devlog 3.15 | run |
+| 40 | Low | The very last line in the terminal is "Run folder: …"; the line with the failed and skipped channels comes before it. Decision 5 asked for the final line. | `cli.py`, `tests/test_end_to_end.py` | read |
+
+Also raised with finding 32 and left as it is: the label files of an image whose worker was lost are not in `files_read`. That image's results are thrown away, so `files_read` lists the files behind the results that were written.
+
+**How each is fixed** (orchestrator's choices where the finding leaves one; tasks 3.20 and 3.21 in the plan):
+
+- 29: axes given by the file's metadata must equal the layout of the run, whatever they are; only a file whose metadata gives no axes is read with the layout.
+- 30 and 34: a reason to stop found in any result of the pass, or reported by the Cellpose step, stops the run before any other result of that pass is kept.
+- 31: the session counts as ended only when the server refuses the session key or says that the session was removed or timed out; any other answer is a connection problem.
+- 32: the checksum is worked out from the same bytes the labels are read from; the model file is recorded before it is loaded and checked again afterwards.
+- 33: a TIFF file must store 8, 12 or 16 bits per pixel; other depths are refused with the usual message.
+- 35: the check of the first image uses the first image whose pixel type is accepted; images of another type fail one by one, and the run stops before it starts only when no image can be used.
+- 36: the number of workers leaves out every image that the header check of the reader refuses, by asking the reader itself.
+- 37: the status is kept, as for finding 17.
+- 38 and 39: the wording of 3.15, 3.17 and 3.18 is corrected below, and the docstring in `detection.py`.
+- 40: the run folder is shown before the summary, so that the message with the counts is the last line.
+
+**Corrections to earlier entries**
+
+- 3.17 and 3.18, point 25: from 10 px up, 18 is the whole-number threshold whose count is nearest to top-hat's at 18 on the exon channel (within 1 %), where 5 px needs 17. On the intron channel the nearest match for top-hat at 30 is 30 at 5 px and 32 at the larger radii. A manual threshold therefore does not carry over exactly at any radius, and should be checked again after a change of background method or radius.
+- 3.15, "Threshold": an elbow curve of one point, or one for which big-fish cannot give a value (such as a flat curve), gives "no automatic threshold". A straight falling line still gets big-fish's value, as in v1.

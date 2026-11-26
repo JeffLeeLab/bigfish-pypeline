@@ -70,7 +70,11 @@ Spec section 11, Phase 3. Run folder: section 8.1. `.npz` files: section 8.2. QC
 | 3.15 | Fixes in the settings, the threshold and the runner (`config.py`, `detection.py`, `batch.py`, `cli.py`, `outputs.py`, `segmentation.py`) | Opus 5.5, medium | Each fix has a test; tables of the test kit unchanged | – |
 | 3.16 | Cellpose pre-treatment and cluster centres (`segmentation.py`, `clusters.py`) | Opus 5.5, medium | Clip after background; no negative values after a mean projection; exact cluster centres, compared with v1 | – |
 | 3.17 | Rolling-ball radius for FISH channels | Orchestrator, then the user | Comparison of 2.6 at 10, 15 and 25 px in the devlog | Choose the default radius |
-| 3.18 | Phase review brought up to date | Orchestrator, then the user | Suite passes; numbers of 3.11 updated | Sign off; say when to merge |
+| 3.18 | Phase review brought up to date | Orchestrator, then the user | Suite passes; numbers of 3.11 updated | Answered: radius stays 5 px, samples fine |
+| 3.19 | Fourth review | GPT-6.2 Astra (high), then the orchestrator | Findings 29–40 in the devlog | – |
+| 3.20 | Reading images: fixes after the fourth review (`io.py`, `detection.py`) | Opus 5.5, medium | Each fix has a test that fails without it | – |
+| 3.21 | The runner: fixes after the fourth review (`batch.py`, `cli.py`, `segmentation.py`) | Opus 5.5, medium | Each fix has a test that fails without it; tables unchanged | – |
+| 3.22 | Tests in parallel; review brought up to date | Orchestrator, then the user | Suite passes, also in parallel | Sign off; say when to merge |
 
 **Order:** 3.1 and 3.3 start together (different files). Then 3.2 follows 3.1, and 3.4 → 3.5 follow 3.3. Task 3.6 needs 3.2 and 3.5; then 3.7 → 3.8. Task 3.9 follows 3.6 and runs on its own. Task 3.10 follows 3.6. After 3.12: 3.13 and 3.14 start together (different files); 3.15 follows 3.14, because the calibration plot shows the new column of `calibration.csv`; 3.16 follows 3.15 (both change `segmentation.py`). Task 3.17 changes no code and can run at any point, but not at the same time as a full-size test run or benchmark (memory). If the user chooses a new default radius, it is changed in `config.py` after 3.15. Task 3.18 comes last.
 
@@ -239,6 +243,27 @@ Spec section 11, Phase 3. Run folder: section 8.1. `.npz` files: section 8.2. QC
 - The orchestrator reruns the suite (in two parts, as in 3.11), updates the numbers and the deviations of 3.11, and records the fixes in the devlog.
 - The points of 3.12 for later phases join the points carried forward: for Phase 5, freeing Cellpose's GPU memory while an abandoned segmentation runs, and the check for damaged files if the app reads images itself; for Phase 6, the rolling-ball radius in pixels, SNR depending on the background method and on the ring's distance from the spot, the confocal formula and a spinning disk, the spot radius near 1 px, subpixel fitting in dense regions, and the size of HTML final QC files; from the third review, a nuclear label image ("cells" are nuclei, and spots above and below a nucleus count as nuclear), the reference-spot picture against the fitted spot, contrast set for each picture, counts that change with the image name (renamed files, local against OMERO copies), and defaults checked on one specimen only.
 - The user reviews the samples of 3.10 (redrawn where 3.14 changed a figure), signs off and says when to merge.
+
+### 3.19 Fourth review
+
+- GPT-6.2 Astra (high effort, through Codex) reviews tasks 3.13 to 3.18 read-only, at the user's request before sign-off. The orchestrator records the findings (devlog 3.19, findings 29–40) and how each is fixed.
+
+### 3.20 Reading images: fixes after the fourth review
+
+- Done by Opus 5.5, medium, in `io.py` and `detection.py`. Findings 29, 31, 33 and 39.
+- Axes given by a file's metadata must equal the layout of the run, whatever they are (29). The OMERO session counts as ended only when the server refuses the key or says the session was removed or timed out (31). A TIFF file must store 8, 12 or 16 bits per pixel (33). The docstring on elbow curves says what is handled (39).
+- Checks: a test for each that fails without the fix, starting from the reviewer's examples; 8-, 12- and 16-bit runs unchanged.
+
+### 3.21 The runner: fixes after the fourth review
+
+- Done by Opus 5.5, medium, in `batch.py`, `cli.py` and `segmentation.py`. Findings 30, 32, 34, 35, 36, 37 and 40. Runs at the same time as 3.20 (different files).
+- A reason to stop found in any result of a pass, or reported by the Cellpose step, stops the run before another result is kept (30, 34). Checksums come from the bytes the labels are read from (32). The check of the first image uses the first image of an accepted pixel type (35). Worker numbers leave out every image the reader's header check refuses (36). An image that fails after its segmentation keeps its segmentation status (37). The message with the counts is the last line in the terminal (40).
+- Checks: a test for each that fails without the fix; the test kit's tables unchanged.
+
+### 3.22 Tests in parallel and the review brought up to date
+
+- `pytest-xdist` is added to `msp-environment.yml` and to the env (user's answer, devlog 3.18). The orchestrator checks that the suite passes when run in parallel, with the full-size tests one at a time, and records the time.
+- The orchestrator reruns the suite after 3.20 and 3.21, makes the samples again where a message or a figure changed, and updates devlog 3.18.
 
 **Done when** (spec): a full run on the test kit produces every output; repeating the run from `run_config.yaml` gives the same tables; the user has reviewed sample QC images and the log. In addition, the `workers: auto` estimate is confirmed with the QC outputs on, the confirmed findings of 3.12 are fixed, and the decisions after 3.12 are carried out.
 
