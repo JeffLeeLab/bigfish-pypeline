@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 TEST_DATA = Path(__file__).parent / "data"
@@ -17,6 +18,23 @@ def cellpose_model_path():
     folder = os.environ.get("CELLPOSE_LOCAL_MODELS_PATH")
     folder = Path(folder).expanduser() if folder else Path.home() / ".cellpose" / "models"
     return folder / CELLPOSE_MODEL_NAME
+
+
+def assert_clusters_as_v1(found, expected):
+    """
+    Clusters as in v1's whole-pixel results: the same clusters, numbers and
+    numbers of spots, and each exact centre less than 1 px from v1's on each
+    axis. v1 cut the centres to whole pixels, so each centre is at v1's or up
+    to 1 px above it.
+    """
+    found = np.asarray(found, dtype=np.float64)
+    expected = np.asarray(expected)
+    ndim = expected.shape[1] - 2
+    assert found.shape == expected.shape
+    np.testing.assert_array_equal(found[:, ndim:], expected[:, ndim:])
+    difference = found[:, :ndim] - expected[:, :ndim]
+    assert np.all(difference >= 0), difference.min(axis=0)
+    assert np.all(difference < 1), difference.max(axis=0)
 
 
 def pytest_collection_modifyitems(config, items):

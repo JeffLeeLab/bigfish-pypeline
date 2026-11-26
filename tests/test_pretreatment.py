@@ -113,12 +113,25 @@ def test_background_on_by_default_with_rolling_ball_200():
     np.testing.assert_array_equal(got, subtract_background(image.max(axis=0), 200))
 
 
-def test_rolling_ball_on_mean_projection_keeps_negative_values():
+@pytest.mark.parametrize("bg_method", ["rolling_ball", "tophat"])
+def test_mean_projection_gives_no_negative_values(bg_method):
     image = make_image(shape=(3, 64, 64), n_spots=5, noise=20)[0]
-    got = pretreat_channel(image, projection="mean", bg_radius=10)
-    np.testing.assert_array_equal(got, subtract_background(image.mean(axis=0), 10))
+    subtracted = subtract_background(image.mean(axis=0), 10, method=bg_method)
+    if bg_method == "rolling_ball":
+        # rolling ball on decimal numbers leaves values below the background negative
+        assert subtracted.min() < 0
+    got = pretreat_channel(image, projection="mean", bg_method=bg_method, bg_radius=10)
     assert got.dtype == np.float64
-    assert got.min() < 0
+    assert got.min() >= 0
+    np.testing.assert_array_equal(got, np.maximum(subtracted, 0))
+
+
+@pytest.mark.parametrize("bg_method", ["rolling_ball", "tophat"])
+def test_mean_projection_gives_no_negative_values_after_every_step(bg_method):
+    image = make_image(shape=(3, 64, 64), n_spots=5, noise=20)[0]
+    got = pretreat_channel(image, projection="mean", bg_method=bg_method, bg_radius=10,
+                           median_px=3, gaussian_sigma_px=1.0)
+    assert got.min() >= 0
 
 
 def test_rolling_ball_on_crop_dapi(crop_path):
@@ -175,8 +188,9 @@ def test_all_steps_in_order(projection, bg_method):
         median_px=3, gaussian_sigma_px=1.5,
     )
     expected = image.max(axis=0) if projection == "max" else image.mean(axis=0)
-    expected = np.clip(expected, 0, 600).astype(expected.dtype)
     expected = subtract_background(expected, 12, method=bg_method)
+    expected = np.maximum(expected, 0).astype(expected.dtype)
+    expected = np.clip(expected, 0, 600).astype(expected.dtype)
     expected = ndimage.median_filter(expected, size=3)
     expected = ndimage.gaussian_filter(expected.astype(np.float64), 1.5)
     np.testing.assert_array_equal(got, expected)
@@ -184,12 +198,18 @@ def test_all_steps_in_order(projection, bg_method):
     assert got.dtype == np.float64
 
 
-def test_clip_runs_before_background_subtraction():
-    image = np.full((40, 40), 100, dtype=np.uint16)
-    image[20, 20] = 5000
-    clipped_first = pretreat_channel(image, clip=True, clip_value=150, bg_method="tophat",
-                                     bg_radius=5)
-    assert clipped_first[20, 20] == 50
+@pytest.mark.parametrize("bg_method", ["rolling_ball", "tophat"])
+def test_clip_runs_after_background_subtraction(bg_method):
+    """A camera offset of 500 above a clip value of 150 does not flatten the image."""
+    image = np.full((40, 40), 500, dtype=np.uint16)
+    image[18:23, 18:23] = 800
+    got = pretreat_channel(image, clip=True, clip_value=150, bg_method=bg_method, bg_radius=10)
+    expected = np.zeros((40, 40), dtype=np.uint16)
+    expected[18:23, 18:23] = 150
+    np.testing.assert_array_equal(got, expected)
+    # clipped before background subtraction, the same image would be flat
+    clipped_first = np.clip(image, 0, 150).astype(np.uint16)
+    np.testing.assert_array_equal(subtract_background(clipped_first, 10, method=bg_method), 0)
 
 
 def test_input_is_not_changed(stack):
@@ -238,7 +258,12 @@ def test_description_every_step():
     text = describe_pretreatment(projection="mean", clip=True, clip_value=100,
                                  bg_method="tophat", bg_radius=50,
                                  median_px=5, gaussian_sigma_px=1.5)
-    assert text == "mean projection | clip 100 | top-hat 50 px | median 5 px | Gaussian 1.5 px"
+    assert text == "mean projection | top-hat 50 px | clip 100 | median 5 px | Gaussian 1.5 px"
+
+
+def test_description_clip_without_background_subtraction():
+    text = describe_pretreatment(clip=True, clip_value=120, background=False)
+    assert text == "max projection | no background subtraction | clip 120"
 
 
 def test_description_background_off():

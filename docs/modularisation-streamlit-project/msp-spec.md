@@ -180,7 +180,7 @@ Presets only set step switches. Every preset uses the same default values; any s
 - Decomposition is skipped for a channel, and the detected spots are passed on unchanged, when there are no spots, when no reference spot can be built, when the spot model cannot be fitted, or when no dense regions are found. Each case except the last is recorded as a warning in the log and in `images.csv`.
 - big-fish builds the reference spot from a random 2,000 spots when an image has more. The random seed is set before each call from `run.seed`, the image name and the channel number, so a repeated run gives the same result whatever the order of the workers.
 - Subpixel fitting: `detection.fit_subpixel` on the current spots; skipped when there are none.
-- Clusters: `detection.detect_clusters` on the current spots, radius 500 nm, minimum spots 4 (big-fish default).
+- Clusters: `detection.detect_clusters` on the current spots, radius 500 nm, minimum spots 4 (big-fish default). A cluster's centre is the exact mean position of its spots (decimals), also when the spots are at whole pixels; v1 cut the centre to whole pixels in that case. The clusters and their spots are the same as in v1.
 - Measurements, taken at each spot's pixel position (not the subpixel position):
   - SNR: the posthoc function `compute_snr_spots_individual`, extended to 2D images. On `rna`, the mean within the spot radius minus the mean of a surrounding ring (1.5 to 2.5 times the radius), divided by the standard deviation of the ring. The value is left empty when the ring is empty or has no variation.
   - Intensity: the value of `rna_log` at the spot's own position (z, y, x; or y, x in 2D), which is the value the threshold was applied to. Column `log_intensity` (brief: R3).
@@ -189,7 +189,7 @@ Presets only set step switches. Every preset uses the same default values; any s
 
 **Cellpose**
 
-- One input channel, 2D. Pre-treatment, in order: Z projection (max or mean) → clip (off; value 100) → background subtraction (on; rolling ball, radius 200 px; or top-hat) → median filter (off) → Gaussian filter (off).
+- One input channel, 2D. Pre-treatment, in order: Z projection (max or mean) → background subtraction (on; rolling ball, radius 200 px; or top-hat), after which values below 0 are set to 0 → clip (off; value 100) → median filter (off) → Gaussian filter (off). The clip comes after background subtraction, so its value does not depend on the camera offset; v1 clipped first.
 - Cellpose 4 `CellposeModel(pretrained_model="cpsam_v2", use_bfloat16=False)`.
 - Default `eval` settings follow the Cellpose-SAM workbook: `normalize=True`, `diameter=None`, `flow_threshold=0.4`, `cellprob_threshold=0`, `min_size=15`, `batch_size=1`, `niter=None`, `do_3D=False`.
 - Device chosen automatically: CUDA, then Apple GPU (MPS), then CPU. A quick test calculation on the chosen device runs before the model loads, the device used is logged, and running on CPU triggers a warning that segmentation will be slow.
@@ -385,7 +385,7 @@ In `cells.csv`, `n_spots`, `n_spots_in_clusters` and `n_spots_outside_clusters` 
 
 In `images.csv`, `n_cells` is 0 when segmentation ran and found no cells, and empty when there were no usable labels. `warnings` lists anything that did not stop the channel (e.g. decomposition skipped, no candidate spots, metadata mismatch).
 
-The optional `.npz` files use the v1 keys for old downstream scripts: `spots_post_clustering` and `clusters`, as written by the v1 general script, or `spots` for a channel with clusters switched off, as written by the v1 HCRv3 script. The per-cell `.npz` files of the v1 tissue-culture script are not reproduced.
+The optional `.npz` files use the v1 keys for old downstream scripts: `spots_post_clustering` and `clusters`, as written by the v1 general script, or `spots` for a channel with clusters switched off, as written by the v1 HCRv3 script. The `clusters` array always holds decimal numbers, because of the exact centres; in v1 it held whole numbers when subpixel fitting was off. The per-cell `.npz` files of the v1 tissue-culture script are not reproduced.
 
 ### 8.3 QC images
 

@@ -12,6 +12,7 @@ import bigfish.detection as bf_detection
 import bigfish.detection.dense_decomposition as bf_dense_decomposition
 
 from bigfish_pypeline import clusters, decomposition, detection, subpixel
+from conftest import assert_clusters_as_v1
 from synthetic import make_image
 
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning", "ignore::FutureWarning")
@@ -101,7 +102,7 @@ def test_crop_subpixel_off_as_v1(crop_runs, crop_reference_folder, name, n_spots
     assert expected_spots.shape == (n_spots, 4)
     assert expected_clusters.shape == (6, 5)
     assert np.array_equal(spots_post_clustering, expected_spots)
-    assert np.array_equal(clusters_found, expected_clusters)
+    assert_clusters_as_v1(clusters_found, expected_clusters)
     assert run["reference_spot"].dtype == expected_reference.dtype
     assert np.array_equal(run["reference_spot"], expected_reference)
 

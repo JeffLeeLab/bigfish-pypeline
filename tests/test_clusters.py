@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+import bigfish.detection as bigfish_detection
 
 from bigfish_pypeline import clusters
 
@@ -35,9 +36,10 @@ def test_group_and_scattered(ndim, dtype):
     assert np.all(spots_post_clustering[~in_group, ndim] == -1)
 
     assert clusters_found.shape == (1, ndim + 2)
+    assert clusters_found.dtype == np.float64
     assert clusters_found[0, ndim] == 10
     assert clusters_found[0, ndim + 1] == 0
-    assert np.allclose(clusters_found[0, :ndim], spots[in_group].mean(axis=0), atol=1)
+    np.testing.assert_allclose(clusters_found[0, :ndim], spots[in_group].mean(axis=0), rtol=1e-12)
 
 
 def test_scattered_only():
@@ -67,7 +69,7 @@ def test_zero_spots(ndim, dtype):
     assert spots_post_clustering.shape == (0, ndim + 1)
     assert clusters_found.shape == (0, ndim + 2)
     assert spots_post_clustering.dtype == dtype
-    assert clusters_found.dtype == dtype
+    assert clusters_found.dtype == np.float64
 
 
 def test_whole_pixel_spots_with_decimal_voxel_sizes():
@@ -87,3 +89,32 @@ def test_whole_pixel_spots_with_decimal_voxel_sizes():
     assert np.array_equal(spots_post_clustering[:, 3], expected_spots[:, 3])
     assert clusters_found.shape == (1, 5)
     assert clusters_found[0, 3] == 10
+
+
+@pytest.mark.parametrize("ndim", [3, 2])
+def test_exact_centres_for_whole_pixel_spots(ndim):
+    """Whole-pixel spots and whole voxel sizes: big-fish's clusters, with exact centres."""
+    rng = np.random.default_rng(3)
+    first = np.array([5, 50, 50])[-ndim:] + rng.integers(-2, 3, size=(9, ndim))
+    second = np.array([3, 150, 90])[-ndim:] + rng.integers(-2, 3, size=(7, ndim))
+    scattered = _group_and_scattered(ndim)[:5]
+    spots = np.concatenate([first, scattered, second]).astype(np.int64)
+    voxel_size = VOXEL_SIZE[-ndim:]
+    spots_post_clustering, clusters_found = clusters.detect_clusters(spots, voxel_size)
+    whole_spots, whole_clusters = bigfish_detection.detect_clusters(spots, voxel_size, 500, 4)
+
+    # spots, cluster numbers and numbers of spots as big-fish gives them
+    assert spots_post_clustering.dtype == np.int64
+    np.testing.assert_array_equal(spots_post_clustering, whole_spots)
+    assert clusters_found.dtype == np.float64
+    np.testing.assert_array_equal(clusters_found[:, ndim:], whole_clusters[:, ndim:])
+    assert len(clusters_found) == 2
+
+    # each centre is the mean position of its spots, with its decimals
+    for row in clusters_found:
+        members = spots[spots_post_clustering[:, ndim] == row[ndim + 1]]
+        np.testing.assert_allclose(row[:ndim], members.mean(axis=0), rtol=1e-12)
+        assert len(members) == row[ndim]
+    assert not np.array_equal(clusters_found[:, :ndim], np.round(clusters_found[:, :ndim]))
+    # big-fish alone cuts the centres to whole pixels
+    np.testing.assert_array_equal(whole_clusters[:, :ndim], np.trunc(clusters_found[:, :ndim]))

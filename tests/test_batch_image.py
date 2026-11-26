@@ -8,7 +8,7 @@ import tifffile
 from bigfish_pypeline import batch, detection, io, measurements, outputs
 from bigfish_pypeline.config import load_config, parse_config
 from bigfish_pypeline.decomposition import NO_SPOTS_WARNING
-from conftest import CROP_NAME, FISH_CHANNEL
+from conftest import CROP_NAME, FISH_CHANNEL, assert_clusters_as_v1
 from synthetic import make_image
 
 VOXEL_SIZE = (200, 65, 65)  # nm: z, y, x
@@ -157,11 +157,10 @@ def test_kit_as_configured(manual18_run, crop_reference_folder):
 
     clusters = tables["clusters"]
     expected_clusters = reference["clusters"]
-    np.testing.assert_array_equal(
-        clusters[["z_px", "y_px", "x_px", "n_spots", "cluster_id"]].to_numpy(), expected_clusters
-    )
+    assert_clusters_as_v1(clusters[["z_px", "y_px", "x_px", "n_spots", "cluster_id"]].to_numpy(),
+                          expected_clusters)
     for axis, size in zip("zyx", VOXEL_SIZE):
-        np.testing.assert_array_equal(clusters[f"{axis}_nm"], clusters[f"{axis}_px"] * size)
+        np.testing.assert_allclose(clusters[f"{axis}_nm"], clusters[f"{axis}_px"] * size, rtol=1e-12)
 
     check_cells_as_v1(tables["cells"], folder)
     assert (tables["cells"]["channel"] == FISH_CHANNEL).all()
@@ -207,7 +206,7 @@ def test_kit_auto_threshold(crop_config_path, crop_path, crop_reference_folder, 
         tables["spots"][["z_px", "y_px", "x_px", "cluster_id"]].to_numpy(),
         reference["spots_post_clustering"],
     )
-    np.testing.assert_array_equal(
+    assert_clusters_as_v1(
         tables["clusters"][["z_px", "y_px", "x_px", "n_spots", "cluster_id"]].to_numpy(),
         reference["clusters"],
     )
@@ -304,8 +303,13 @@ def test_kit_npz_files_as_v1(crop_config_path, crop_path, test_kit_folder, tmp_p
     expected = read_npz(next((test_kit_folder / reference).glob("*_bfoutput.npz")))
     assert list(saved) == list(expected)
     for name, array in expected.items():
-        assert saved[name].dtype == array.dtype, name
         assert saved[name].shape == array.shape, name
+        if name == "clusters":
+            # exact centres: decimal numbers, where v1 cut them to whole pixels
+            assert saved[name].dtype == np.float64
+            assert_clusters_as_v1(saved[name], array)
+            continue
+        assert saved[name].dtype == array.dtype, name
         np.testing.assert_array_equal(saved[name], array, err_msg=name)
 
 

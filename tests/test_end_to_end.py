@@ -25,7 +25,7 @@ import tifffile
 import yaml
 
 from bigfish_pypeline import cli
-from conftest import CROP_NAME, TEST_DATA
+from conftest import CROP_NAME, TEST_DATA, assert_clusters_as_v1
 from synthetic import make_image
 
 WAIT_S = 90
@@ -340,7 +340,7 @@ def test_kit_with_label_files_agrees_with_v1(kit_with_labels, crop_reference_fol
         spots[["z_px", "y_px", "x_px", "cluster_id"]].to_numpy(), reference["spots_post_clustering"]
     )
     clusters = read_table(folder, "clusters")
-    np.testing.assert_array_equal(
+    assert_clusters_as_v1(
         clusters[["z_px", "y_px", "x_px", "n_spots", "cluster_id"]].to_numpy(), reference["clusters"]
     )
     cells = read_table(folder, "cells")

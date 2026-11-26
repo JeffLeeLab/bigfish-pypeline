@@ -1004,3 +1004,27 @@ def test_cellpose_qc_figure_names_the_channel(tmp_path, monkeypatch, segmentatio
     [title] = titles
     expected = f"channel {segmentation_channel}" + (f" ({name})" if name else " |")
     assert expected in title.replace("\n", " "), title
+
+
+def test_pretreatment_text_in_the_order_the_steps_run(tmp_path, monkeypatch):
+    """The clip comes after background subtraction, in the Cellpose QC figure title and in `run.log`."""
+    from bigfish_pypeline import qc
+
+    titles = []
+    original = qc.draw_cellpose_qc
+
+    def keep(*args, **kwargs):
+        figure = original(*args, **kwargs)
+        titles.append(figure._suptitle.get_text())
+        return figure
+
+    monkeypatch.setattr(qc, "draw_cellpose_qc", keep)
+    folder = tiny_images(tmp_path / "input", ["a"])
+    config = with_cellpose(local_config(folder, tmp_path / "out"), projection="mean",
+                           clip={"enabled": True, "value": 100}, median_px=3)
+    result = run_cellpose(config, StandInModel(n_cells=2), image_function=fake_process_image)
+    assert result.status == "finished", result.message
+    text = "mean projection | rolling ball 200 px | clip 100 | median 3 px"
+    [title] = titles
+    assert text in title.replace("\n", " | "), title
+    assert f"Segmentation: Cellpose model cpsam_v2 on channel 0 ({text})." in log_text(result.run_folder)

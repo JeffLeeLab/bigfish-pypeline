@@ -148,8 +148,8 @@ def test_title_with_the_pretreatment_text_from_the_segmentation_module():
     )
     title = qc.cellpose_qc_title("img", 1, text, 30, 5, 1.0)
 
-    assert text in title
-    assert text.startswith("mean projection")
+    assert text in title.replace("\n", " | ")
+    assert text == "mean projection | rolling ball 150 px | clip 100 | median 5 px | Gaussian 1.5 px"
 
 
 def test_title_says_when_no_diameter_is_set():

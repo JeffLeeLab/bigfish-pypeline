@@ -199,3 +199,22 @@ def test_crop_matches_v1_reference(run, crop_reference_folder, crop_labels_path)
         np.testing.assert_array_equal(
             cells[column].to_numpy(), reference[column].to_numpy(), err_msg=column
         )
+
+
+def test_cluster_counted_in_the_cell_under_its_exact_centre():
+    """Spots at x = 9, 10, 10, 10: the centre is at x = 9.75, on cell 2, where a
+    centre cut to whole pixels (x = 9) would be on cell 1."""
+    from bigfish_pypeline.clusters import detect_clusters
+
+    masks = np.ones((20, 20), dtype=np.uint32)
+    masks[:, 10:] = 2
+    spots = np.array([[5, 9], [5, 10], [6, 10], [4, 10]], dtype=np.int64)
+    spots_post_clustering, clusters = detect_clusters(spots, (65, 65), radius=500, nb_min_spots=4)
+    np.testing.assert_allclose(clusters[0, :2], [5, 9.75])
+    spot_ids, cluster_ids, cells = assign_cells(masks, spots_post_clustering, 2, 65, clusters)
+    np.testing.assert_array_equal(spot_ids, [1, 2, 2, 2])
+    np.testing.assert_array_equal(cluster_ids, [2])
+    np.testing.assert_array_equal(cells["n_clusters"], [0, 1])
+    np.testing.assert_array_equal(cells["mean_spots_per_cluster"], [np.nan, 4])
+    # spots in clusters are counted in the cell of each spot
+    np.testing.assert_array_equal(cells["n_spots_in_clusters"], [1, 3])
