@@ -2515,3 +2515,65 @@ Done by Sonnet 5.5 (high) in `config.py` and `io.py`, additions only, with 117 t
 
 **Not verified:** OMERO on a real server (image information built by hand in the tests).
 
+### 4.4 Saving one image's results (26 Nov 2026)
+
+Done by Opus 5.5 (medium) in `batch.py`, with `tests/test_save_image.py` (36 tests). It ran alongside 4.5. The orchestrator read the changes and ran the batch and save-image tests (314 pass); the whole suite is in 4.5.
+
+`batch.save_image_results(config, image, omero_conn, cellpose_result, cellpose_model, command, show)` runs one image exactly as a batch does and writes a new run folder of the usual layout: the tables, `per_image/`, the label image, the QC files that are switched on, `.npz` files when on, `run_config.yaml`, `run_info.yaml`, `progress.json` and `run.log`. It returns the run folder, the status, a message and the image's rows of `images.csv`.
+
+- **Same code as the batch.** The checks before a run, the run folder, the records, the log and the per-image function are the batch's own. The only difference is where the image is processed: in the calling program (the notebook), with no worker process. `run_batch` itself is unchanged in behaviour.
+- **Equal to a batch run.** For the tissue crop, the files written equal those of `run_batch` and of the command `bigfish-pypeline batch` for the same image: the same set of files, every table identical byte for byte (`images.csv` apart from the run time), `.npz` arrays and label images equal. `run_config.yaml` from the function, given to the batch, gives the same tables again.
+- **Cellpose.** A segmentation made beforehand (the result of `segmentation.segment_cells`) is used as it is: its masks become the label image, the Cellpose QC figure is drawn from it, and Cellpose is not run again. Without one, Cellpose runs as in the batch, with a model already loaded if one is passed. The masks passed in are checked against the image's size.
+- **Cellpose gives the same masks twice** on this Mac (Apple GPU): the batch, the function running Cellpose itself, and `segment_cells` run first all gave identical masks and tables on the cultured-cell crop. Phase 4's done-when rests on this; other computers are for Phase 7.
+- **Calibrated threshold.** The value must already be in the config (`resolved.thresholds`); otherwise nothing is written: "Channel 2 uses a calibrated threshold (`threshold.mode: calibrated`), but the settings hold no calibrated value for it yet (`resolved.thresholds`). Run the calibration first, or set `threshold.mode` to `manual` with the threshold value shown in the notebook."
+- **The calling program is left as it was:** thread settings (also PyTorch's), matplotlib set-up, the Ctrl+C handler, logging and the OMERO connection of the caller. Stopping the notebook cell stops the run and is passed on as usual.
+- **Records.** `run_info.yaml` and the log say that one worker was used, "the image was processed by the program that saved its results (no worker process was started)"; with masks passed in, the log says "N cell(s) found with Cellpose before saving, used as they are (Cellpose was not run again)".
+
+**Choices the plan does not settle**
+
+- For a local image, the saved settings name the image's own folder as the input folder, so that `run_config.yaml` repeats the run. For OMERO they name the one image ID.
+- Masks passed in are taken to have been made with the Cellpose settings in the config; this cannot be checked, and the figure's title and the log describe the config's settings.
+- The thread settings of the workers (one thread each) are not applied in the calling program. On this Mac the tables are identical all the same.
+
+**Not verified:** OMERO on a real server (stand-ins only); Windows and Linux; whether the tables stay identical to a batch's with other numbers of threads on other computers (point for Phase 7).
+
+### 4.5 The notebook, steps 1 to 9 (26 Nov 2026)
+
+Done by Sonnet 5.5 (high): `notebooks/bigfish-optimise.ipynb` (49 cells), `tests/test_notebook.py` (30 tests), two functions added to `qc.py`, the new module `notebook.py`, and one method in `config.py`. The orchestrator read every cell, asked for three changes (below), ran the notebook as committed and looked at its figures. With tasks 4.4 and 4.5 together, 1,585 tests pass with the full-size image (1,582 in parallel in 4 min 33 s, then the 3 full-size tests in 2 min 9 s).
+
+**The notebook**
+
+- Steps 1 to 9 of spec section 9: set-up, image source (local folder or OMERO), image information and channel previews, the FISH channel, background and LoG with the interactive view, line profile, histogram and optional TIFF, threshold with the elbow plot and detection plot, decomposition with the reference spot, subpixel fitting, clusters, measurements, and the result for the channel with its tables. It ends by printing the settings chosen; steps 10 to 13 follow in task 4.6.
+- Each step has one short cell of values, marked `# Values`, and a cell that writes them into `config` and runs the step through `steps.py`. The values cells carry a tag (`values:threshold` and so on), which the tests use to replace values.
+- As committed it opens the tissue crop of the test kit and runs top to bottom. Every value that is a setting equals the pipeline's default (rolling ball at 5 px, automatic threshold, clusters at 500 nm and 4 spots); a test checks this, so the notebook cannot drift from the defaults. On the crop this gives a threshold of 12.0, 601 spots, 868 after decomposition and 29 clusters.
+- The config is built at the first channel (`new_config` needs one). A further channel is tuned by changing the channel values and running from step 5 to the end of step 8: the previous channel's images are freed first, and the settings of every channel stay in `config`.
+- The two switches that an assay type sets (decomposition, clusters) are offered as `None` (keep the assay type's choice), `True` or `False`.
+- A problem with a value is shown as one red line, for example "Problem: `channels[0].threshold.mode` must be one of `manual`, `auto` or `calibrated` (found `automatic`)", and the run stops at that cell.
+- Figures: `%matplotlib inline` in the set-up cell makes the package's figures show; the LoG view uses plotly's own renderer (`jupyterlab-plotly` 7.1.0 is in the env).
+
+**Changes asked for by the orchestrator**
+
+1. The values as committed were those of the test kit's settings file, which reproduces the v1 run (top-hat, manual threshold 18). They are now the pipeline's defaults; the kit's values are tested in a run with values replaced.
+2. The code that shows a problem as one line moved from the notebook into the package: `notebook.show_problems_plainly()`.
+3. `config.channel(channel_index)` replaces a line repeated seven times in the notebook.
+
+**Added to the package**
+
+- `qc.draw_reference_spot`: the reference spot plane by plane on one colour scale. `qc.describe_threshold`: the threshold used, with the automatic value of the image beside it, and the number of spots.
+- `notebook.py`: `show_problems_plainly`, `problem_text`. Deviation from the spec's list of modules (4.1), which gains this line.
+- `nbclient` and `nbformat`, which the notebook tests use, are now named in `msp-environment.yml` (they were already installed with JupyterLab; the env itself is unchanged).
+
+**Tests:** the notebook as committed; a run with a calibrated threshold, the `amplified` preset, subpixel fitting, measurements, bailout and the TIFF export; a run with two channels, the first with the kit's values (its saved settings equal the kit's file, and its tables equal the batch's: 473 spots, 692 after decomposition, 6 clusters); bad values; OMERO with a stand-in for the server (the log-in call carries no password, the session is closed by the last cell); the committed file has no outputs, no run counts and no path outside the repository.
+
+**Left for task 4.6**
+
+- The optional calibration cell holds about 12 lines of its own; they move into a function of the package.
+- The calibration writes a `resolved` block into `config`, which names the calibration images. A settings file saved with it would make the batch run only those images, so the file must be saved without that block.
+- The closing note after step 9 is replaced by steps 10 to 13.
+
+**Not verified**
+
+- JupyterLab was not seen by any executor or by the orchestrator: the interactive LoG view, the size of the figures on screen, the red problem line and the readability of the text are for the user's first look.
+- OMERO on the real server: the password box, the log-in, reading and closing.
+- The notebook on a full-size image (time, memory, the calibration cell).
+

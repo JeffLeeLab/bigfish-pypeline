@@ -70,8 +70,8 @@ Spec section 9 (the notebook's steps) and section 11, Phase 4. Presets: section 
 | 4.1 | Steps of one channel as functions shared with the batch (`steps.py`, `batch.py`) | Opus 5.5, medium | Batch tables and v1 comparisons unchanged; each step can be run alone from a config | Done (devlog 4.1) |
 | 4.2 | Starting a config: presets, and values suggested from the image (`config.py`) | Sonnet 5.5, high | Each preset gives the switches of spec 5.2; the result saves and loads | Done (devlog 4.2) |
 | 4.3 | Views for choosing a threshold (`qc.py`) | Sonnet 5.5, high | Channel previews, LoG view with pixel values, line profile, histogram, LoG image saved as TIFF | Done (devlog 4.3) |
-| 4.4 | Saving one image's results from a config (`batch.py`) | Opus 5.5, medium | The run folder of one image equals that image's part of a batch run | – |
-| 4.5 | The notebook, steps 1 to 9 (`notebooks/bigfish-optimise.ipynb`) | Sonnet 5.5, high | Runs top to bottom on the tissue crop for one and for two channels | First look in JupyterLab |
+| 4.4 | Saving one image's results from a config (`batch.py`) | Opus 5.5, medium | The run folder of one image equals that image's part of a batch run | Done (devlog 4.4) |
+| 4.5 | The notebook, steps 1 to 9 (`notebooks/bigfish-optimise.ipynb`) | Sonnet 5.5, high | Runs top to bottom on the tissue crop for one and for two channels | Done (devlog 4.5); first look in JupyterLab |
 | 4.6 | The notebook, steps 10 to 13 | Sonnet 5.5, high | Runs with Cellpose, with label files and without cells; saves the settings file | – |
 | 4.7 | Notebook tests in the suite | Sonnet 5.5, high | Phase 4 done-when (spec section 11) on both test kits | – |
 | 4.8 | Phase review | Orchestrator, then the user | Suite passes; notebook tried by the user on their own image | Sign off; say when to merge |
