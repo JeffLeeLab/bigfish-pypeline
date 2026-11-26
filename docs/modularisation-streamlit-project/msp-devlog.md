@@ -2402,6 +2402,8 @@ Done by Opus 5.5 (medium) in `config.py`, `segmentation.py` and `batch.py`, with
 - With every plane, four of the nine "cells" are small specks and the sheet of spread cells in the lower half of the crop gets no outline; with planes 12–30 the five cells have clean outlines. Figures: [every plane](figures/phase3/z_planes/cellpose_qc_every_plane.png), [planes 12–30](figures/phase3/z_planes/cellpose_qc_planes_12-30.png). The runs and the script that makes them are in `~/bigfish-testdata/phase3/z_planes/`.
 - Both test kit settings files gain the line `z_planes: {first: , last: }`.
 
+**The user's look (26 Nov 2026):** Cellpose looks better with planes 12–30. The merge into `main` waits for the user's word.
+
 **Tests added:** the projection of chosen planes for max and mean, open ends and the errors (`test_pretreatment.py`); the setting, its saving and loading and its two rules (`test_config.py`); planning, `check`, a mixed folder, a folder where no image has the plane, and OMERO with stand-in image information (`test_batch_cellpose.py`); two runs of the cultured-cell crop with the real model (`test_end_to_end_cellpose.py`, skipped without the model).
 
 **Not verified:** OMERO on a real server (stand-ins only).
@@ -2597,4 +2599,20 @@ Each function below is also what the batch itself now calls, so that the noteboo
 - The chain the notebook will follow is tested from end to end with label files, with the stand-in model and with the real model on the cultured-cell crop: the tables shown in memory equal those saved byte for byte, and the masks and the run folder equal those of a batch that runs Cellpose itself.
 
 **Not verified:** OMERO on a real server (stand-ins only).
+
+### The user's first look at the notebook (26 Nov 2026)
+
+The user ran steps 1 to 9 in JupyterLab:
+
+- The interactive LoG picture is a bit small.
+- The rest seems fine, but there are too many cells overall.
+- The calibrated threshold mode did not work with the test image.
+
+What the orchestrator found for the last point: the mode worked only when three values were set together (the mode, a calibration filter and `run_calibration = True`). With the mode alone the cell gave a problem line about the missing filter; with the mode and a filter, the next cell said that the calibration had not been run; and after a refused value the later cells showed the results of the previous threshold. A fault of the notebook's design, not of the test image.
+
+Changes, made with the notebook's cells for steps 10 to 13 (second part of task 4.6):
+
+1. The LoG picture gets a height of about 800 px.
+2. Steps 1 to 9 go from 49 cells to about 32: the image list and the OMERO log-in become one cell; filtering and the LoG picture one cell; the threshold step one values cell and one cell; step 8 two halves (decomposition with subpixel fitting; clusters with measurements and the result) instead of four parts.
+3. Calibrated mode works by changing the mode alone on the test image: `run_calibration` is removed, the calibration filter as supplied matches the test image, and the threshold cell calibrates whenever the mode is `calibrated`.
 
