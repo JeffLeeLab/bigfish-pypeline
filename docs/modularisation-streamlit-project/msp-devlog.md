@@ -2372,6 +2372,46 @@ In parallel the whole suite takes about 5 and a half minutes, within the aim of 
 
 **Sign-off (26 Nov 2026):** the user signed off Phase 3 and asked for `msp` to be merged into `main` and pushed. Task 3.23 (planes for the Cellpose projection), planned the same day and not started, is done on `msp` after the merge, by the user's decision. Still open and not holding up the next work: the OMERO check on the real server, which now also covers the rejoining code of 3.13 and 3.20, and the Cellpose mask review on the cultured-cell image (after 3.23, before Phase 8).
 
+### 3.23 Planes for the segmentation projection (26 Nov 2026)
+
+Done by Opus 5.5 (medium) in `config.py`, `segmentation.py` and `batch.py`, with two small changes by the orchestrator (`cli.py`, and the wording below). The orchestrator read the changes, ran the cultured-cell crop itself and ran the whole suite with the code of 3.23 and 4.3 together: 1,326 tests pass with the full-size image (1,323 in parallel in 4 min 7 s, then the 3 full-size tests in 2 min 9 s).
+
+**The setting.** `segmentation.z_planes: {first: 12, last: 30}` gives the first and last plane of the projection made for Cellpose, counted from 0, both included. Left empty (the default), every plane is used and nothing changes. Spot detection, clusters and measurements always use every plane.
+
+- Either end may be left empty: an empty `first` starts at plane 0, an empty `last` ends at the image's last plane, so images with different numbers of planes can share one settings file. The plan did not settle this; the user agreed it.
+- The planes are cut from the stack just before the projection (max or mean); the later pre-treatment steps are unchanged. The whole channel is still read, so the time to read an image and the memory of the main process do not change.
+- The pre-treatment text names the planes in `run.log`, in the title of the Cellpose QC figure and in the "Cell results" line of `check`: "max projection of planes 12–30 | rolling ball 200 px", "max projection from plane 12", "max projection up to plane 30", "max projection of plane 12". `run_config.yaml` holds the setting.
+
+**Checks of the setting**
+
+- Settings check: "`segmentation.z_planes.first` must not be after `last` (found first 30 and last 12)."
+- Settings check, when Cellpose is used with a layout without Z: "`segmentation.z_planes` must be left empty for the 2D layout `CYX`: the image has no planes." With label files or with segmentation off the setting is not used and not checked against the layout.
+- A plane that an image does not have is found from the header when the run is planned (TIFF and OMERO), like a missing channel (3.21): "a.tif: the image has 19 planes (numbered 0 to 18), so plane 30 does not exist (`segmentation.z_planes`)". `check` lists the image, the image fails on its own in a run, and the run stops before it starts when no image has the plane. Nothing is ever cut short silently.
+- Such an image fails in every channel, spots included, as the plan asks, although its spots do not depend on the planes. It is also left out of a calibration.
+
+**The cultured-cell crop** (`tests/data/culture_DAPI_cellmask_exon_crop.tif`, 31 planes, Cellpose on channel 1, spots in channel 2), run with every plane and with planes 12–30:
+
+| | Every plane | Planes 12–30 |
+|---|---|---|
+| Cells found by Cellpose | 9 | 5 |
+| Spots | 242 | 242 |
+| Clusters | 5 | 5 |
+| Spots inside a cell | 155 | 226 |
+
+- The spot and cluster tables of the two runs are identical in every column except `cell_id` (tested with SNR and intensity on). Spots below plane 12 are kept.
+- With every plane, four of the nine "cells" are small specks and the sheet of spread cells in the lower half of the crop gets no outline; with planes 12–30 the five cells have clean outlines. Figures: [every plane](figures/phase3/z_planes/cellpose_qc_every_plane.png), [planes 12–30](figures/phase3/z_planes/cellpose_qc_planes_12-30.png). The runs and the script that makes them are in `~/bigfish-testdata/phase3/z_planes/`.
+- Both test kit settings files gain the line `z_planes: {first: , last: }`.
+
+**Tests added:** the projection of chosen planes for max and mean, open ends and the errors (`test_pretreatment.py`); the setting, its saving and loading and its two rules (`test_config.py`); planning, `check`, a mixed folder, a folder where no image has the plane, and OMERO with stand-in image information (`test_batch_cellpose.py`); two runs of the cultured-cell crop with the real model (`test_end_to_end_cellpose.py`, skipped without the model).
+
+**Not verified:** OMERO on a real server (stand-ins only).
+
+**Points carried forward**
+
+- Phase 4 and Phase 5: `z_planes` belongs with the other segmentation settings in the notebook and the app; a preview of the projection at several plane ranges would help to choose them.
+- Phase 6: the documentation should say that planes are counted from 0, while Fiji counts slices from 1.
+- Possible later gain: reading only the chosen planes of the segmentation channel, which would save time over OMERO. Not done, because the readers stay as they are.
+
 ## Phase 4: Optimise notebook
 
 ### 4.0 Decisions (26 Nov 2026)
@@ -2383,4 +2423,25 @@ The user agreed the plan of Phase 4 and its five proposals as written in `msp-pl
 3. The notebook shows the automatic threshold of the open image; a separate, optional cell runs the calibration over the images whose names contain the filter and shows the calibration plot.
 4. OMERO: one cell asks for the password in the notebook's own password box. Tested with stand-ins for the server only; the check on the real server is the user's.
 5. The notebook keeps one channel's images in memory at a time and frees them when the channel is changed.
+
+### 4.3 Views for choosing a threshold (26 Nov 2026)
+
+Done by Sonnet 5.5 (high) in `qc.py`, with tests in the new `tests/test_views.py` (63 tests). It ran alongside task 3.23, which touches other files. The orchestrator read the changes and ran the suite (numbers in 3.23).
+
+Each function gives a figure and saves nothing, like the other `draw_...` functions; none needs a screen or changes the matplotlib set-up of a notebook, and `plotly` is loaded only when the LoG view is drawn.
+
+| Function | Gives |
+|---|---|
+| `draw_channel_previews(projections, channel_names, image_name)` | The maximum projection of every channel, each with its own contrast (1st to 99th percentile), titled "channel 2 (jim-exon)" |
+| `draw_log_view(rna_log_mip, threshold, ...)` | The LoG projection as an interactive plotly figure: zoom, pan, and the position and real pixel value under the pointer |
+| `plot_line_profile(rna_log_mip, start=(y, x), end=(y, x))` | The picture with the line drawn on it, and the pixel values against the distance along the line; `line_profile_values` gives the values alone |
+| `draw_log_histogram(rna_log_mip, threshold, ...)` | Histogram of the LoG values with a logarithmic count axis; the threshold as a line named "Selected threshold = 11.0", as in the elbow plot |
+| `write_log_projection(rna_log_mip, path, pixel_size_nm)` | The LoG projection as a 32-bit TIFF file for Fiji, with the pixel size in microns |
+
+- **Large pictures in the LoG view.** Up to 2048 px on the longer side the picture is shown as it is. Above that, each block of n × n pixels is shown as one square holding the brightest pixel of the block (2 × 2 for the full-size test image), and the title says so. Positions under the pointer stay those of the full picture.
+- **Size of the LoG view** (the figure as plotly holds it): 2048 × 2048 px, 11 MB for a 16-bit picture and 25 MB for float32; 2304 × 2304 px, reduced 2 × 2, 3.6 MB and 7.4 MB. The LoG pictures of the pipeline are 16-bit.
+- **Line profile.** The values are the picture's own, with no smoothing, about one for each pixel of length; on a sloping line a pixel can be read twice in a row. A point outside the picture is refused: "The start point (y, x) = (10, 3) is outside the picture, which is 10 pixels high and 10 pixels wide. y must be between 0 and 9 and x between 0 and 9."
+- No earlier `plot_line_profile` exists in the repository, so there was nothing to stay compatible with.
+
+**Not verified:** how the LoG view looks and feels in JupyterLab (only its data, title, pointer text and size were checked), and the TIFF file in Fiji (its tags and the package's own reader give the right pixel size). Both are part of the user's first look at the notebook after task 4.5.
 

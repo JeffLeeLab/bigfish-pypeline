@@ -37,7 +37,7 @@ Done, signed off and merged into `main` on 24 Nov 2026. Results, deviations and 
 
 ## Phase 3: Outputs, logs and QC
 
-Done, signed off and merged into `main` on 26 Nov 2026, except task 3.23 below, which the user asked to have done after the merge. Results, deviations and the points carried forward are in `msp-devlog.md` (entries 3.0–3.22). Four independent reviews were made during the phase (entries 3.12 and 3.19, findings 1–40); all confirmed findings are fixed. The checks left to the user are listed in `msp-handoff.md`.
+Done, signed off and merged into `main` on 26 Nov 2026, except task 3.23 below, which the user asked to have done after the merge: it is done on `msp` (devlog 3.23) and waits for the user's look at the figures before it is merged. Results, deviations and the points carried forward are in `msp-devlog.md` (entries 3.0–3.22). Four independent reviews were made during the phase (entries 3.12 and 3.19, findings 1–40); all confirmed findings are fixed. The checks left to the user are listed in `msp-handoff.md`.
 
 ### 3.23 Planes for the segmentation projection
 
@@ -69,14 +69,14 @@ Spec section 9 (the notebook's steps) and section 11, Phase 4. Presets: section 
 | 4.0 | Decisions recorded | Orchestrator | – | Answered: the five proposals agreed |
 | 4.1 | Steps of one channel as functions shared with the batch (`steps.py`, `batch.py`) | Opus 5.5, medium | Batch tables and v1 comparisons unchanged; each step can be run alone from a config | – |
 | 4.2 | Starting a config: presets, and values suggested from the image (`config.py`) | Sonnet 5.5, high | Each preset gives the switches of spec 5.2; the result saves and loads | – |
-| 4.3 | Views for choosing a threshold (`qc.py`) | Sonnet 5.5, high | Channel previews, LoG view with pixel values, line profile, histogram, LoG image saved as TIFF | – |
+| 4.3 | Views for choosing a threshold (`qc.py`) | Sonnet 5.5, high | Channel previews, LoG view with pixel values, line profile, histogram, LoG image saved as TIFF | Done (devlog 4.3) |
 | 4.4 | Saving one image's results from a config (`batch.py`) | Opus 5.5, medium | The run folder of one image equals that image's part of a batch run | – |
 | 4.5 | The notebook, steps 1 to 9 (`notebooks/bigfish-optimise.ipynb`) | Sonnet 5.5, high | Runs top to bottom on the tissue crop for one and for two channels | First look in JupyterLab |
 | 4.6 | The notebook, steps 10 to 13 | Sonnet 5.5, high | Runs with Cellpose, with label files and without cells; saves the settings file | – |
 | 4.7 | Notebook tests in the suite | Sonnet 5.5, high | Phase 4 done-when (spec section 11) on both test kits | – |
 | 4.8 | Phase review | Orchestrator, then the user | Suite passes; notebook tried by the user on their own image | Sign off; say when to merge |
 
-**Order:** 4.3 can start at once (`qc.py` only). Tasks 4.1 and 4.2 wait for task 3.23, which changes the same files; 4.1 then runs on its own in `batch.py`, because it changes the code that makes the results, and 4.4 follows it. Task 4.5 needs 4.1 to 4.3; 4.6 needs 4.4 and 4.5; then 4.7 and 4.8.
+**Order:** 4.3 ran alongside task 3.23 (`qc.py` only). Task 4.1 runs on its own in `batch.py`, because it changes the code that makes the results; 4.2 (`config.py`) can run beside it, and 4.4 follows 4.1. Task 4.5 needs 4.1 to 4.3; 4.6 needs 4.4 and 4.5; then 4.7 and 4.8.
 
 **Check-ins with the user:** the decisions below; a first look at the notebook after 4.5, before the segmentation and saving steps are added; the phase review (4.8).
 

@@ -5,16 +5,16 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 ## State
 
 - **Phases 0, 1, 2 and 3:** done, signed off, merged into `main` and pushed. Phase 3 (outputs, logs and QC) was signed off and merged on 26 Nov 2026 (devlog 3.22, at its end). Its record: tasks in devlog 3.1–3.11, three independent reviews in 3.12 (findings 1–28) with their fixes in 3.13–3.17, the review of the phase in 3.18, a fourth review in 3.19 (findings 29–40) with its fixes in 3.20 and 3.21, and the state at sign-off in 3.22.
-- **Task 3.23** (planes for the Cellpose projection, planned on 26 Nov 2026 with the cultured-cell crop): not started. The user decided that it is done on `msp` after the Phase 3 merge.
-- **Phase 4 (Optimise notebook):** not yet planned in detail.
+- **Task 3.23** (the setting `segmentation.z_planes`, planes for the Cellpose projection): done and committed on `msp` (devlog 3.23), not merged. The user looks at the two Cellpose QC figures of the cultured-cell crop (`figures/phase3/z_planes/`) and says when it is merged into `main`.
+- **Phase 4 (Optimise notebook):** planned in `msp-plan.md`; the user agreed its five decisions (devlog 4.0). Task 4.3 (views for choosing a threshold) is done (devlog 4.3). Tasks 4.1, 4.2 and 4.4 to 4.8 are open.
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
-- 1,197 tests pass in `bigfish-msp` with the full-size image (devlog 3.22). Run the suite in parallel, in two commands, about 5 and a half minutes in all: `conda run -n bigfish-msp python -m pytest -n 6 -m "not full_image"`, then `conda run -n bigfish-msp python -m pytest -m full_image` (the full-size tests need about 5 GB each and must not run side by side). One test at a time the suite takes 13 minutes, and a foreground command is cut off after 10 minutes, so run it in the background.
-- `main` and `msp` are at the same commit, and both are pushed.
+- 1,326 tests pass in `bigfish-msp` with the full-size image (devlog 3.23). Run the suite in parallel, in two commands, about 5 and a half minutes in all: `conda run -n bigfish-msp python -m pytest -n 6 -m "not full_image"`, then `conda run -n bigfish-msp python -m pytest -m full_image` (the full-size tests need about 5 GB each and must not run side by side). One test at a time the suite takes 13 minutes, and a foreground command is cut off after 10 minutes, so run it in the background.
+- `msp` is ahead of `main` and of GitHub by the commits of task 3.23 and Phase 4; nothing after the Phase 3 sign-off is merged or pushed.
 
 ## Next step
 
-1. Task 3.23, as briefed in the plan: the setting `segmentation.z_planes`, tested on the cultured-cell crop in `tests/data/` (devlog, "Cultured-cell test image and task 3.23 planned"). The user looks at the Cellpose QC figure of the cultured-cell kit and says when it is merged into `main`.
-2. Plan Phase 4 (Optimise notebook; spec section 9 and section 11, Phase 4) in detail in `msp-plan.md`: tasks, who does each, the checks, and the decisions the user must take first. Start from the points carried forward in devlog 3.11 (points 1 to 3), 3.18 (points 11 to 13) and 3.22 (point 30), and from devlog 2.8. Bring the plan to the user before any task starts.
+1. Phase 4, as planned in `msp-plan.md`: task 4.1 (the steps of one channel in `steps.py`, shared with the batch) on its own in `batch.py`, with 4.2 (starting a config, `config.py`) beside it; then 4.4, 4.5 and the user's first look at the notebook in JupyterLab.
+2. When the user has looked at the Cellpose QC figures of task 3.23 and says so: merge `msp` into `main` and push (ask first, as always).
 
 ## How the work is run
 
