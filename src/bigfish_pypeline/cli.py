@@ -12,6 +12,7 @@ from pathlib import Path
 from bigfish_pypeline import __version__, io, outputs
 from bigfish_pypeline.batch import BatchError, RunStoppedError, plan_run, run_batch
 from bigfish_pypeline.config import ConfigError, apply_overrides, load_config
+from bigfish_pypeline.segmentation import describe_planes
 
 PROGRAM = "bigfish-pypeline"
 
@@ -210,9 +211,13 @@ def describe_plan(config, plan, config_path):
     if not segmentation.enabled:
         lines.append("Cell results: no (segmentation is switched off)")
     elif segmentation.source == "cellpose":
+        planes = describe_planes((segmentation.z_planes.first, segmentation.z_planes.last))
+        channel = f"channel {segmentation.channel}"
+        if planes:
+            channel += f", projection {planes}"
         lines.append(
             f"Cell results: yes, cells found by Cellpose (model {segmentation.cellpose.model}, "
-            f"channel {segmentation.channel}, device: {segmentation.device}). The device and "
+            f"{channel}, device: {segmentation.device}). The device and "
             "the model are checked when the run starts."
         )
         if config.outputs.label_images:

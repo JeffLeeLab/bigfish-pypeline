@@ -404,3 +404,93 @@ def test_cancelled_run_keeps_finished_images_only(tmp_path, label_images):
     assert {name for name in per_image if name.endswith("_images.csv")} == {f"{name}_images.csv" for name in done}
     assert all(name.split("_")[0] == "img" and name[:6] in done for name in per_image)
     check_no_worker_left()
+
+
+# ---------------------------------------------------------------------------
+# Cultured cells: Cellpose on a projection of the upper planes only
+# ---------------------------------------------------------------------------
+
+CULTURE_NAME = "culture_DAPI_cellmask_exon_crop"
+CULTURE_PLANES = {"first": 12, "last": 30}
+CULTURE_TEXT = "max projection of planes 12–30 | rolling ball 200 px"
+
+
+@pytest.fixture(scope="module")
+def culture_runs(tmp_path_factory):
+    """The cultured-cell kit run twice with the real model: with every plane in the
+    projection for Cellpose, and with planes 12–30 only. Gives, for each, the run
+    result and the title of its Cellpose QC figure."""
+    from bigfish_pypeline import qc
+
+    base = tmp_path_factory.mktemp("culture_planes")
+    kit = load_config(TEST_DATA / f"{CULTURE_NAME}_config.yaml")
+    runs = {}
+    for key, planes in (("every", {}), ("upper", CULTURE_PLANES)):
+        def change(data, planes=planes, key=key):
+            data["run"]["output_folder"] = str(base / key)
+            data["segmentation"]["z_planes"].update(planes)
+            data["channels"][0]["measurements"].update(snr=True, intensity=True)
+            data["outputs"]["qc"].update(elbow_plot=False, detection=False, reference_spot=False,
+                                         final="none")
+
+        titles = []
+        original = qc.draw_cellpose_qc
+
+        def keep(*args, titles=titles, **kwargs):
+            figure = original(*args, **kwargs)
+            titles.append(figure._suptitle.get_text())
+            return figure
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(qc, "draw_cellpose_qc", keep)
+            result = batch.run_batch(with_changes(kit, change))
+        assert result.status == "finished", result.message
+        runs[key] = (result, titles)
+    return runs
+
+
+def _without_cells(table):
+    return table.drop(columns=["cell_id"]).reset_index(drop=True)
+
+
+@pytest.mark.cellpose
+def test_culture_spots_do_not_depend_on_the_planes_for_cellpose(culture_runs):
+    every, _ = culture_runs["every"]
+    upper, _ = culture_runs["upper"]
+    for kind in ("spots", "clusters"):
+        first = read_table(every.run_folder, kind)
+        second = read_table(upper.run_folder, kind)
+        assert len(first) > 0, kind
+        pd.testing.assert_frame_equal(_without_cells(first), _without_cells(second))
+    spots = read_table(every.run_folder, "spots")
+    assert {"snr", "log_intensity"} <= set(spots.columns)
+    # spots of the lower planes are kept
+    assert spots["z_px"].min() < CULTURE_PLANES["first"]
+    images = [read_table(result.run_folder, "images") for result in (every, upper)]
+    for column in ("status", "threshold", "n_spots_detected", "n_spots", "n_clusters"):
+        assert list(images[0][column]) == list(images[1][column]), column
+    assert list(images[1]["segmentation_status"]) == ["done"]
+
+
+@pytest.mark.cellpose
+def test_culture_labels_and_records_follow_the_planes(culture_runs):
+    every, every_titles = culture_runs["every"]
+    upper, upper_titles = culture_runs["upper"]
+    labels = [read_labels(result.run_folder, CULTURE_NAME) for result in (every, upper)]
+    for found in labels:
+        check_label_image(found, (384, 384))
+        assert found.max() > 0
+    assert not np.array_equal(labels[0], labels[1])
+    check_cells_agree_with_labels(upper.run_folder, CULTURE_NAME, labels[1])
+    check_spots_agree_with_labels(upper.run_folder, CULTURE_NAME, labels[1])
+
+    assert "(max projection | rolling ball 200 px)." in log_text(every.run_folder)
+    assert f"on channel 1 ({CULTURE_TEXT})." in log_text(upper.run_folder)
+    for result, planes in ((every, (None, None)), (upper, (12, 30))):
+        saved = load_config(result.run_folder / "run_config.yaml").segmentation.z_planes
+        assert (saved.first, saved.last) == planes
+    assert qc_files(upper.run_folder) == [f"{CULTURE_NAME}_cellpose_qc.png"]
+    [title] = upper_titles
+    assert CULTURE_TEXT in title.replace("\n", " | "), title
+    [title] = every_titles
+    assert "planes" not in title, title

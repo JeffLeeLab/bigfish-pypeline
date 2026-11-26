@@ -95,6 +95,7 @@ Text = Annotated[str, BeforeValidator(_blank_to_text)]
 OptionalNumber = Annotated[Number | None, BeforeValidator(_blank_to_none)]
 OptionalPositiveNumber = Annotated[PositiveNumber | None, BeforeValidator(_blank_to_none)]
 OptionalPositiveInt = Annotated[PositiveInt | None, BeforeValidator(_blank_to_none)]
+OptionalNonNegativeInt = Annotated[NonNegativeInt | None, BeforeValidator(_blank_to_none)]
 
 
 def _rule_error(*problems):
@@ -269,6 +270,29 @@ class ChannelSettings(_Settings):
     measurements: MeasurementSettings = Field(default_factory=MeasurementSettings)
 
 
+class ZPlaneSettings(_Settings):
+    """Planes of the projection made for Cellpose, counted from 0, both included.
+
+    An empty `first` starts at plane 0; an empty `last` ends at the image's last plane.
+    """
+
+    first: OptionalNonNegativeInt = None
+    last: OptionalNonNegativeInt = None
+
+    @model_validator(mode="after")
+    def _first_not_after_last(self):
+        if self.first is not None and self.last is not None and self.first > self.last:
+            raise _rule_error(
+                ("first", f"must not be after `last` (found first {self.first} and last {self.last})")
+            )
+        return self
+
+    @property
+    def chosen(self):
+        """True when a first or a last plane is set."""
+        return self.first is not None or self.last is not None
+
+
 class ClipSettings(_Settings):
     enabled: bool = False
     value: PositiveNumber = 100
@@ -298,6 +322,7 @@ class SegmentationSettings(_Settings):
     label_folder: Text = ""
     channel: NonNegativeInt = 0
     projection: Literal["max", "mean"] = "max"
+    z_planes: ZPlaneSettings = Field(default_factory=ZPlaneSettings)
     clip: ClipSettings = Field(default_factory=ClipSettings)
     background: SegmentationBackgroundSettings = Field(
         default_factory=SegmentationBackgroundSettings
@@ -403,6 +428,19 @@ class Config(_Settings):
                     )
         if problems:
             raise _rule_error(*problems)
+        return self
+
+    @model_validator(mode="after")
+    def _planes_need_a_3d_layout(self):
+        settings = self.segmentation
+        if (settings.enabled and settings.source == "cellpose" and settings.z_planes.chosen
+                and "Z" not in self.image.axes):
+            raise _rule_error(
+                (
+                    "segmentation.z_planes",
+                    f"must be left empty for the 2D layout `{self.image.axes}`: the image has no planes",
+                )
+            )
         return self
 
     def __eq__(self, other):

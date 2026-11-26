@@ -49,15 +49,20 @@ EVAL_SETTINGS = (
 
 def pretreat_channel(image, projection="max", clip=False, clip_value=100,
                      background=True, bg_method="rolling_ball", bg_radius=200,
-                     median_px=None, gaussian_sigma_px=None):
+                     median_px=None, gaussian_sigma_px=None, z_planes=None):
     """
     Turn the segmentation channel into the 2D image given to Cellpose.
 
     image: one channel, (z, y, x) or (y, x). A 2D image is used as it is.
+    z_planes: (first, last), the planes the projection is made from, counted
+        from 0 and both included. Either may be None: from plane 0, or up to
+        the last plane. None, or (None, None), uses every plane. A plane the
+        image does not have, or planes given for a 2D image, raise ValueError.
 
     The steps run in this order:
-    1. Z projection: "max" (brightest value along Z, same number type as the
-       image) or "mean" (average along Z, a decimal (float64) image).
+    1. Z projection of the chosen planes: "max" (brightest value along Z,
+       same number type as the image) or "mean" (average along Z, a decimal
+       (float64) image).
     2. Background subtraction (when background is True): subtract_background
        with bg_method ("rolling_ball" or "tophat") and bg_radius in pixels.
        Rolling ball keeps a uint8 or uint16 image in its type; any other
@@ -77,14 +82,24 @@ def pretreat_channel(image, projection="max", clip=False, clip_value=100,
 
     With every step off, the projection is returned unchanged.
     """
-    _check_pretreatment(projection, bg_method, median_px, gaussian_sigma_px)
+    first, last = _check_pretreatment(projection, bg_method, median_px, gaussian_sigma_px, z_planes)
     image = np.asarray(image)
     if image.ndim == 3:
+        problem = plane_problem(image.shape[0], (first, last))
+        if problem is not None:
+            raise ValueError(f"Planes for the projection: {problem}.")
+        if first is not None or last is not None:
+            image = image[(first or 0):(None if last is None else last + 1)]
         image = image.max(axis=0) if projection == "max" else image.mean(axis=0)
     elif image.ndim != 2:
         raise ValueError(
             f"The segmentation channel must be a 2D (y, x) image or a 3D (z, y, x) "
             f"stack; this one has {image.ndim} dimensions."
+        )
+    elif first is not None or last is not None:
+        raise ValueError(
+            "Planes for the projection were given, but the segmentation channel is a 2D "
+            "image without planes."
         )
 
     if background:
@@ -103,16 +118,19 @@ def pretreat_channel(image, projection="max", clip=False, clip_value=100,
 
 def describe_pretreatment(projection="max", clip=False, clip_value=100,
                           background=True, bg_method="rolling_ball", bg_radius=200,
-                          median_px=None, gaussian_sigma_px=None):
+                          median_px=None, gaussian_sigma_px=None, z_planes=None):
     """
     One line naming the pre-treatment steps that are on, in the order they
     run, for figure titles and the log.
 
     Takes the same settings as pretreat_channel, for example
     "max projection | rolling ball 200 px | clip 100 | median 5 px | Gaussian 1.5 px".
+    Chosen planes are named after the projection: "max projection of planes
+    12–30", "max projection from plane 12", "max projection up to plane 30".
     """
-    _check_pretreatment(projection, bg_method, median_px, gaussian_sigma_px)
-    parts = [f"{projection} projection"]
+    first, last = _check_pretreatment(projection, bg_method, median_px, gaussian_sigma_px, z_planes)
+    planes = describe_planes((first, last))
+    parts = [f"{projection} projection {planes}" if planes else f"{projection} projection"]
     if background:
         method = {"rolling_ball": "rolling ball", "tophat": "top-hat"}[bg_method]
         parts.append(f"{method} {bg_radius:g} px")
@@ -127,8 +145,67 @@ def describe_pretreatment(projection="max", clip=False, clip_value=100,
     return " | ".join(parts)
 
 
-def _check_pretreatment(projection, bg_method, median_px, gaussian_sigma_px):
-    """Raise ValueError with a plain message for a setting that cannot be used."""
+def describe_planes(z_planes):
+    """
+    The planes of the projection in words: "of planes 12–30", "of plane 12",
+    "from plane 12" or "up to plane 30"; "" when every plane is used.
+    z_planes: (first, last) as in pretreat_channel, or None.
+    """
+    first, last = z_planes if z_planes is not None else (None, None)
+    if first is not None and last is not None:
+        return f"of plane {first}" if first == last else f"of planes {first}–{last}"
+    if first is not None:
+        return f"from plane {first}"
+    if last is not None:
+        return f"up to plane {last}"
+    return ""
+
+
+def plane_problem(n_planes, z_planes):
+    """
+    Why the planes for the projection do not fit an image of `n_planes` planes,
+    or None when they do. z_planes: (first, last) as in pretreat_channel, or None.
+
+    For example "the image has 19 planes (numbered 0 to 18), so plane 30 does
+    not exist".
+    """
+    first, last = z_planes if z_planes is not None else (None, None)
+    missing = []
+    for plane in (first, last):
+        if plane is not None and plane >= n_planes and plane not in missing:
+            missing.append(plane)
+    if not missing:
+        return None
+    has = "1 plane (plane 0)" if n_planes == 1 else f"{n_planes} planes (numbered 0 to {n_planes - 1})"
+    if len(missing) == 1:
+        absent = f"plane {missing[0]} does not exist"
+    else:
+        absent = f"planes {missing[0]} and {missing[1]} do not exist"
+    return f"the image has {has}, so {absent}"
+
+
+def _check_planes(z_planes):
+    """(first, last) of the planes for the projection; ValueError when they cannot be used."""
+    if z_planes is None:
+        return None, None
+    first, last = z_planes
+    for plane in (first, last):
+        if plane is not None and not (
+            isinstance(plane, numbers.Integral) and not isinstance(plane, bool) and plane >= 0
+        ):
+            raise ValueError(
+                f"Plane numbers for the projection must be whole numbers of 0 or more; got {plane}."
+            )
+    if first is not None and last is not None and first > last:
+        raise ValueError(f"The first plane for the projection ({first}) is after the last ({last}).")
+    return (None if first is None else int(first)), (None if last is None else int(last))
+
+
+def _check_pretreatment(projection, bg_method, median_px, gaussian_sigma_px, z_planes=None):
+    """Raise ValueError with a plain message for a setting that cannot be used.
+
+    Returns (first, last), the planes for the projection (see _check_planes).
+    """
     if projection not in PROJECTIONS:
         raise ValueError(
             f"Unknown Z projection '{projection}'. Use one of: {', '.join(PROJECTIONS)}."
@@ -152,6 +229,7 @@ def _check_pretreatment(projection, bg_method, median_px, gaussian_sigma_px):
         raise ValueError(
             f"The Gaussian filter sigma must be a number of pixels above 0; got {gaussian_sigma_px}."
         )
+    return _check_planes(z_planes)
 
 
 # Device, model and segmentation with Cellpose

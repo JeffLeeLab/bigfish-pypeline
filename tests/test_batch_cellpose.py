@@ -1087,3 +1087,158 @@ def test_pretreatment_text_in_the_order_the_steps_run(tmp_path, monkeypatch):
     [title] = titles
     assert text in title.replace("\n", " | "), title
     assert f"Segmentation: Cellpose model cpsam_v2 on channel 0 ({text})." in log_text(result.run_folder)
+
+
+# ---------------------------------------------------------------------------
+# Planes for the segmentation projection
+# ---------------------------------------------------------------------------
+
+
+def plane_problem(name, n_planes, plane):
+    return (f"{name}: the image has {n_planes} planes (numbered 0 to {n_planes - 1}), "
+            f"so plane {plane} does not exist (`segmentation.z_planes`)")
+
+
+def test_projection_of_chosen_planes_reaches_cellpose_and_the_records(tmp_path, monkeypatch):
+    from bigfish_pypeline import qc
+
+    titles = []
+    original = qc.draw_cellpose_qc
+
+    def keep(*args, **kwargs):
+        figure = original(*args, **kwargs)
+        titles.append(figure._suptitle.get_text())
+        return figure
+
+    monkeypatch.setattr(qc, "draw_cellpose_qc", keep)
+    folder = tmp_path / "input"
+    folder.mkdir()
+    generated_image(folder / "a.tif", shape=(8, 64, 64))
+    config = with_cellpose(local_config(folder, tmp_path / "out"), z_planes={"first": 2, "last": 5},
+                           background={"enabled": False})
+    model = StandInModel(n_cells=2)
+    result = run_cellpose(config, model, image_function=fake_process_image)
+    assert result.status == "finished", result.message
+
+    channel = io.read_channel(folder / "a.tif", "ZCYX", 0)
+    [call] = model.calls
+    np.testing.assert_array_equal(call["x"], channel[2:6].max(axis=0).astype(np.float32))
+    assert not np.array_equal(call["x"], channel.max(axis=0).astype(np.float32))
+
+    text = "max projection of planes 2–5 | no background subtraction"
+    [title] = titles
+    assert text in title.replace("\n", " | "), title
+    assert f"Segmentation: Cellpose model cpsam_v2 on channel 0 ({text})." in log_text(result.run_folder)
+    saved = load_config(result.run_folder / "run_config.yaml").segmentation.z_planes
+    assert (saved.first, saved.last) == (2, 5)
+
+
+def test_image_without_the_planes_fails_on_its_own(tmp_path, capsys):
+    """An image with too few planes for `segmentation.z_planes` is found from its header
+    when the run is planned, listed by `check`, and fails on its own in the run."""
+    folder = tmp_path / "input"
+    folder.mkdir()
+    generated_image(folder / "a_short.tif", shape=(4, 64, 64), seed=1)
+    generated_image(folder / "b.tif", shape=(8, 64, 64), seed=2)
+    config = with_cellpose(local_config(folder, tmp_path / "out"), z_planes={"first": 2, "last": 6})
+    problem = plane_problem("a_short.tif", 4, 6)
+    plan = batch.plan_run(config)
+    assert plan.problems == [problem, None]
+
+    settings = tmp_path / "settings.yaml"
+    save_config(config, settings)
+    assert cli.main(["check", str(settings)]) == cli.EXIT_OK
+    lines = capsys.readouterr().out.splitlines()
+    start = lines.index("Images that cannot be used (1); a run would list them as failed:")
+    assert lines[start + 1] == f"  - {problem}"
+    [cells_line] = [line for line in lines if line.startswith("Cell results:")]
+    assert "channel 0, projection of planes 2–6, device:" in cells_line
+    assert not (tmp_path / "out").exists()
+
+    model = StandInModel(n_cells=2)
+    result = run_cellpose(config, model)
+    assert result.status == "finished", result.message
+    assert len(model.calls) == 1
+    rows = image_rows(result.run_folder, "a_short")
+    assert list(rows["status"]) == ["failed", "failed"]
+    assert set(rows["reason"]) == {problem}
+    assert set(rows["segmentation_status"]) == {"failed"}
+    assert set(rows["warnings"]) == {""}
+    rows = image_rows(result.run_folder, "b")
+    assert "failed" not in set(rows["status"])
+    assert set(rows["segmentation_status"]) == {"done"}
+    text = log_text(result.run_folder)
+    assert f"a_short: segmentation failed: {problem}" in text
+    assert f"a_short: failed: {problem}" in text
+    assert label_files(result.run_folder / LABELS) == ["b_seglabels.tif"]
+
+
+@pytest.mark.parametrize("planes, plane", [({"first": 8}, 8), ({"last": 9}, 9), ({"first": 3, "last": 8}, 8)])
+def test_no_image_has_the_planes(tmp_path, planes, plane):
+    folder = tmp_path / "input"
+    folder.mkdir()
+    generated_image(folder / "a.tif", shape=(8, 64, 64))
+    config = with_cellpose(local_config(folder, tmp_path / "out"), z_planes=planes)
+    with pytest.raises(batch.BatchError) as raised:
+        run_cellpose(config, StandInModel(n_cells=2))
+    assert str(raised.value) == (
+        "None of the images can be used with these settings. The first image: "
+        + plane_problem("a.tif", 8, plane)
+    )
+    assert not (tmp_path / "out").exists()
+
+
+def test_planes_inside_the_image_are_not_a_problem(tmp_path):
+    folder = tmp_path / "input"
+    folder.mkdir()
+    generated_image(folder / "a.tif", shape=(8, 64, 64))
+    config = local_config(folder, tmp_path / "out")
+    for planes in ({"first": 7}, {"last": 7}, {"first": 0, "last": 7}, {}):
+        assert batch.plan_run(with_cellpose(config, z_planes=planes)).problems == [None]
+
+
+def test_planes_not_checked_without_cellpose(tmp_path):
+    """With label files, or segmentation off, the planes are not used."""
+    folder = tmp_path / "input"
+    folder.mkdir()
+    generated_image(folder / "a.tif", shape=(4, 64, 64))
+    labels = tmp_path / "labels"
+    labels.mkdir()
+    config = local_config(folder, tmp_path / "out")
+    label_settings = with_changes(config, lambda data: data["segmentation"].update(
+        enabled=True, source="label_files", label_folder=str(labels), z_planes={"first": 10}))
+    off = with_changes(config, lambda data: data["segmentation"].update(z_planes={"last": 10}))
+    for settings in (label_settings, off):
+        assert batch.plan_run(settings).problems == [None]
+
+
+def test_omero_image_without_the_planes(tmp_path):
+    def info(image_id, size_z):
+        return io.OmeroImageInfo(
+            image_id=image_id, name="x", size_z=size_z, size_c=2, size_t=1, size_y=16, size_x=16,
+            pixel_type="uint16", dtype=np.dtype("uint16"), voxel_size_z=200.0,
+            voxel_size_y=65.0, voxel_size_x=65.0, channel_names=["a", "b"],
+        )
+
+    config = with_cellpose(omero_config(tmp_path / "out", image_ids=[1, 2]), z_planes={"first": 2, "last": 4})
+    assert batch._image_problem(config, info(1, 5)) is None
+    assert batch._image_problem(config, info(2, 4)) == plane_problem("OMERO image 2", 4, 4)
+    with pytest.raises(batch.BatchError, match="The first image: OMERO image 1: the image has 3 planes"):
+        batch._image_problems(config, [info(1, 3), info(2, 2)], [None, None])
+    assert batch._image_problems(config, [info(1, 3), info(2, 6)], [None, None]) == [
+        plane_problem("OMERO image 1", 3, 4), None]
+
+
+def test_omero_run_with_an_image_without_the_planes(tmp_path, monkeypatch):
+    def get_omero_image_info(conn, image_id):
+        return io.OmeroImageInfo(
+            image_id=image_id, name="x", size_z=2 if image_id == 1 else 4, size_c=2, size_t=1,
+            size_y=16, size_x=16, pixel_type="uint16", dtype=np.dtype("uint16"), voxel_size_z=200.0,
+            voxel_size_y=65.0, voxel_size_x=65.0, channel_names=["a", "b"],
+        )
+
+    monkeypatch.setattr(io, "get_omero_image_info", get_omero_image_info)
+    conn = FakeConn([(1, "a.tif"), (2, "b.tif")])
+    config = with_cellpose(omero_config(tmp_path / "out", image_ids=[1, 2]), z_planes={"first": 1, "last": 3})
+    plan = batch.plan_run(config, omero_conn=conn)
+    assert plan.problems == [plane_problem("OMERO image 1", 2, 3), None]

@@ -75,6 +75,7 @@ EXPECTED_DEFAULTS = {
         "label_folder": "",
         "channel": 0,
         "projection": "max",
+        "z_planes": {"first": None, "last": None},
         "clip": {"enabled": False, "value": 100},
         "background": {"enabled": True, "method": "rolling_ball", "radius_px": 200},
         "median_px": None,
@@ -452,6 +453,91 @@ def test_label_files_need_no_folder_while_segmentation_is_off():
 def test_cellpose_segmentation_needs_no_folder():
     data = made(segmentation={"enabled": True, "source": "cellpose"})
     assert parse_config(data).segmentation.enabled
+
+
+# --- planes for the segmentation projection ----------------------------------------
+
+
+def test_planes_for_the_projection_default_to_every_plane():
+    planes = parse_config(MINIMAL).segmentation.z_planes
+    assert (planes.first, planes.last) == (None, None)
+
+
+@pytest.mark.parametrize("planes", [{"first": 12, "last": 30}, {"first": 12}, {"last": 30},
+                                    {"first": 0, "last": 0}, {"first": 5, "last": 5}])
+def test_planes_for_the_projection_are_read(planes):
+    config = parse_config(made(segmentation={"enabled": True, "z_planes": planes}))
+    found = config.segmentation.z_planes
+    assert (found.first, found.last) == (planes.get("first"), planes.get("last"))
+
+
+def test_planes_for_the_projection_survive_a_save_and_load(tmp_path):
+    config = parse_config(made(segmentation={"enabled": True, "z_planes": {"first": 12, "last": 30}}))
+    saved = tmp_path / "saved.yaml"
+    save_config(config, saved)
+    loaded = load_config(saved)
+    assert loaded == config
+    assert (loaded.segmentation.z_planes.first, loaded.segmentation.z_planes.last) == (12, 30)
+    assert yaml.safe_load(saved.read_text(encoding="utf-8"))["segmentation"]["z_planes"] == {
+        "first": 12, "last": 30}
+    one_end = parse_config(made(segmentation={"z_planes": {"last": 30}}))
+    save_config(one_end, saved)
+    assert "    first:" in saved.read_text(encoding="utf-8").splitlines()
+    assert load_config(saved) == one_end
+
+
+def test_planes_for_the_projection_written_in_one_line(tmp_path):
+    path = tmp_path / "settings.yaml"
+    path.write_text(yaml.safe_dump(MINIMAL, sort_keys=False)
+                    + "segmentation:\n  z_planes: {first: , last: }\n", encoding="utf-8")
+    planes = load_config(path).segmentation.z_planes
+    assert (planes.first, planes.last) == (None, None)
+    path.write_text(yaml.safe_dump(MINIMAL, sort_keys=False)
+                    + "segmentation:\n  z_planes: {first: 12, last: }\n", encoding="utf-8")
+    planes = load_config(path).segmentation.z_planes
+    assert (planes.first, planes.last) == (12, None)
+
+
+def test_first_plane_after_the_last_is_refused():
+    data = made(segmentation={"z_planes": {"first": 30, "last": 12}})
+    assert problems(data) == [
+        "`segmentation.z_planes.first` must not be after `last` (found first 30 and last 12)."
+    ]
+
+
+@pytest.mark.parametrize("bad", [-1, 1.5, "2", True])
+def test_plane_numbers_must_be_whole_numbers_of_zero_or_more(bad):
+    data = made(segmentation={"z_planes": {"first": bad}})
+    assert_one_message(data, "`segmentation.z_planes.first` must be a whole number of 0 or more")
+    data = made(segmentation={"z_planes": {"last": bad}})
+    assert_one_message(data, "`segmentation.z_planes.last` must be a whole number of 0 or more")
+
+
+@pytest.mark.parametrize("axes", ["YX", "CYX"])
+@pytest.mark.parametrize("planes", [{"first": 0}, {"last": 3}, {"first": 1, "last": 3}])
+def test_planes_with_a_two_dimensional_layout_are_refused_with_cellpose(axes, planes):
+    image = {"axes": axes, "voxel_size_nm": {"yx": 65}}
+    data = made(image=image, segmentation={"enabled": True, "source": "cellpose", "z_planes": planes})
+    assert problems(data) == [
+        f"`segmentation.z_planes` must be left empty for the 2D layout `{axes}`: "
+        "the image has no planes."
+    ]
+    # not used while segmentation is off or the labels come from label files
+    for segmentation in ({"enabled": False, "z_planes": planes},
+                         {"enabled": True, "source": "label_files", "label_folder": "labels",
+                          "z_planes": planes}):
+        assert parse_config(made(image=image, segmentation=segmentation))
+
+
+def test_empty_planes_with_a_two_dimensional_layout_are_accepted():
+    image = {"axes": "YX", "voxel_size_nm": {"yx": 65}}
+    data = made(image=image, segmentation={"enabled": True, "z_planes": {"first": None, "last": ""}})
+    assert parse_config(data).segmentation.z_planes.first is None
+
+
+def test_unknown_name_under_planes():
+    data = made(segmentation={"z_planes": {"frist": 3}})
+    assert_one_message(data, "`segmentation.z_planes.frist` is not a known setting", "`first`")
 
 
 @pytest.mark.parametrize("value", [0.05, 0.4, 1])

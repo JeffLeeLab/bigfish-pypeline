@@ -47,6 +47,7 @@ segmentation:
   label_folder: ""
   channel: 1
   projection: max
+  z_planes: {first: , last: }
   clip: {enabled: false, value: 100}
   background: {enabled: true, method: rolling_ball, radius_px: 200}
   median_px:

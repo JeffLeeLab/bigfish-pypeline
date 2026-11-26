@@ -179,6 +179,26 @@ def _check_channels(label, channels, n_channels):
         )
 
 
+def _plane_problem(config, label, n_planes):
+    """The reason the planes of `segmentation.z_planes` do not fit an image of
+    `n_planes` planes, or None when they do or are not used (no Cellpose, or a
+    layout without Z)."""
+    planes = config.segmentation.z_planes
+    if not uses_cellpose(config) or not planes.chosen or "Z" not in config.image.axes:
+        return None
+    problem = segmentation.plane_problem(n_planes, (planes.first, planes.last))
+    if problem is None:
+        return None
+    return f"{label}: {problem} (`segmentation.z_planes`)"
+
+
+def _check_planes(config, label, n_planes):
+    """Raise ImageReadError when the planes of `segmentation.z_planes` do not fit the image."""
+    problem = _plane_problem(config, label, n_planes)
+    if problem is not None:
+        raise io.ImageReadError(problem)
+
+
 def _check_omero_image(info, layout, channels):
     """Raise ImageReadError when an OMERO image's pixel type cannot be used, or the image
     does not fit the layout or lacks a channel."""
@@ -220,6 +240,7 @@ def _open_image(config, image_source, channels, omero_host=None, omero_port=None
         finally:
             _keep_omero_connection(reader.conn)
         _check_omero_image(info, layout, channels)
+        _check_planes(config, f"OMERO image {info.image_id}", info.size_z)
 
         def read_channel(channel):
             try:
@@ -235,6 +256,7 @@ def _open_image(config, image_source, channels, omero_host=None, omero_port=None
     io.check_image(path, layout)
     sizes = dict(zip(layout, info.shape))
     _check_channels(path.name, channels, sizes.get("C", 1))
+    _check_planes(config, path.name, sizes.get("Z", 1))
 
     def read_channel(channel):
         return io.read_channel(path, layout, channel)
@@ -1392,8 +1414,9 @@ def _image_problem(config, header, reason=None, channels=None):
     """
     The reason an image cannot be used with the settings, or None when it can,
     found from its header with the same checks the run makes: the pixel type,
-    the layout and the channels (see _needed_channels). A TIFF file is checked
-    by the reader itself (io.check_image), which reads the file header only.
+    the layout, the channels (see _needed_channels) and, with Cellpose, the
+    planes of `segmentation.z_planes`. A TIFF file is checked by the reader
+    itself (io.check_image), which reads the file header only.
 
     header: the image's ImageInfo or OmeroImageInfo, or None when it could
         not be read; `reason` then gives why.
@@ -1402,11 +1425,15 @@ def _image_problem(config, header, reason=None, channels=None):
         return reason or "the image information cannot be read"
     if channels is None:
         channels = _needed_channels(config)
+    layout = config.image.axes
     try:
         if isinstance(header, io.OmeroImageInfo):
-            _check_omero_image(header, config.image.axes, channels)
+            _check_omero_image(header, layout, channels)
+            _check_planes(config, f"OMERO image {header.image_id}", header.size_z)
         else:
-            io.check_image(header.path, config.image.axes, channels)
+            io.check_image(header.path, layout, channels)
+            sizes = dict(zip(layout, header.shape))
+            _check_planes(config, Path(header.path).name, sizes.get("Z", 1))
     except io.ImageReadError as error:
         return _one_line(error)
     return None
@@ -1497,6 +1524,7 @@ def _pretreatment_settings(config):
         bg_radius=settings.background.radius_px,
         median_px=settings.median_px,
         gaussian_sigma_px=settings.gaussian_sigma_px,
+        z_planes=(settings.z_planes.first, settings.z_planes.last),
     )
 
 
@@ -1690,6 +1718,10 @@ class _Segmenter:
         started = time.perf_counter()
         try:
             channel = self.run.read_segmentation_channel(image, notes=outcome["notes"])
+            if channel.ndim == 3:
+                label = (f"OMERO image {image.source}" if self.run.config.run.input.source == "omero"
+                         else Path(image.source).name)
+                _check_planes(self.run.config, label, channel.shape[0])
             prepared = segmentation.pretreat_channel(channel, **self.pretreatment)
             del channel
             result = segmentation.segment_cells(self.setup.model, prepared, **self.eval_settings)

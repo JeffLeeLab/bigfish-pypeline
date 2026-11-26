@@ -274,3 +274,110 @@ def test_description_background_off():
 def test_description_unknown_projection():
     with pytest.raises(ValueError, match="Unknown Z projection"):
         describe_pretreatment(projection="sum")
+
+
+# Planes for the projection
+
+@pytest.fixture
+def planes_stack():
+    """Six planes of 1 to 6 everywhere, with a bright pixel in plane 1 only."""
+    stack = np.ones((6, 20, 20), dtype=np.uint16) * np.arange(1, 7, dtype=np.uint16)[:, None, None]
+    stack[1, 5, 5] = 5000
+    return stack
+
+
+@pytest.mark.parametrize("projection", ["max", "mean"])
+@pytest.mark.parametrize("z_planes, kept", [
+    ((2, 4), slice(2, 5)),
+    ((2, None), slice(2, None)),
+    ((None, 3), slice(0, 4)),
+    ((1, 1), slice(1, 2)),
+    ((0, 5), slice(None)),
+])
+def test_projection_of_chosen_planes(planes_stack, projection, z_planes, kept):
+    got = pretreat_channel(planes_stack, projection=projection, z_planes=z_planes, **ALL_OFF)
+    chosen = planes_stack[kept]
+    expected = chosen.max(axis=0) if projection == "max" else chosen.mean(axis=0)
+    np.testing.assert_array_equal(got, expected)
+    assert got.dtype == expected.dtype
+
+
+@pytest.mark.parametrize("projection", ["max", "mean"])
+def test_bright_pixel_in_a_left_out_plane_is_not_projected(planes_stack, projection):
+    got = pretreat_channel(planes_stack, projection=projection, z_planes=(2, 5), **ALL_OFF)
+    assert got.max() < 10
+    every = pretreat_channel(planes_stack, projection=projection, **ALL_OFF)
+    assert every[5, 5] > 10
+
+
+@pytest.mark.parametrize("z_planes", [None, (None, None)])
+def test_every_plane_gives_the_same_result_as_before(z_planes):
+    image = make_image(shape=(5, 96, 96), n_spots=20, background=200, noise=15)[0]
+    settings = dict(clip=True, clip_value=600, bg_radius=12, median_px=3, gaussian_sigma_px=1.5)
+    np.testing.assert_array_equal(
+        pretreat_channel(image, z_planes=z_planes, **settings), pretreat_channel(image, **settings)
+    )
+
+
+def test_every_step_runs_after_the_projection_of_chosen_planes():
+    image = make_image(shape=(5, 96, 96), n_spots=20, background=200, noise=15)[0]
+    settings = dict(clip=True, clip_value=600, bg_radius=12, median_px=3, gaussian_sigma_px=1.5)
+    np.testing.assert_array_equal(
+        pretreat_channel(image, z_planes=(1, 3), **settings), pretreat_channel(image[1:4], **settings)
+    )
+
+
+@pytest.mark.parametrize("z_planes, plane", [((2, 6), "plane 6"), ((6, None), "plane 6"),
+                                              ((None, 9), "plane 9"), ((7, 9), "planes 7 and 9")])
+def test_plane_beyond_the_image(planes_stack, z_planes, plane):
+    with pytest.raises(ValueError) as raised:
+        pretreat_channel(planes_stack, z_planes=z_planes, **ALL_OFF)
+    verb = "does" if plane.startswith("plane ") else "do"
+    assert str(raised.value) == (
+        f"Planes for the projection: the image has 6 planes (numbered 0 to 5), so {plane} {verb} not exist."
+    )
+
+
+def test_plane_beyond_an_image_of_one_plane():
+    with pytest.raises(ValueError, match=r"the image has 1 plane \(plane 0\), so plane 1 does not exist"):
+        pretreat_channel(np.zeros((1, 10, 10), dtype=np.uint16), z_planes=(1, None), **ALL_OFF)
+
+
+@pytest.mark.parametrize("z_planes", [(0, None), (None, 0), (0, 0)])
+def test_planes_given_for_a_2d_image(z_planes):
+    with pytest.raises(ValueError) as raised:
+        pretreat_channel(np.zeros((10, 10), dtype=np.uint16), z_planes=z_planes)
+    assert str(raised.value) == (
+        "Planes for the projection were given, but the segmentation channel is a 2D image without planes."
+    )
+
+
+@pytest.mark.parametrize("z_planes, problem", [
+    ((3, 2), "The first plane for the projection (3) is after the last (2)."),
+    ((-1, None), "Plane numbers for the projection must be whole numbers of 0 or more; got -1."),
+    ((None, 2.5), "Plane numbers for the projection must be whole numbers of 0 or more; got 2.5."),
+    ((True, None), "Plane numbers for the projection must be whole numbers of 0 or more; got True."),
+])
+def test_bad_planes(planes_stack, z_planes, problem):
+    with pytest.raises(ValueError) as raised:
+        pretreat_channel(planes_stack, z_planes=z_planes)
+    assert str(raised.value) == problem
+    with pytest.raises(ValueError):
+        describe_pretreatment(z_planes=z_planes)
+
+
+@pytest.mark.parametrize("z_planes, text", [
+    (None, "max projection | rolling ball 200 px"),
+    ((None, None), "max projection | rolling ball 200 px"),
+    ((12, 30), "max projection of planes 12–30 | rolling ball 200 px"),
+    ((12, None), "max projection from plane 12 | rolling ball 200 px"),
+    ((None, 30), "max projection up to plane 30 | rolling ball 200 px"),
+    ((12, 12), "max projection of plane 12 | rolling ball 200 px"),
+])
+def test_description_names_the_planes(z_planes, text):
+    assert describe_pretreatment(z_planes=z_planes) == text
+
+
+def test_description_of_mean_projection_with_planes():
+    text = describe_pretreatment(projection="mean", z_planes=(0, 4), background=False)
+    assert text == "mean projection of planes 0–4 | no background subtraction"

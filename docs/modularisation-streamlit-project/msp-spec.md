@@ -189,7 +189,8 @@ Presets only set step switches. Every preset uses the same default values; any s
 
 **Cellpose**
 
-- One input channel, 2D. Pre-treatment, in order: Z projection (max or mean) → background subtraction (on; rolling ball, radius 200 px; or top-hat), after which values below 0 are set to 0 → clip (off; value 100) → median filter (off) → Gaussian filter (off). The clip comes after background subtraction, so its value does not depend on the camera offset; v1 clipped first.
+- One input channel, 2D. Pre-treatment, in order: Z projection (max or mean), of every plane or of the planes chosen in `segmentation.z_planes` → background subtraction (on; rolling ball, radius 200 px; or top-hat), after which values below 0 are set to 0 → clip (off; value 100) → median filter (off) → Gaussian filter (off). The clip comes after background subtraction, so its value does not depend on the camera offset; v1 clipped first.
+- `segmentation.z_planes` gives the first and last plane of the projection, counted from 0 and both included; either may be left empty (from plane 0, or up to the image's last plane). It is for cultured cells, where the lower planes hold cells spread over the coverslip and the stain of neighbours merges. Spot detection always uses every plane.
 - Cellpose 4 `CellposeModel(pretrained_model="cpsam_v2", use_bfloat16=False)`.
 - Default `eval` settings follow the Cellpose-SAM workbook: `normalize=True`, `diameter=None`, `flow_threshold=0.4`, `cellprob_threshold=0`, `min_size=15`, `batch_size=1`, `niter=None`, `do_3D=False`.
 - Device chosen automatically: CUDA, then Apple GPU (MPS), then CPU. A quick test calculation on the chosen device runs before the model loads, the device used is logged, and running on CPU triggers a warning that segmentation will be slow.
@@ -273,6 +274,7 @@ segmentation:
   label_folder: ""                 # label_files: folder with <image>_seglabels.tif
   channel: 0
   projection: max                  # max | mean
+  z_planes: {first: , last: }      # planes of the projection, counted from 0; empty = every plane
   clip: {enabled: false, value: 100}
   background: {enabled: true, method: rolling_ball, radius_px: 200}
   median_px:                       # empty = off
@@ -587,6 +589,7 @@ Only on the user's instruction, after Phase 7 and the Cellpose 4 mask review (Ph
 | Different image sizes in one batch | Each processed at its own size | end-to-end |
 | Image layout differs from the config (e.g. missing channel) | Image fails with the reason | end-to-end |
 | Channel index out of range | Stopped before processing when no image holds the channel; an image that lacks it among images that hold it fails with the reason | unit, end-to-end |
+| Plane of `segmentation.z_planes` beyond an image's planes | As for a channel: stopped before processing when no image holds the plane; otherwise that image fails with the reason. With a 2D layout the settings check refuses the setting | unit, end-to-end |
 | A file that cannot be used at the front of the list (other pixel type, colour, other axes, damaged) | That image fails with the reason and the run continues; the run stops before processing only when no image can be used | unit, end-to-end |
 | Two inputs giving the same output name | Stopped before processing with the clashing names | unit |
 | Calibration filter matches no image | Stopped before processing | unit |
