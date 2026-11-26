@@ -2203,3 +2203,12 @@ Small points left as they are:
 - `~/bigfish-testdata/phase3/` holds 1.9 GB: 1.7 GB in `rolling_ball/` (1.6 GB of saved background results in its `cache/`, which can be deleted and made again) and 0.14 GB of samples.
 - `docs/modularisation-streamlit-project/figures/` holds 5.6 MB, of which 1.9 MB is the rolling-ball comparison.
 - `msp` is 44 commits ahead of GitHub: none of the Phase 3 work has been pushed.
+
+**User's answers (26 Nov 2026):**
+
+1. The default rolling-ball radius for FISH channels stays 5 px. Nothing changes in `config.py`, the spec or the test kit.
+2. The samples are fine.
+3. The sentence on "Scale when converting" stays in the message for a refused pixel type.
+4. The tests may run in parallel: `pytest-xdist` is added to `msp-environment.yml`.
+5. A label file written by a Cellpose run shows µm in Fiji.
+6. Before sign-off, GPT-6.2 Astra (high effort, through Codex) reviews the work of tasks 3.13 to 3.18.

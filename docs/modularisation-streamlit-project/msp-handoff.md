@@ -5,15 +5,15 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 ## State
 
 - **Phases 0, 1 and 2:** done, signed off, merged into `main` and pushed. Phase 2 was signed off and merged on 24 Nov 2026 (devlog 2.8).
-- **Phase 3 (outputs, logs and QC):** every task is done and committed on `msp`. Tasks 3.1 to 3.11 are in devlog 3.1–3.11. Independent reviews by Gemini 4 Neon and GPT-6.2 Astra (devlog 3.12, findings 1–28) led to tasks 3.13 to 3.17, all done (devlog 3.13–3.17): reading images, QC figures, settings and runner, Cellpose pre-treatment and cluster centres, and the rolling-ball radius comparison. The phase review is brought up to date in devlog 3.18, with its checks run at commit `9b7936f`. Phase 3 now waits for the user: the default rolling-ball radius, the review of the samples, and the sign-off.
+- **Phase 3 (outputs, logs and QC):** every task is done and committed on `msp`. Tasks 3.1 to 3.11 are in devlog 3.1–3.11. Independent reviews by Gemini 4 Neon and GPT-6.2 Astra (devlog 3.12, findings 1–28) led to tasks 3.13 to 3.17, all done (devlog 3.13–3.17): reading images, QC figures, settings and runner, Cellpose pre-treatment and cluster centres, and the rolling-ball radius comparison. The phase review is brought up to date in devlog 3.18, with its checks run at commit `9b7936f`. On 26 Nov 2026 the user answered the open points (devlog 3.18, at its end): the rolling-ball radius stays 5 px, the samples are fine, the tests may run in parallel, and a review of tasks 3.13 to 3.18 by GPT-6.2 Astra through Codex comes before sign-off.
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
 - 1,160 tests pass in `bigfish-msp` with the full-size image (13 min), 1,157 without it and 1,154 without the Cellpose model (devlog 3.18). A foreground command is cut off after 10 minutes: run the suite in the background and in two parts (`tests/test_batch_run.py`, `tests/test_batch_cellpose.py`, `tests/test_end_to_end_outputs.py` and `tests/test_end_to_end_cellpose.py` as one part, about 6 minutes; the rest with those four deselected, about 7 minutes).
 - Everything of Phase 3 is committed on `msp` and not pushed.
 
 ## Next step
 
-1. The user chooses the default rolling-ball radius for FISH channels (devlog 3.17). If it changes: `config.py`, the spec, the tests and the test kit's expected rolling-ball tables are updated, the suite is run again and the samples are made again.
-2. The user reviews the samples listed in devlog 3.18 (QC images, `run.log`, `run_info.yaml`) and the other points "for the user to decide" there. Changes asked for are made before sign-off.
+1. The Codex review of tasks 3.13 to 3.18 (started 26 Nov 2026): check each finding against the code, record it in the devlog, and fix what is confirmed.
+2. Add `pytest-xdist` to `msp-environment.yml` and to the `bigfish-msp` env, check that the suite passes when run in parallel, and record the time.
 3. The user signs off Phase 3 and says when to merge `msp` into `main` and push. Nothing is merged or pushed before that.
 4. After the merge, Phase 4 (Optimise notebook) is planned in detail in `msp-plan.md`, starting from the points carried forward in devlog 3.11 and 3.18.
 
@@ -28,10 +28,7 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 
 - **OMERO on the real server, on a day with a stable VPN:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) to see both images finish, the "rejoining" line if the connection drops, and no session key or `WARNING:` lines in the terminal.
 - **An image for the Cellpose 4 mask review** (e.g. cultured cells), needed before Phase 8.
-- **The default rolling-ball radius for FISH channels** (5 px now): the comparison at 10, 15 and 25 px is in devlog 3.17.
-- **The wording of the message for a refused pixel type** (devlog 3.13): the orchestrator added the advice to untick "Scale when converting" in Fiji.
-- **A label file in Fiji** (devlog 3.15): open a label file written by a Cellpose run and see that Image › Properties gives the pixel size in µm.
-- **Review of the Phase 3 samples** (devlog 3.18), the decision on running the tests in parallel (the suite takes 13 minutes), and the sign-off of Phase 3 (devlog 3.18).
+- **The sign-off of Phase 3** (devlog 3.18), after the Codex review.
 - **Manual checks of the Phase 2 review** (devlog 2.8): Cellpose on the test kit, a look at a full-size run folder, and the "choices the spec does not settle" in 2.1, 2.3 and 2.4.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.
 
