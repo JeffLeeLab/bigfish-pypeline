@@ -1677,3 +1677,441 @@ def write_final_html(run_folder, image_name, picture, spots, clusters, cells, la
     path = final_html_path(run_folder, image_name, channel)
     _write_atomically(path, lambda target: target.write_text(page, encoding="utf-8"))
     return path
+
+
+# Views for choosing a threshold
+
+CHANNEL_PREVIEW_PANEL_SIZE = 4.0
+CHANNEL_PREVIEW_MAX_COLUMNS = 4
+VIEW_FIGURE_DPI = 100
+LOG_HISTOGRAM_FIGURE_SIZE = (7.0, 4.5)
+LOG_HISTOGRAM_BINS = 200
+LOG_VALUE_LABEL = "LoG value"
+LOG_VIEW_COLOUR_SCALE = "Viridis"
+PROFILE_FIGURE_SIZE = (12.0, 4.8)
+PROFILE_LINE_COLOUR = SELECTED_COLOUR
+PROFILE_CURVE_COLOUR = ELBOW_CURVE_COLOUR
+# The picture of the line profile and the first panel of the profile figure share the
+# width of the figure in these proportions.
+PROFILE_PANEL_WIDTHS = (1.0, 1.3)
+IMAGEJ_UNIT_NAME = "micron"
+
+
+def _check_picture_2d(picture, name="The picture"):
+    """The picture as an array, after checking that it is 2D (y, x) and holds values."""
+    picture = np.asarray(picture)
+    if picture.ndim != 2:
+        raise ValueError(
+            f"{name} must have 2 dimensions (y, x); it has {picture.ndim}. "
+            "Give the maximum projection, not the whole stack."
+        )
+    if picture.size == 0:
+        raise ValueError(f"{name} is empty.")
+    return picture
+
+
+def _display_limits(picture):
+    """
+    The values shown as the darkest and the brightest colour of a picture:
+    its lowest value and its DETECTION_CONTRAST_PERCENTILE-th percentile, the
+    stretch that `_stretch_for_detection` applies. The picture given is left as it is.
+    """
+    values = np.asarray(picture, dtype=np.float32)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return 0.0, 1.0
+    low = float(values.min())
+    high = float(np.percentile(values, DETECTION_CONTRAST_PERCENTILE))
+    if high <= low:
+        high = float(values.max())
+    if high <= low:
+        high = low + 1.0
+    return low, high
+
+
+def _view_title(image_name, channel, channel_name, what, extra=()):
+    """The title of a view: the image, the channel, what is shown, then the other items."""
+    items = []
+    if image_name:
+        items.append(str(image_name))
+    if channel is not None:
+        channel_text = f"channel {channel}"
+        if channel_name:
+            channel_text += f" ({channel_name})"
+        items.append(channel_text)
+    items.append(what)
+    items.extend(extra)
+    return _wrap_items(items, TITLE_LINE_WIDTH)
+
+
+def _threshold_text(threshold):
+    return f"Selected threshold = {_value_text(threshold)}"
+
+
+def _empty_figure(figsize, ncols=1, nrows=1, **kwargs):
+    figure = Figure(figsize=figsize, dpi=VIEW_FIGURE_DPI, layout="constrained")
+    FigureCanvasAgg(figure)
+    return figure, figure.subplots(nrows, ncols, squeeze=False, **kwargs)
+
+
+# Channel previews
+
+def channel_preview_title(channel, channel_name=None):
+    """The title of a channel's preview, for example "channel 2 (jim-exon)"; channels are counted from 0."""
+    return f"channel {channel}" + (f" ({channel_name})" if channel_name else "")
+
+
+def draw_channel_previews(projections, channel_names=None, image_name=None):
+    """
+    Draw the maximum projection of every channel of an image side by side, each
+    with its contrast stretched for display, and return the figure without
+    showing or saving it.
+
+    projections: one entry per channel, in channel order. An entry is a 2D
+        picture (y, x), or a 3D channel (z, y, x), which is projected with
+        `project_for_detection` (maximum along z).
+    channel_names: the channels' names, in the same order, or None. A panel
+        is titled with its channel number, counted from 0, and the name when
+        there is one.
+    image_name: written above the panels when given.
+
+    The darkest colour is the 1st percentile of a channel and the brightest the
+    99th, so panels can be compared by shape but not by brightness. The
+    pictures given are left as they are. Up to CHANNEL_PREVIEW_MAX_COLUMNS
+    panels are put in a row; more continue on the next row.
+
+    Returns a matplotlib `Figure` that is not tied to `matplotlib.pyplot`.
+    Raises ValueError when there are no channels or a picture is not 2D or 3D.
+    """
+    pictures = [project_for_detection(entry) for entry in projections]
+    if not pictures:
+        raise ValueError("There are no channels to show.")
+    names = list(channel_names) if channel_names is not None else []
+    columns = min(len(pictures), CHANNEL_PREVIEW_MAX_COLUMNS)
+    rows = -(-len(pictures) // columns)
+    figure, axes = _empty_figure(
+        (CHANNEL_PREVIEW_PANEL_SIZE * columns, CHANNEL_PREVIEW_PANEL_SIZE * rows + 0.5),
+        ncols=columns, nrows=rows,
+    )
+    for index, picture in enumerate(pictures):
+        panel = axes[index // columns, index % columns]
+        panel.imshow(_grey_levels(picture), cmap="gray", vmin=0, vmax=255)
+        name = names[index] if index < len(names) else None
+        panel.set_title(channel_preview_title(index, name), fontsize=11, fontweight="bold")
+        panel.axis("off")
+    for index in range(len(pictures), rows * columns):
+        axes[index // columns, index % columns].axis("off")
+    if image_name:
+        figure.suptitle(str(image_name), fontsize=12)
+    return figure
+
+
+# LoG view
+
+def _block_maximum(picture, max_side):
+    """
+    The picture reduced by taking the maximum of each square block of pixels,
+    so that bright spots stay visible, and the side of the block. A picture
+    whose longer side is at most `max_side` is returned as it is, with a block
+    side of 1. The block side is the smallest whole number that brings the
+    longer side down to `max_side` or less.
+    """
+    height, width = picture.shape
+    block = -(-max(height, width) // max_side)
+    if block <= 1:
+        return picture, 1
+    padded = np.pad(
+        picture.astype(np.float32, copy=False),
+        ((0, -height % block), (0, -width % block)), constant_values=-np.inf,
+    )
+    shape = (padded.shape[0] // block, block, padded.shape[1] // block, block)
+    return padded.reshape(shape).max(axis=(1, 3)).astype(picture.dtype, copy=False), block
+
+
+def _block_centres(length, block, n_blocks):
+    """The position, in pixels of the full picture, of the middle of each block along an axis."""
+    starts = np.arange(n_blocks) * block
+    sizes = np.minimum(block, length - starts)
+    return starts + (sizes - 1) / 2
+
+
+def _view_values(picture):
+    """The values a view holds: 8- and 16-bit whole numbers and float32 as they are, anything else as float32."""
+    if picture.dtype in (np.uint8, np.uint16, np.int8, np.int16, np.float32):
+        return picture
+    return picture.astype(np.float32)
+
+
+def draw_log_view(rna_log_mip, threshold=None, image_name=None, channel=None,
+                  channel_name=None):
+    """
+    Draw the LoG-filtered maximum projection as an interactive plotly figure and
+    return it, without showing or saving it. It can be zoomed and panned
+    (drag, or scroll), and the position (y, x, in pixels) and the real value
+    of the pixel under the pointer are shown, not the value of the display
+    colours.
+
+    rna_log_mip: the 2D LoG-filtered maximum projection (y, x), for example
+        the "rna_log" of `filter_channel` projected with `project_for_detection`.
+    threshold: the threshold chosen so far, or None. It is named in the
+        title as "Selected threshold = 11.0"; it is not drawn on the picture.
+    image_name, channel, channel_name: shown at the start of the title.
+
+    The darkest colour is the lowest value and the brightest the 99.9th
+    percentile, so that a few very bright pixels do not wash out the rest.
+
+    A picture with a side longer than HTML_MAX_IMAGE_SIDE pixels is reduced,
+    so that the figure stays quick to open in a notebook. Each block of
+    n x n pixels is shown as one square holding the brightest pixel of the
+    block, where n is the smallest whole number that brings the longer side
+    down to HTML_MAX_IMAGE_SIDE or less (a picture 2304 pixels on a side gets
+    blocks of 2 x 2 and is shown 1152 pixels on a side). The title says that the
+    picture is reduced and by how much. Positions stay those of the full picture:
+    a square is placed at the middle of its block (the block of 2 x 2 pixels
+    that starts at pixel 0 reads x = 0.5), so reduced pictures give positions
+    with one decimal. A picture that is not reduced gives whole-number positions.
+
+    Values of 8-bit and 16-bit whole numbers and of float32 are kept as they
+    are; any other type is held as float32. `plotly` is loaded here and not when the module is imported.
+    """
+    import plotly.graph_objects as go
+
+    picture = _check_picture_2d(rna_log_mip, "The LoG picture")
+    height, width = picture.shape
+    low, high = _display_limits(picture)
+    shown, block = _block_maximum(_view_values(picture), HTML_MAX_IMAGE_SIDE)
+    x = _block_centres(width, block, shown.shape[1])
+    y = _block_centres(height, block, shown.shape[0])
+    position = "%{y}" if block == 1 else "%{y:.1f}"
+    position_x = "%{x}" if block == 1 else "%{x:.1f}"
+
+    extra = []
+    if threshold is not None:
+        extra.append(_threshold_text(threshold))
+    if block > 1:
+        extra.append(
+            f"reduced {block} × {block}: each square is the brightest pixel of a "
+            f"{block} × {block} block (picture {width} × {height} pixels)"
+        )
+    title = _view_title(
+        image_name, channel, channel_name, "LoG-filtered maximum projection", extra
+    )
+
+    figure = go.Figure(go.Heatmap(
+        z=shown, x=x, y=y, zmin=low, zmax=high, colorscale=LOG_VIEW_COLOUR_SCALE,
+        colorbar=dict(title=dict(text=LOG_VALUE_LABEL)),
+        hovertemplate=(
+            f"y = {position}<br>x = {position_x}<br>{LOG_VALUE_LABEL} = %{{z:.6g}}<extra></extra>"
+        ),
+    ))
+    figure.update_layout(
+        title=dict(text=html.escape(title).replace("\n", "<br>"), x=0.01, font=dict(size=14)),
+        template="plotly_white",
+        xaxis=dict(range=[-0.5, width - 0.5], title="x (pixels)", constrain="domain",
+                   showgrid=False, zeroline=False),
+        yaxis=dict(range=[height - 0.5, -0.5], title="y (pixels)", scaleanchor="x",
+                   scaleratio=1, constrain="domain", showgrid=False, zeroline=False),
+        dragmode="pan",
+        margin=dict(l=60, r=20, t=80, b=50),
+    )
+    return figure
+
+
+# Line profile
+
+def _check_point(point, name, shape):
+    """A point (y, x) as two floats, after checking that it lies inside a picture of this shape (y, x)."""
+    try:
+        y, x = (float(value) for value in point)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"The {name} point must be two numbers, (y, x), for example (120, 340); got {point!r}."
+        ) from None
+    height, width = shape
+    if not (0 <= y <= height - 1 and 0 <= x <= width - 1):
+        raise ValueError(
+            f"The {name} point (y, x) = ({y:g}, {x:g}) is outside the picture, which is "
+            f"{height} pixels high and {width} pixels wide. y must be between 0 and "
+            f"{height - 1} and x between 0 and {width - 1}."
+        )
+    return y, x
+
+
+def line_profile_values(rna_log_mip, start, end):
+    """
+    The pixel values along the straight line from `start` to `end`.
+
+    rna_log_mip: the 2D picture (y, x).
+    start, end: the two ends of the line as (y, x) in pixels, counted from 0 at
+        the top left corner of the picture. Both must lie inside the picture.
+
+    The line is sampled every pixel or a little less: the number of values is
+    the length of the line in pixels, rounded up, plus one. Each value is that
+    of the pixel the sample falls in, so the values are the picture's own,
+    with no smoothing (`skimage.measure.profile_line` with `order=0`). On a
+    sloping line, one pixel can be sampled twice in a row.
+
+    Returns `(distance, values)`: arrays of equal length, the distance of each
+    sample from `start` in pixels, and its value.
+    Raises ValueError, in plain words, when a point is outside the picture or
+    the two points are the same.
+    """
+    from skimage.measure import profile_line
+
+    picture = _check_picture_2d(rna_log_mip)
+    start = _check_point(start, "start", picture.shape)
+    end = _check_point(end, "end", picture.shape)
+    if start == end:
+        raise ValueError(
+            "The start and end points are the same, so there is no line. Give two different points."
+        )
+    values = profile_line(picture, start, end, linewidth=1, order=0, mode="constant")
+    length = float(np.hypot(end[0] - start[0], end[1] - start[1]))
+    return np.linspace(0.0, length, len(values)), values
+
+
+def plot_line_profile(rna_log_mip, start, end):
+    """
+    Draw the pixel values along a straight line and return the figure,
+    without showing or saving it. It helps to read the height of a spot and of
+    the background, to choose a threshold.
+
+    rna_log_mip: the 2D picture (y, x), usually the LoG-filtered maximum projection.
+    start, end: the two ends of the line as (y, x) in pixels, counted from 0 at
+        the top left corner; both must lie inside the picture.
+
+    The left panel is the picture, with the line drawn on it from a circle
+    (start) to a cross (end). The right panel gives the values against the
+    distance along the line in pixels. The values are the picture's own (see
+    `line_profile_values`). The picture is shown from its lowest value to its
+    99.9th percentile.
+
+    Returns a matplotlib `Figure` that is not tied to `matplotlib.pyplot`.
+    Raises ValueError, in plain words, when a point is outside the picture or
+    the two points are the same.
+    """
+    picture = _check_picture_2d(rna_log_mip)
+    distance, values = line_profile_values(picture, start, end)
+    (start_y, start_x), (end_y, end_x) = (
+        (float(value) for value in start), (float(value) for value in end)
+    )
+    low, high = _display_limits(picture)
+
+    figure = Figure(figsize=PROFILE_FIGURE_SIZE, dpi=VIEW_FIGURE_DPI, layout="constrained")
+    FigureCanvasAgg(figure)
+    picture_axes, curve_axes = figure.subplots(
+        1, 2, gridspec_kw=dict(width_ratios=PROFILE_PANEL_WIDTHS)
+    )
+    picture_axes.imshow(
+        np.asarray(picture, dtype=np.float32), cmap=DETECTION_COLOUR_MAP, vmin=low, vmax=high,
+        interpolation="nearest",
+    )
+    picture_axes.plot(
+        [start_x, end_x], [start_y, end_y], color=PROFILE_LINE_COLOUR, linewidth=1.5,
+    )
+    picture_axes.plot(
+        [start_x], [start_y], marker="o", markersize=7, markerfacecolor="none",
+        color=PROFILE_LINE_COLOUR,
+    )
+    picture_axes.plot([end_x], [end_y], marker="x", markersize=8, color=PROFILE_LINE_COLOUR)
+    picture_axes.set_xlim(-0.5, picture.shape[1] - 0.5)
+    picture_axes.set_ylim(picture.shape[0] - 0.5, -0.5)
+    picture_axes.set_xlabel("x (pixels)", fontsize=10)
+    picture_axes.set_ylabel("y (pixels)", fontsize=10)
+    picture_axes.set_title(
+        f"Line from (y, x) = ({start_y:g}, {start_x:g}) to ({end_y:g}, {end_x:g})",
+        fontweight="bold", fontsize=11,
+    )
+
+    curve_axes.plot(distance, values, color=PROFILE_CURVE_COLOUR, linewidth=1.5)
+    curve_axes.set_xlim(0, max(float(distance[-1]), 1e-9))
+    curve_axes.set_xlabel("Distance along the line (pixels)", fontweight="bold", fontsize=11)
+    curve_axes.set_ylabel("Pixel value", fontweight="bold", fontsize=11)
+    curve_axes.set_title("Pixel values along the line", fontweight="bold", fontsize=11)
+    curve_axes.grid(alpha=0.3)
+    return figure
+
+
+# Histogram
+
+def draw_log_histogram(rna_log_mip, threshold=None, bins=LOG_HISTOGRAM_BINS, image_name=None,
+                       channel=None, channel_name=None):
+    """
+    Draw the histogram of the values of the LoG-filtered maximum projection and
+    return it, without showing or saving it. The count axis is logarithmic,
+    so that the few bright pixels of spots can be seen beside the many pixels of
+    the background.
+
+    rna_log_mip: the 2D picture (y, x). Values that are not numbers are left out.
+    threshold: the threshold chosen so far, or None. It is marked with a
+        vertical line named in the legend, "Selected threshold = 11.0", as in the
+        elbow plot. A threshold outside the values stays in view.
+    bins: the number of bars.
+    image_name, channel, channel_name: shown at the start of the title.
+
+    Returns a matplotlib `Figure` that is not tied to `matplotlib.pyplot`.
+    Raises ValueError when the picture has no values to count.
+    """
+    picture = _check_picture_2d(rna_log_mip, "The LoG picture")
+    values = np.asarray(picture, dtype=np.float32).ravel()
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        raise ValueError("The LoG picture has no values to count.")
+
+    figure, axes = _empty_figure(LOG_HISTOGRAM_FIGURE_SIZE)
+    axes = axes[0, 0]
+    axes.hist(values, bins=bins, log=True, color=ELBOW_CURVE_COLOUR)
+    if threshold is not None:
+        threshold = float(threshold)
+        axes.axvline(
+            threshold, color=SELECTED_COLOUR, linewidth=1.5, label=_threshold_text(threshold),
+        )
+        low = min(float(values.min()), threshold)
+        high = max(float(values.max()), threshold)
+        margin = 0.03 * max(high - low, 1e-9)
+        axes.set_xlim(low - margin, high + margin)
+        axes.legend(loc="upper right", prop={"size": 10})
+    axes.set_title(
+        _view_title(image_name, channel, channel_name, "Histogram of the LoG values"),
+        fontweight="bold", fontsize=11,
+    )
+    axes.set_xlabel(LOG_VALUE_LABEL, fontweight="bold", fontsize=12)
+    axes.set_ylabel("Number of pixels (logarithmic scale)", fontweight="bold", fontsize=11)
+    return figure
+
+
+# LoG picture as a TIFF file
+
+def write_log_projection(rna_log_mip, path, pixel_size_nm=None):
+    """
+    Save the LoG-filtered maximum projection as a TIFF file that ImageJ (Fiji)
+    opens as a single 32-bit picture, for looking at pixel values there.
+
+    rna_log_mip: the 2D picture (y, x). The values are kept as they are; the
+        file holds float32, so a picture of another type is converted
+        to float32 (whole numbers up to 16 bits stay exact).
+    path: the file to write, for example `my-image_ch2_log.tif`. The folder is
+        made when it does not exist. The file is first written under a
+        temporary name and then renamed, so a half-written file never has
+        this name, and a file already there is replaced.
+    pixel_size_nm: the pixel size of the image in nm, or None. It is saved in
+        the file in microns, in the way ImageJ reads it, so that ImageJ shows
+        distances in microns.
+
+    Returns the path of the file.
+    """
+    picture = _check_picture_2d(rna_log_mip, "The LoG picture")
+    options = {"imagej": True, "metadata": {"axes": "YX"}}
+    if pixel_size_nm is not None:
+        if not float(pixel_size_nm) > 0:
+            raise ValueError(f"The pixel size must be above 0 nm; got {pixel_size_nm!r}.")
+        per_um = 1000 / float(pixel_size_nm)
+        options.update(resolution=(per_um, per_um), metadata={"axes": "YX", "unit": IMAGEJ_UNIT_NAME})
+    path = Path(path)
+    _write_atomically(
+        path,
+        lambda target: tifffile.imwrite(
+            target, picture.astype(np.float32, copy=False), **options
+        ),
+    )
+    return path
