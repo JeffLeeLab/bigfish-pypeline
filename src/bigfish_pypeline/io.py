@@ -1193,3 +1193,210 @@ def detach_session(conn):
         conn.close(hard=False)
     except Exception:
         pass
+
+
+# Values to confirm, and lists to pick from
+
+
+@dataclass
+class ImageSuggestion:
+    """What an image's header suggests for the settings `image.axes` and `image.voxel_size_nm`.
+
+    name: file name, or the OMERO image's name and ID.
+    size_yx: height and width in pixels.
+    layout: the layout the image's own information gives, or None when it does not say.
+    possible_layouts: the layouts that can be used for this image: only `layout` when
+        it is given, otherwise every layout with the image's number of axes.
+        Empty when the image cannot be used.
+    voxel_size_nm: {"yx": ..., "z": ...} in nm, in the shape the settings want. A size
+        is None when the image gives none (or, for yx, gives different x and y sizes);
+        z is None for a layout without planes.
+    n_planes, n_channels: counted under `layout` (None when `layout` is None).
+    counts_by_layout: {layout: (planes, channels)} for each possible layout.
+    pixel_type: the pixel type in words.
+    channel_names: names of the channels when the image has them (OMERO), else [].
+    notes: things to look at before confirming.
+    problems: reasons the image cannot be used, each a plain sentence.
+    """
+
+    name: str
+    size_yx: tuple
+    layout: str | None
+    possible_layouts: tuple
+    voxel_size_nm: dict
+    n_planes: int | None
+    n_channels: int | None
+    counts_by_layout: dict
+    pixel_type: str
+    channel_names: list
+    notes: list
+    problems: list
+
+
+def _image_label(info):
+    """How a message names the image: the file name, or `OMERO image <ID>`."""
+    if isinstance(info, OmeroImageInfo):
+        return f"OMERO image {info.image_id}"
+    return Path(info.path).name
+
+
+def image_counts(info, layout):
+    """Number of planes and of channels of an image under `layout`, as (planes, channels).
+
+    `info` is what `get_image_info` or `get_omero_image_info` returns. Raises ValueError
+    when the layout does not fit the image.
+    """
+    _check_layout(layout)
+    if isinstance(info, OmeroImageInfo):
+        if sorted(layout) != sorted(info.axes):
+            raise ValueError(
+                f"The image has {info.size_z} plane(s) and {info.size_c} channel(s), "
+                f"which does not fit the layout {layout}."
+            )
+        return info.size_z, info.size_c
+    if len(layout) != len(info.shape):
+        raise ValueError(f"The layout {layout} needs {len(layout)} axes, but the image has {len(info.shape)}.")
+    sizes = dict(zip(layout, info.shape))
+    return sizes.get("Z", 1), sizes.get("C", 1)
+
+
+def _problems_with_image(info):
+    """Reasons the image cannot be used, from its header."""
+    label = _image_label(info)
+    problems = []
+    pixel_type = pixel_type_problem(info)
+    if pixel_type is not None:
+        problems.append(pixel_type)
+    if info.n_timepoints > 1:
+        problems.append(f"{label}: the image has {info.n_timepoints} time points; only one is accepted")
+    if info.n_positions > 1:
+        problems.append(f"{label}: the image has {info.n_positions} positions; only one is accepted")
+    if not problems and not isinstance(info, OmeroImageInfo) and not 2 <= len(info.shape) <= 4:
+        shape = " × ".join(str(n) for n in info.shape)
+        problems.append(
+            f"{label}: the image has {len(info.shape)} axes ({shape}); "
+            f"the layouts have 2 to 4: {', '.join(LAYOUTS)}"
+        )
+    return problems
+
+
+def _possible_layouts(info, usable):
+    if not usable:
+        return ()
+    if isinstance(info, OmeroImageInfo):
+        return tuple(layout for layout in LAYOUTS if sorted(layout) == sorted(info.axes))
+    if info.layout is not None:
+        return (info.layout,)
+    return tuple(layout for layout in LAYOUTS if len(layout) == len(info.shape))
+
+
+def suggest_image_settings(info):
+    """The layout and voxel sizes to show the user for confirmation, from an image's header.
+
+    `info` is what `get_image_info` (a TIFF file) or `get_omero_image_info` (an OMERO
+    image) returns. Returns an `ImageSuggestion`; `describe_suggestion` writes it as text.
+    """
+    problems = _problems_with_image(info)
+    possible = _possible_layouts(info, not problems)
+    layout = info.layout if possible else None
+    notes = []
+
+    if info.xy_sizes_differ:
+        yx = None
+        notes.append(
+            f"The pixel size differs between x ({info.voxel_size_x:g} nm) and y ({info.voxel_size_y:g} nm). "
+            "One pixel size is used for both: enter the value to use."
+        )
+    else:
+        yx = info.voxel_size_x if info.voxel_size_x is not None else info.voxel_size_y
+    z = info.voxel_size_z if layout is None or "Z" in layout else None
+
+    counts = {candidate: image_counts(info, candidate) for candidate in possible}
+    n_planes, n_channels = counts[layout] if layout is not None else (None, None)
+    if isinstance(info, OmeroImageInfo) and len(possible) > 1 and layout is not None:
+        notes.append(f"OMERO does not store the order of planes and channels, so {' and '.join(possible)} work equally well.")
+
+    if isinstance(info, OmeroImageInfo):
+        name = f"{info.name} (image ID {info.image_id})"
+        size_yx = (info.size_y, info.size_x)
+        channel_names = list(info.channel_names)
+    else:
+        name = Path(info.path).name
+        size_yx = tuple(int(n) for n in info.shape[-2:])
+        channel_names = []
+    pixel_type = (
+        "12-bit (read as 16-bit)"
+        if getattr(info, "bits_per_sample", None) == 12
+        else _pixel_type_text(info.dtype, getattr(info, "pixel_type", None))
+    )
+    return ImageSuggestion(
+        name=name,
+        size_yx=size_yx,
+        layout=layout,
+        possible_layouts=possible,
+        voxel_size_nm={"yx": yx, "z": z},
+        n_planes=n_planes,
+        n_channels=n_channels,
+        counts_by_layout=counts,
+        pixel_type=pixel_type,
+        channel_names=channel_names,
+        notes=notes,
+        problems=problems,
+    )
+
+
+def _plural(number, word):
+    return f"{number} {word}" if number == 1 else f"{number} {word}s"
+
+
+def _size_line(label, size):
+    if size is None:
+        return f"{label}: not given by the image, so enter it yourself"
+    return f"{label}: {size:g} nm"
+
+
+def describe_suggestion(suggestion):
+    """An `ImageSuggestion` as a few plain lines of text, for printing."""
+    lines = [f"Image: {suggestion.name}", f"Size: {suggestion.size_yx[0]} × {suggestion.size_yx[1]} pixels"]
+    if suggestion.layout is not None:
+        lines.append(
+            f"Layout: {suggestion.layout} ({_plural(suggestion.n_planes, 'plane')}, "
+            f"{_plural(suggestion.n_channels, 'channel')})"
+        )
+    elif suggestion.possible_layouts:
+        lines.append("Layout: not given by the image. It could be one of:")
+        for candidate, (planes, channels) in suggestion.counts_by_layout.items():
+            lines.append(f"  {candidate}: {_plural(planes, 'plane')}, {_plural(channels, 'channel')}")
+    else:
+        lines.append("Layout: the image cannot be used")
+    lines.append(_size_line("Pixel size in x and y", suggestion.voxel_size_nm["yx"]))
+    if suggestion.layout is None or "Z" in suggestion.layout:
+        lines.append(_size_line("Distance between planes (z)", suggestion.voxel_size_nm["z"]))
+    lines.append(f"Pixel type: {suggestion.pixel_type}")
+    if suggestion.channel_names:
+        names = ", ".join(f"{number} {name}" for number, name in enumerate(suggestion.channel_names))
+        lines.append(f"Channels: {names}")
+    lines.extend(f"Note: {note}" for note in suggestion.notes)
+    lines.extend(f"Cannot be used: {problem}" for problem in suggestion.problems)
+    return "\n".join(lines)
+
+
+def numbered_images(images):
+    """A numbered list of images as text for printing, so that one can be picked by its number.
+
+    `images` is what `list_images` returns (file paths) or what `list_omero_images` returns
+    ((image ID, name) pairs). The first image is number 0; `images[number]` is the one picked.
+    """
+    images = list(images)
+    if not images:
+        return "No images found."
+    width = len(str(len(images) - 1))
+    lines = []
+    for number, image in enumerate(images):
+        if isinstance(image, (tuple, list)):
+            image_id, name = image
+            text = f"{name}  (image ID {image_id})"
+        else:
+            text = Path(image).name
+        lines.append(f"{number:>{width}}  {text}")
+    return "\n".join(lines)

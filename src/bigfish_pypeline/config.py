@@ -5,6 +5,7 @@ is read with `load_config` and written with `save_config`. Problems in a file ar
 collected in one `ConfigError`, with one plain-English message for each.
 """
 
+import copy
 import difflib
 import os
 import types
@@ -851,4 +852,206 @@ def apply_overrides(
     if other_images:
         data.pop("resolved", None)
 
+    return parse_config(data, config.config_folder)
+
+
+# ---------------------------------------------------------------------------
+# Starting and changing a config in a notebook or an app
+# ---------------------------------------------------------------------------
+
+ASSAY_SMFISH = "smFISH"
+ASSAY_AMPLIFIED = "amplified"
+ASSAY_TYPES = (ASSAY_SMFISH, ASSAY_AMPLIFIED)
+
+# The switches each assay type sets. Subpixel fitting and the measurements are off for both.
+_ASSAY_SWITCHES = {
+    ASSAY_SMFISH: {
+        "decomposition": {"enabled": True},
+        "subpixel": {"enabled": False},
+        "clusters": {"enabled": True},
+        "measurements": {"snr": False, "intensity": False},
+    },
+    ASSAY_AMPLIFIED: {
+        "decomposition": {"enabled": False},
+        "subpixel": {"enabled": False},
+        "clusters": {"enabled": False},
+        "measurements": {"snr": False, "intensity": False},
+    },
+}
+
+_CHANNEL_EXAMPLE = "{'index': 2, 'name': 'Ago1', 'ex': 570, 'em': 610, 'assay_type': 'smFISH'}"
+
+
+def _merged(settings, changes):
+    """Copy of the dictionary `settings` with `changes` put on top.
+
+    A group of settings in both is merged setting by setting; any other value
+    (a number, text or a list) in `changes` replaces the one in `settings`.
+    """
+    result = dict(settings)
+    for name, value in changes.items():
+        if isinstance(value, dict) and isinstance(result.get(name), dict):
+            result[name] = _merged(result[name], value)
+        else:
+            result[name] = copy.deepcopy(value)
+    return result
+
+
+def _channel_with_preset(channel, place):
+    """A channel given as a dictionary, with the switches of its assay type added.
+
+    Returns (settings, problems). The other settings of the channel in `channel`
+    are kept and win over the switches of the assay type. `place` names the channel
+    in messages.
+    """
+    if not isinstance(channel, dict):
+        return None, [f"`{place}` must be written as `name: value` pairs, such as {_CHANNEL_EXAMPLE}."]
+    settings = dict(channel)
+    assay_type = settings.pop("assay_type", None)
+    if assay_type not in ASSAY_TYPES:
+        choices = _quoted_choices(ASSAY_TYPES)
+        if assay_type is None or (isinstance(assay_type, str) and not assay_type.strip()):
+            found = ""
+        else:
+            found = f" (found `{_show(assay_type)}`)"
+        close = _close_name(assay_type, ASSAY_TYPES) if isinstance(assay_type, str) else None
+        did_you_mean = f" Did you mean `{close}`?" if close else ""
+        required = "is required and " if not found else ""
+        return settings, [
+            f"`{place}.assay_type` {required}must be one of {choices}{found}. "
+            f"Use `{ASSAY_AMPLIFIED}` for amplified FISH such as HCR or RNAscope.{did_you_mean}"
+        ]
+    return _merged(_ASSAY_SWITCHES[assay_type], settings), []
+
+
+def new_config(axes, voxel_size_nm, channels, cell_results=False, microscope=None, config_folder=None):
+    """A complete, checked config built from the preset choices.
+
+    axes: the layout of the image, such as "ZCYX" (`AXES_CHOICES`).
+    voxel_size_nm: {"yx": 65, "z": 200}; leave "z" out, or None, for a 2D layout.
+    channels: one dictionary for each FISH channel, with `index`, `name`, `ex`,
+        `em` and `assay_type` (`ASSAY_SMFISH` or `ASSAY_AMPLIFIED`). Any other
+        setting of a channel may be added to it and wins over the assay type.
+    cell_results: True to get results for each cell (segmentation on).
+    microscope: optional, such as {"type": "widefield", "NA": 1.3}.
+    config_folder: folder that relative folders in the config start from.
+
+    The assay types switch decomposition and clusters on (smFISH) or off
+    (amplified); subpixel fitting and the measurements are off for both. Every
+    other setting has its usual default. Raises `ConfigError` listing every problem.
+    """
+    if not isinstance(channels, (list, tuple)):
+        raise ConfigError("`channels` must be a list with one entry for each FISH channel.")
+    problems = []
+    channel_settings = []
+    for position, channel in enumerate(channels):
+        settings, found = _channel_with_preset(channel, f"channels[{position}]")
+        channel_settings.append(settings)
+        problems.extend(found)
+    if any(settings is None for settings in channel_settings):
+        raise ConfigError(problems)
+    data = {
+        "config_version": CONFIG_VERSION,
+        "image": {"axes": axes, "voxel_size_nm": voxel_size_nm},
+        "microscope": {} if microscope is None else microscope,
+        "channels": channel_settings,
+        "segmentation": {"enabled": cell_results},
+    }
+    try:
+        config = parse_config(data, config_folder)
+    except ConfigError as error:
+        raise ConfigError(problems + [m for m in error.messages if m not in problems]) from None
+    if problems:
+        raise ConfigError(problems)
+    return config
+
+
+def update_config(config, changes):
+    """A new config with `changes` put on top of the settings of `config`.
+
+    `changes` is a dictionary written like the settings file, for example
+    {"segmentation": {"cellpose": {"diameter": 60}}}. Only the values named change;
+    a list, such as `image_ids`, is replaced as a whole. The config given is not
+    changed. Raises `ConfigError` for a misspelt name or a value that is not valid.
+    """
+    if not isinstance(changes, dict):
+        raise ConfigError(
+            "The changes must be written as a dictionary of `name: value` pairs, "
+            "for example {'segmentation': {'enabled': True}}."
+        )
+    return parse_config(_merged(config.to_dict(), changes), config.config_folder)
+
+
+def _channel_listing(config):
+    numbers = [str(channel.index) for channel in config.channels]
+    if len(numbers) == 1:
+        return f"channel {numbers[0]}"
+    return f"channels {', '.join(numbers[:-1])} and {numbers[-1]}"
+
+
+def _channel_position(config, channel_index):
+    """Place in the list of channels of the channel with this index; ConfigError when it is not there."""
+    for position, channel in enumerate(config.channels):
+        if channel.index == channel_index and not isinstance(channel_index, bool):
+            return position
+    raise ConfigError(
+        f"Channel {_show(channel_index)} is not in the settings; the settings hold {_channel_listing(config)}."
+    )
+
+
+def update_channel(config, channel_index, changes):
+    """A new config with `changes` put on top of the settings of one channel.
+
+    `channel_index` is the channel's `index`, counted from 0 in the image file.
+    `changes` is written like one channel in the settings file, for example
+    {"threshold": {"mode": "manual", "value": 12}}. Only the values named change.
+    The config given is not changed. Raises `ConfigError` when the config has no
+    such channel, for a misspelt name or for a value that is not valid.
+    """
+    position = _channel_position(config, channel_index)
+    if not isinstance(changes, dict):
+        raise ConfigError(
+            "The changes must be written as a dictionary of `name: value` pairs, "
+            "for example {'threshold': {'mode': 'manual', 'value': 12}}."
+        )
+    data = config.to_dict()
+    data["channels"][position] = _merged(data["channels"][position], changes)
+    return parse_config(data, config.config_folder)
+
+
+def add_channel(config, channel):
+    """A new config with one more FISH channel, at the end of the channels.
+
+    `channel` is written as in `new_config`: `index`, `name`, `ex`, `em` and
+    `assay_type`, and any other setting of the channel. The config given is not changed.
+    """
+    settings, problems = _channel_with_preset(channel, "channel")
+    if settings is None:
+        raise ConfigError(problems)
+    index = settings.get("index")
+    if any(existing.index == index for existing in config.channels) and not isinstance(index, bool):
+        raise ConfigError(
+            f"Channel {_show(index)} is already in the settings; the settings hold {_channel_listing(config)}."
+        )
+    data = config.to_dict()
+    data["channels"].append(settings)
+    try:
+        new = parse_config(data, config.config_folder)
+    except ConfigError as error:
+        raise ConfigError(problems + [m for m in error.messages if m not in problems]) from None
+    if problems:
+        raise ConfigError(problems)
+    return new
+
+
+def remove_channel(config, channel_index):
+    """A new config without the channel with this index. The config given is not changed.
+
+    The last channel cannot be removed: a config needs at least one.
+    """
+    position = _channel_position(config, channel_index)
+    data = config.to_dict()
+    del data["channels"][position]
+    if data.get("resolved"):
+        data["resolved"]["thresholds"].pop(channel_index, None)
     return parse_config(data, config.config_folder)
