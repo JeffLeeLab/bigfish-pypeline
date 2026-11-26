@@ -267,11 +267,18 @@ def test_elbow_values_cannot_fail_a_given_threshold(monkeypatch):
         detection.detect_spots(rna_log, SPOT_RADIUS_PX, threshold_mode="auto")
 
 
-def test_elbow_curve_without_a_bend():
-    """A flat curve never drops below the line from its first to its last point."""
+def test_elbow_curve_without_an_automatic_threshold():
+    # big-fish fails on a flat curve; a curve of one point or none is too short.
     assert detection._breaking_point(np.array([0.0, 1.0, 2.0]), np.array([3.0, 3.0, 3.0])) is None
     assert detection._breaking_point(np.array([0.0]), np.array([3.0])) is None
     assert detection._breaking_point(np.zeros(0), np.zeros(0)) is None
+
+
+def test_elbow_straight_falling_line_gets_big_fish_value():
+    # big-fish gives the last threshold for a straight falling line, as in v1.
+    thresholds, counts = np.array([0.0, 1.0, 2.0]), np.array([5.0, 4.0, 3.0])
+    assert detection._breaking_point(thresholds, counts) == 2.0
+    assert detection._breaking_point(thresholds, counts) == bf_detection.get_breaking_point(thresholds, counts)[0]
 
 
 def test_elbow_off_and_bad_arguments():

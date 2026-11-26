@@ -138,9 +138,9 @@ def get_elbow_values(rna_log, mask):
     thresholds, log of the number of spots above each one (smoothed), and the
     automatic threshold. The threshold is the value big-fish
     detection.automated_threshold_setting returns, or None when there is
-    none: when the two arrays are empty, or when the curve is too short to
-    have a bend (a single point), in which case the arrays are kept for the
-    elbow plot.
+    none: when the two arrays are empty, when the curve has a single point,
+    or when big-fish cannot give a value for the curve (for example a flat
+    one). The arrays are then kept for the elbow plot.
     """
     with np.errstate(divide="ignore", invalid="ignore"):
         thresholds = _get_candidate_thresholds(rna_log.ravel())
@@ -154,11 +154,11 @@ def get_elbow_values(rna_log, mask):
 
 
 def _breaking_point(thresholds, count_spots):
-    """The big-fish elbow value of the curve, or None when the curve has no bend.
+    """The big-fish elbow value of the curve, or None when there is none.
 
-    A curve of one point has no bend; neither has a curve that never drops
-    below the straight line from its first to its last point (big-fish then
-    fails instead of returning a value).
+    None is given for a curve of fewer than two points, and for a curve for
+    which big-fish fails instead of giving a value (for example a flat one).
+    Any other curve gets big-fish's value, also a straight falling line.
     """
     if count_spots.size < 2:
         return None

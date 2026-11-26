@@ -144,6 +144,45 @@ def test_imagej_without_axes_read_with_the_layout(tmp_path):
     np.testing.assert_array_equal(io.read_channel(path, "CYX", 2), array[2])
 
 
+def test_axes_in_metadata_that_are_not_a_layout(tmp_path):
+    # Two channels stored after X: tifffile stores each row of 12 × 2 values as one page.
+    array = np.zeros((10, 12, 2), np.uint16)
+    array[..., 1] = 100
+    path = tmp_path / "image.tif"
+    tifffile.imwrite(path, array, metadata={"axes": "YXC"}, photometric="minisblack")
+    assert io.get_image_info(path).layout is None
+    message = (
+        "image.tif: the file's own information says its axes are stored in the order YXC, "
+        "which does not match the layout CYX of this run (`image.axes` in the settings). "
+        "Save the image with its axes in the order CYX."
+    )
+    with pytest.raises(io.ImageReadError) as caught:
+        io.read_channel(path, "CYX", 0)
+    assert str(caught.value) == message
+    with pytest.raises(io.ImageReadError) as caught:
+        io.check_image(path, "CYX")
+    assert str(caught.value) == message
+
+
+def test_axes_in_metadata_in_another_order_that_is_not_a_layout(tmp_path):
+    # Y and X swapped: as many axes as the layout, in another order.
+    array = make_array("ZYX", np.uint16).transpose(0, 2, 1).copy()
+    path = tmp_path / "image.tif"
+    tifffile.imwrite(path, array, metadata={"axes": "ZXY"}, photometric="minisblack")
+    with pytest.raises(io.ImageReadError, match=r"in the order ZXY, which does not match the layout ZYX .*"
+                                                r"Save the image with its axes in the order ZYX\.$"):
+        io.read_channel(path, "ZYX", 0)
+
+
+def test_unit_time_and_channel_axes_left_out_before_comparing(tmp_path):
+    # OME metadata giving T and C of length 1: tifffile leaves them out.
+    array = make_array("ZYX", np.uint16)
+    path = tmp_path / "image.ome.tif"
+    tifffile.imwrite(path, array[np.newaxis, :, np.newaxis], ome=True, metadata={"axes": "TZCYX"})
+    assert io.get_image_info(path).layout == "ZYX"
+    np.testing.assert_array_equal(io.read_channel(path, "ZYX", 0), array)
+
+
 @pytest.mark.parametrize("kind", ["imagej", "ome"])
 def test_different_x_and_y_pixel_sizes(tmp_path, kind):
     path = write_tiff(tmp_path / "image.tif", make_array("ZYX", np.uint16), "ZYX", kind, voxel_um=(0.3, 0.07, 0.065))
@@ -373,6 +412,34 @@ def test_packed_12_bit_file(tmp_path):
         data = io.read_channel(path, "ZCYX", channel)
         assert data.dtype == np.uint16
         np.testing.assert_array_equal(data, array[:, channel])
+    assert io.get_image_info(path).bits_per_sample == 12
+    assert io.pixel_type_problem(io.get_image_info(path)) is None
+
+
+@pytest.mark.parametrize("bits,dtype", [(4, np.uint8), (10, np.uint16), (14, np.uint16)])
+def test_packed_files_of_other_bit_depths_refused(tmp_path, bits, dtype):
+    array = (make_array("ZYX", np.uint16) % 2**bits).astype(dtype)
+    path = tmp_path / "image.tif"
+    tifffile.imwrite(path, array, bitspersample=bits, imagej=True, metadata={"axes": "ZYX"})
+    with tifffile.TiffFile(path) as tif:
+        assert tif.pages[0].bitspersample == bits
+        assert tif.series[0].dtype == np.dtype(dtype)
+    expected = f"image.tif: the pixel type is {bits}-bit, which cannot be used; {CONVERT_TEXT}"
+    info = io.get_image_info(path)
+    assert info.bits_per_sample == bits
+    assert io.pixel_type_problem(info) == expected
+    with pytest.raises(io.ImageReadError) as caught:
+        io.check_image(path, "ZYX")
+    assert str(caught.value) == expected
+    with pytest.raises(io.ImageReadError) as caught:
+        io.read_channels(path, "ZYX", [0])
+    assert str(caught.value) == expected
+
+
+@pytest.mark.parametrize("dtype", DTYPES, ids=lambda d: np.dtype(d).name)
+def test_stored_bit_depth_of_accepted_files(tmp_path, dtype):
+    path = write_tiff(tmp_path / "image.tif", make_array("ZYX", dtype), "ZYX", "ome")
+    assert io.get_image_info(path).bits_per_sample == np.dtype(dtype).itemsize * 8
 
 
 # Checking an image without reading its pixels

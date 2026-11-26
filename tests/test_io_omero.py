@@ -709,6 +709,86 @@ def test_join_session_ended_on_the_server(gateway_with_router):
     assert_key_hidden(caught.value)
 
 
+def ended_session_answers():
+    """Answers of the server that say the session has ended: the key refused, or the session removed or timed out."""
+    glacier2 = pytest.importorskip("Glacier2")
+    omero = pytest.importorskip("omero")
+    return {
+        "key refused": glacier2.PermissionDeniedException(reason=f"Password check failed for '{KEY}'"),
+        "removed": omero.RemovedSessionException(message=f"Session {KEY} removed"),
+        "timed out": omero.SessionTimeoutException(message="Session timed out"),
+        "removed, in the reason": glacier2.CannotCreateSessionException(
+            reason=f"ome.conditions.RemovedSessionException: session {KEY} was removed"
+        ),
+        "timed out, in the reason": glacier2.CannotCreateSessionException(
+            reason="omero.SessionTimeoutException"
+        ),
+        "removed, as the type": omero.WrappedCreateSessionException(
+            reason="no such session", type="ome.conditions.RemovedSessionException"
+        ),
+        "timed out, as the type": omero.WrappedCreateSessionException(
+            reason="", type="ome.conditions.SessionTimeoutException"
+        ),
+    }
+
+
+def other_server_answers():
+    """Answers of the server that do not say the session has ended."""
+    glacier2 = pytest.importorskip("Glacier2")
+    omero = pytest.importorskip("omero")
+    return {
+        "service unavailable": glacier2.CannotCreateSessionException("session service unavailable"),
+        "wrapped": omero.WrappedCreateSessionException(
+            reason="database not ready", type="ome.conditions.DatabaseBusyException"
+        ),
+        "shutting down": omero.ShutdownInProgress(message="the server is shutting down"),
+    }
+
+
+@pytest.mark.parametrize("answer", list(ended_session_answers()))
+def test_join_session_ended_answers(gateway_with_router, answer):
+    router = gateway_with_router(ended_session_answers()[answer])
+    with pytest.raises(io.OmeroSessionEnded, match="Log in again") as caught:
+        io.join_session(HOST, PORT, KEY)
+    assert router.calls >= 1
+    assert_key_hidden(caught.value)
+
+
+@pytest.mark.parametrize("answer", list(other_server_answers()))
+def test_join_session_other_answers_are_a_connection_problem(gateway_with_router, answer):
+    error = other_server_answers()[answer]
+    router = gateway_with_router(error)
+    with pytest.raises(ConnectionError, match=f"OMERO server at {HOST}:{PORT}") as caught:
+        io.join_session(HOST, PORT, KEY)
+    assert not isinstance(caught.value, io.OmeroSessionEnded)
+    assert type(error).__name__ in str(caught.value)
+    assert router.calls >= 1
+    assert_key_hidden(caught.value)
+
+
+def test_join_session_service_unavailable(gateway_with_router):
+    glacier2 = pytest.importorskip("Glacier2")
+    gateway_with_router(glacier2.CannotCreateSessionException("session service unavailable"))
+    with pytest.raises(ConnectionError) as caught:
+        io.join_session(HOST, PORT, KEY)
+    assert str(caught.value) == (
+        f"the OMERO server at {HOST}:{PORT} could not rejoin the session "
+        "(CannotCreateSessionException: session service unavailable)"
+    )
+
+
+def test_reader_join_refused_for_another_reason_fails_the_image_only(gateway_with_router):
+    glacier2 = pytest.importorskip("Glacier2")
+    gateway_with_router(glacier2.CannotCreateSessionException("session service unavailable"))
+    first = FakeConn([FakeImage(1, "a", make_data())], info_failures=[lost()])
+    reader = io.OmeroImageReader(first, 1, HOST, PORT, KEY, notes=[])
+    with pytest.raises(io.ImageReadError, match="could not reconnect") as caught:
+        reader.info()
+    assert not isinstance(caught.value, io.OmeroSessionEnded)
+    assert "session service unavailable" in str(caught.value)
+    assert reader.conn is None
+
+
 def test_join_session_timeout_is_a_connection_problem(gateway_with_router):
     # omero-py tries three times after a connection timeout, then BlitzGateway answers "not joined".
     router = gateway_with_router(Ice.ConnectTimeoutException())

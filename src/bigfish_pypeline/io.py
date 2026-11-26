@@ -17,6 +17,9 @@ LABEL_SUFFIX = "_seglabels"
 
 # Axis letters that tifffile uses for several positions (Micro-Manager positions, mosaic tiles).
 POSITION_AXES = ("R", "M")
+# Letters tifffile uses for axes whose meaning the file does not give: I for a sequence
+# of planes, Q for an unknown axis.
+STAND_IN_AXES = ("I", "Q")
 
 # Length units found in ImageJ and OME metadata, as the number of nm in one unit.
 NM_PER_UNIT = {
@@ -47,6 +50,9 @@ VOXEL_SIZE_TOLERANCE = 0.001
 
 # Pixel types that can be used: 8-bit and 16-bit unsigned. A 12-bit image is read as 16-bit.
 ACCEPTED_DTYPES = (np.dtype(np.uint8), np.dtype(np.uint16))
+# Bits stored per pixel in a TIFF file that can be used. tifffile also reads packed
+# files of other depths (for example 10-bit) as 8-bit or 16-bit values.
+ACCEPTED_BITS = (8, 12, 16)
 CONVERT_HELP = (
     "Convert the image to 16-bit, for example in Fiji with Image › Type › 16-bit "
     "(https://imagej.net/ij/docs/menus/image.html#type), then run it again. "
@@ -66,6 +72,8 @@ class ImageInfo:
     `shape` and `axes` are as stored in the file, with axes of length 1 left out.
     `layout` is the layout the metadata suggests, or None when the metadata does not say.
     Voxel sizes are in nm, or None when the metadata does not give them.
+    `bits_per_sample` is the number of bits stored for each pixel value (12 for a packed
+    12-bit file, which is read as 16-bit), or None when not known.
     """
 
     path: Path
@@ -78,6 +86,7 @@ class ImageInfo:
     voxel_size_z: float | None
     voxel_size_y: float | None
     voxel_size_x: float | None
+    bits_per_sample: int | None = None
 
     @property
     def nbytes(self):
@@ -237,16 +246,24 @@ def _counts(tif, series):
     return n_timepoints, n_positions
 
 
-def _suggested_layout(series):
-    """Layout given by the file's metadata, or None.
+def _file_axes(series):
+    """Axes given by the file's metadata, in the order stored, or None when the metadata does not give them.
 
-    Only ImageJ, OME and tifffile's own metadata record the axes. For a plain TIFF,
-    or metadata without axes, tifffile guesses letters such as I or Q, which are
-    not layouts.
+    Only ImageJ, OME and tifffile's own metadata record the axes; axes of length 1
+    are left out for ImageJ and OME files. For a plain TIFF, or metadata without
+    axes, tifffile uses stand-in letters such as I or Q, so those axes are unknown.
     """
     if series.kind not in ("imagej", "ome", "shaped"):
         return None
     axes = series.axes
+    if any(letter in STAND_IN_AXES for letter in axes):
+        return None
+    return axes
+
+
+def _suggested_layout(series):
+    """Layout given by the file's metadata, or None when the metadata gives no axes or axes that are not a layout."""
+    axes = _file_axes(series)
     return axes if axes in LAYOUTS else None
 
 
@@ -281,6 +298,7 @@ def get_image_info(path):
             n_timepoints, n_positions = _counts(tif, series)
             voxel_size_z, voxel_size_y, voxel_size_x = _voxel_sizes(tif, series)
             layout = _suggested_layout(series)
+            bits_per_sample = int(series.keyframe.bitspersample)
         except Exception as error:
             raise ImageReadError(f"{path.name}: the file header cannot be read ({_reason(error)})") from error
     return ImageInfo(
@@ -294,6 +312,7 @@ def get_image_info(path):
         voxel_size_z=voxel_size_z,
         voxel_size_y=voxel_size_y,
         voxel_size_x=voxel_size_x,
+        bits_per_sample=bits_per_sample,
     )
 
 
@@ -326,25 +345,32 @@ def pixel_type_problem(info):
     """The reason an image's pixel type cannot be used, or None when it can.
 
     `info` is the information of a TIFF file (ImageInfo) or of an OMERO image (OmeroImageInfo).
+    For a TIFF file, the bits stored per pixel must be 8, 12 or 16 as well.
     """
     if isinstance(info, OmeroImageInfo):
-        label, dtype, omero_type = f"OMERO image {info.image_id}", info.dtype, info.pixel_type
-    else:
-        label, dtype, omero_type = Path(info.path).name, info.dtype, None
-    return _pixel_type_message(label, dtype, omero_type)
+        return _pixel_type_message(f"OMERO image {info.image_id}", info.dtype, info.pixel_type)
+    return _pixel_type_message(Path(info.path).name, info.dtype, bits=info.bits_per_sample)
 
 
-def _pixel_type_message(label, dtype, omero_type=None):
+def _pixel_type_message(label, dtype, omero_type=None, bits=None):
+    """The reason a pixel type cannot be used, or None when it can.
+
+    `bits` is the number of bits a TIFF file stores per pixel, or None when not known.
+    """
     if dtype is not None and np.dtype(dtype).newbyteorder("=") in ACCEPTED_DTYPES:
-        return None
+        if bits is None or bits in ACCEPTED_BITS:
+            return None
+        found = f"{bits}-bit"
+    else:
+        found = _pixel_type_text(dtype, omero_type)
     return (
-        f"{label}: the pixel type is {_pixel_type_text(dtype, omero_type)}, which cannot be used; "
+        f"{label}: the pixel type is {found}, which cannot be used; "
         f"only 8-bit, 12-bit and 16-bit images are accepted. {CONVERT_HELP}"
     )
 
 
-def _check_pixel_type(label, dtype, omero_type=None):
-    message = _pixel_type_message(label, dtype, omero_type)
+def _check_pixel_type(label, dtype, omero_type=None, bits=None):
+    message = _pixel_type_message(label, dtype, omero_type, bits)
     if message is not None:
         raise ImageReadError(message)
 
@@ -372,19 +398,20 @@ def _plane_sizes(path, tif, series, layout):
             f"needs {len(layout)}"
         )
     # A file whose metadata does not give its axes is read with the layout as it is.
-    axes = _suggested_layout(series)
+    axes = _file_axes(series)
     if axes is not None and axes != layout:
+        other_layout = f", or run it with the layout {axes}" if axes in LAYOUTS else ""
         raise ImageReadError(
             f"{path.name}: the file's own information says its axes are stored in the order {axes}, "
             f"which does not match the layout {layout} of this run (`image.axes` in the settings). "
-            f"Save the image with its axes in the order {layout}, or run it with the layout {axes}."
+            f"Save the image with its axes in the order {layout}{other_layout}."
         )
     return dict(zip(layout[:-2], series.shape[:-2]))
 
 
 def _check_image(path, tif, series, layout, channels):
     """Check the pixel type, the layout and the channels from the file header; returns the plane sizes."""
-    _check_pixel_type(path.name, series.dtype)
+    _check_pixel_type(path.name, series.dtype, bits=series.keyframe.bitspersample)
     sizes = _plane_sizes(path, tif, series, layout)
     n_channels = sizes.get("C", 1)
     available = "1 channel (channel 0)" if n_channels == 1 else f"{n_channels} channels (0–{n_channels - 1})"
@@ -597,6 +624,9 @@ WINDOWS_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 # OMERO session keys look like 1b2c3d4e-0000-1111-2222-333344445555.
 SESSION_KEY_PATTERN = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
+# Errors of the OMERO server that say a session was removed or has timed out.
+ENDED_SESSION_ERRORS = ("RemovedSessionException", "SessionTimeoutException")
+
 # OMERO length units (as written in the unit's name), as the number of nm in one unit.
 OMERO_NM_PER_UNIT = {
     "NANOMETER": 1.0,
@@ -743,7 +773,14 @@ def _hide_key(text, key=None):
 
 def _omero_reason(error, key=None):
     """Short reason for an omero-py error, with any session key removed."""
-    return _hide_key(f"{type(error).__name__}: {_reason(error)}", key)
+    text = _reason(error)
+    # Ice errors print as "exception ::Module::Name" followed by their fields; the
+    # server's explanation is in the field `reason` or `message`.
+    if text.startswith("exception ::"):
+        detail = getattr(error, "reason", None) or getattr(error, "message", None)
+        if isinstance(detail, str) and detail.strip():
+            text = _reason(detail)
+    return _hide_key(f"{type(error).__name__}: {text}", key)
 
 
 def _known_key(conn):
@@ -1067,10 +1104,11 @@ def join_session(host, port, key):
 
     The connection has no keep-alive and is not closed on exit: the process that logged
     in keeps the session alive and closes it. Finish with `detach_session(conn)`.
-    Raises OmeroSessionEnded when the server refuses to rejoin the session, and
-    ConnectionError when the server cannot be reached or does not answer in time.
+    Raises OmeroSessionEnded when the server refuses the session key or says that the
+    session was removed or has timed out, and ConnectionError for any other problem: the
+    server cannot be reached, does not answer in time, or cannot rejoin the session for
+    another reason (for example its session service is not available).
     """
-    import Ice
     from omero.gateway import BlitzGateway
 
     conn = BlitzGateway(host=host, port=int(port), secure=True)
@@ -1084,15 +1122,46 @@ def join_session(host, port, key):
         ) from None
     if not joined:
         detach_session(conn)
-        # BlitzGateway answers "not joined" both when the server refuses the session
-        # and when the server cannot be reached in time. Only an answer from the
-        # server (an Ice.UserException, e.g. Glacier2.PermissionDeniedException)
-        # means that the session has ended.
-        if any(isinstance(error, Ice.UserException) for error in join_errors):
+        # BlitzGateway answers "not joined" whatever went wrong; the kept errors say why.
+        if any(_session_has_ended(error) for error in join_errors):
             raise OmeroSessionEnded("The OMERO session has ended. Log in again and start a new run.")
-        reason = _omero_reason(join_errors[-1], key) if join_errors else "no answer from the server"
+        if not join_errors:
+            raise ConnectionError(f"cannot reach the OMERO server at {host}:{port} (no answer from the server)")
+        error = join_errors[-1]
+        reason = _omero_reason(error, key)
+        if _is_server_answer(error):
+            raise ConnectionError(f"the OMERO server at {host}:{port} could not rejoin the session ({reason})")
         raise ConnectionError(f"cannot reach the OMERO server at {host}:{port} ({reason})")
     return conn
+
+
+def _is_server_answer(error):
+    """True when `error` is an answer sent by the OMERO server, not a problem in reaching it."""
+    import Ice
+
+    return isinstance(error, Ice.UserException)
+
+
+def _session_has_ended(error):
+    """True when an error met while joining a session says that the session has ended.
+
+    The server refuses the session key (Glacier2.PermissionDeniedException), or says
+    that the session was removed or has timed out. The last two can come on their own,
+    or be named in a Glacier2.CannotCreateSessionException, which the server uses for
+    every reason it cannot create a session.
+    """
+    import Glacier2
+    import omero
+    import omero.gateway  # noqa: F401 (loads omero.RemovedSessionException)
+
+    if isinstance(error, (Glacier2.PermissionDeniedException, omero.RemovedSessionException,
+                          omero.SessionTimeoutException)):
+        return True
+    if isinstance(error, Glacier2.CannotCreateSessionException):
+        # omero.WrappedCreateSessionException gives the server's own error in `type`.
+        text = f"{getattr(error, 'type', '')} {error.reason}"
+        return any(name in text for name in ENDED_SESSION_ERRORS)
+    return False
 
 
 def _keep_join_errors(conn):
