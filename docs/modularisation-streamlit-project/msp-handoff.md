@@ -5,18 +5,15 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 ## State
 
 - **Phases 0, 1 and 2:** done, signed off, merged into `main` and pushed. Phase 2 was signed off and merged on 24 Nov 2026 (devlog 2.8).
-- **Phase 3 (outputs, logs and QC):** every task is done and committed on `msp`. Tasks 3.1 to 3.11 are in devlog 3.1–3.11. Independent reviews by Gemini 4 Neon and GPT-6.2 Astra (devlog 3.12, findings 1–28) led to tasks 3.13 to 3.17, all done (devlog 3.13–3.17): reading images, QC figures, settings and runner, Cellpose pre-treatment and cluster centres, and the rolling-ball radius comparison. The phase review is brought up to date in devlog 3.18, with its checks run at commit `9b7936f`. On 26 Nov 2026 the user answered the open points (devlog 3.18, at its end): the rolling-ball radius stays 5 px, the samples are fine, the tests may run in parallel, and a review of tasks 3.13 to 3.18 by GPT-6.2 Astra through Codex comes before sign-off. That review is in devlog 3.19 (findings 29–40, three of them serious). The user asked for all of them to be fixed: tasks 3.20 (`io.py`, `detection.py`) and 3.21 (`batch.py`, `cli.py`, `segmentation.py`) were started on 26 Nov 2026 and are not yet reviewed or committed, so changes in those files and their tests in the working tree are the executors' unreviewed work.
+- **Phase 3 (outputs, logs and QC):** every task is done and committed on `msp`. Tasks 3.1 to 3.11 are in devlog 3.1–3.11. Three independent reviews (devlog 3.12, findings 1–28) led to tasks 3.13 to 3.17 (devlog 3.13–3.17) and the review of 3.18. The user answered the open points on 26 Nov 2026 (devlog 3.18, at its end): the rolling-ball radius stays 5 px, the samples are fine, the tests may run in parallel. A fourth review, by GPT-6.2 Astra through Codex (devlog 3.19, findings 29–40), was asked for before sign-off; all its findings are fixed (devlog 3.20, 3.21) and the state after the fixes is in devlog 3.22. Phase 3 now waits for the user's sign-off.
 - **OMERO:** the fix for a dropped connection and for the session key in the terminal is committed and tested with stand-ins for the server only (devlog, "OMERO fix: second try and a clean terminal"). The check on the real server is still to be run by the user.
-- 1,160 tests pass in `bigfish-msp` with the full-size image (13 min), 1,157 without it and 1,154 without the Cellpose model (devlog 3.18). A foreground command is cut off after 10 minutes: run the suite in the background and in two parts (`tests/test_batch_run.py`, `tests/test_batch_cellpose.py`, `tests/test_end_to_end_outputs.py` and `tests/test_end_to_end_cellpose.py` as one part, about 6 minutes; the rest with those four deselected, about 7 minutes).
+- 1,197 tests pass in `bigfish-msp` with the full-size image (devlog 3.22). Run the suite in parallel, in two commands, about 5 and a half minutes in all: `conda run -n bigfish-msp python -m pytest -n 6 -m "not full_image"`, then `conda run -n bigfish-msp python -m pytest -m full_image` (the full-size tests need about 5 GB each and must not run side by side). One test at a time the suite takes 13 minutes, and a foreground command is cut off after 10 minutes, so run it in the background.
 - Everything of Phase 3 is committed on `msp` and not pushed.
 
 ## Next step
 
-1. Review, check and commit tasks 3.20 and 3.21 (plan), and record them in the devlog. The spec is updated where a fix changes it (5.3, 7.3, 13).
-2. Task 3.22: add `pytest-xdist` to `msp-environment.yml` and to the `bigfish-msp` env, check that the suite passes when run in parallel (full-size tests one at a time) and record the time; rerun the whole suite; make the samples again where a message or a figure changed; update devlog 3.18.
-3. Task 3.23 (plan): a setting that limits the projection for Cellpose to some planes, tested on the cultured-cell crop added to `tests/data/` (devlog, "Cultured-cell test image and task 3.23 planned"). It follows 3.22, because 3.21 changes `segmentation.py`.
-4. The user signs off Phase 3 and says when to merge `msp` into `main` and push. Nothing is merged or pushed before that.
-5. After the merge, Phase 4 (Optimise notebook) is planned in detail in `msp-plan.md`, starting from the points carried forward in devlog 3.11 and 3.18.
+1. The user reads devlog 3.19 to 3.22 (the fourth review, its fixes and the changes in behaviour they bring), signs off Phase 3 and says when to merge `msp` into `main` and push. Nothing is merged or pushed before that.
+2. After the merge, Phase 4 (Optimise notebook) is planned in detail in `msp-plan.md`, starting from the points carried forward in devlog 3.11, 3.18 and 3.22.
 
 ## How the work is run
 
@@ -27,9 +24,9 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 
 ## Waiting on the user
 
-- **OMERO on the real server, on a day with a stable VPN:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) to see both images finish, the "rejoining" line if the connection drops, and no session key or `WARNING:` lines in the terminal.
+- **OMERO on the real server, on a day with a stable VPN:** rerun `bigfish-pypeline batch ~/bigfish-testdata/phase2/omero/omero_batch.yaml` (images 5806 and 5795, username already set) to see both images finish, the "rejoining" line if the connection drops, and no session key or `WARNING:` lines in the terminal. The rejoining code changed in 3.13 and 3.20; what the server sends for an expired session key could not be checked without it.
 - **The Cellpose 4 mask review** on the cultured-cell image in `~/bigfish-testdata/cultured_cells/` (planes 12–30), after task 3.23 and before Phase 8.
-- **The sign-off of Phase 3** (devlog 3.18), after the Codex review.
+- **The sign-off of Phase 3** (devlog 3.18 and 3.22).
 - **Manual checks of the Phase 2 review** (devlog 2.8): Cellpose on the test kit, a look at a full-size run folder, and the "choices the spec does not settle" in 2.1, 2.3 and 2.4.
 - Optional checks from the Phase 1 review that the user has not reported on: trying `check` and `batch` on the test kit, and reading the "choices the spec does not settle" in devlog 1.2, 1.3, 1.8, 1.9 and 1.10.
 
@@ -55,7 +52,8 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 
 ## Worth knowing
 
-- Only 8-bit, 12-bit and 16-bit images are read; other pixel types are refused with how to convert them. A TIFF file whose own axes differ from the layout of the run fails (a Fiji hyperstack is always `ZCYX`) (devlog 3.13).
+- Only 8-bit, 12-bit and 16-bit images are read (for a TIFF file, 8, 12 or 16 bits stored per pixel); other pixel types are refused with how to convert them. A TIFF file whose own axes differ from the layout of the run fails (a Fiji hyperstack is always `ZCYX`) (devlog 3.13, 3.20).
+- Every image is checked from its header when a run is planned. A run stops before it starts only when no image can be used; an image that cannot be used fails on its own, and `check` lists it (devlog 3.21).
 - The final QC shows only the cells of `cells.csv`, and clusters are drawn as outlines (devlog 3.14).
 - Cellpose pre-treatment clips after background subtraction, and cluster centres always have decimals (devlog 3.16). Both depart from v1 by the user's decision.
 - An executor cut off by a lost connection can be resumed with its context by sending it a message; its edits stay in the working tree.

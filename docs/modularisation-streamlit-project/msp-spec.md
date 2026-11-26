@@ -95,7 +95,7 @@ The versions listed are targets. The versions actually installed are recorded in
 | numpy, scipy, scikit-image, scikit-learn, matplotlib, pandas, tifffile, pyyaml, tqdm | conda-forge | current; scikit-image < 0.27; pandas 3 only if big-fish tests pass, otherwise < 3 |
 | pytorch | conda-forge | 2.14.1 (selects CUDA, Apple GPU or CPU build per machine) |
 | zeroc-ice, omero-py | conda-forge | 3.6.5, 5.22.x |
-| pydantic, plotly, tk, jupyterlab, ipykernel, pytest | conda-forge | current |
+| pydantic, plotly, tk, jupyterlab, ipykernel, pytest, pytest-xdist | conda-forge | current |
 | streamlit | conda-forge | current, pinned (Phase 5) |
 | cellpose | pip | 4.2.1.1 |
 | imagecodecs | pip | current, pinned; reads packed 12-bit and compressed TIFF files |

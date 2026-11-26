@@ -26,6 +26,7 @@ dependencies:
   - jupyterlab=4.6.6
   - ipykernel=7.4.0
   - pytest=9.2.0
+  - pytest-xdist=3.8.0  # runs the tests in parallel: python -m pytest -n 4
   - pip=26.2.2
   - pip:
       - cellpose==4.2.1.1  # pip only; conda-forge stops at 4.1.1, which has no cpsam_v2

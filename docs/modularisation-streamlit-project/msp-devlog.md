@@ -2091,6 +2091,8 @@ Done by Opus 5.5 (medium) in `segmentation.py` and `clusters.py`, commit `9b7936
 
 ### 3.18 Phase 3 review brought up to date (26 Nov 2026)
 
+After the fourth review (3.19), its fixes (3.20, 3.21) and the tests in parallel, the latest numbers and changes in behaviour are in entry 3.22.
+
 The checks of 3.11 run again after tasks 3.13 to 3.17, at commit `9b7936f`. Each suite run was made in two parts, in the background.
 
 | Check | Result |
@@ -2316,3 +2318,54 @@ The run finished: 4 image(s) processed; 3 channel(s) failed. See images.csv and 
 **Checked by the orchestrator** with the real command: a folder of a packed 10-bit file, a three-sample file with the axes `YXC`, a 6000 × 6000 colour file and the test kit crop, in that order, with `workers: auto`. `check` lists the first three with their reasons and ends with 0. `batch` ends with 0: the three are failed rows with their reasons, the crop gives 692 spots, the number of workers is worked out from the crop alone (0.5 GB per worker), and the last lines are those above.
 
 **Choices the plan does not settle:** `run.log` now holds the run folder twice, at its start and before the summary; a label file that cannot be recorded gives a line in `run.log`, not a warning in `images.csv`.
+
+### 3.22 Tests in parallel, and the review after the fourth review's fixes (26 Nov 2026)
+
+**Tests in parallel.** `pytest-xdist` 3.8.0 is installed in `bigfish-msp` from conda-forge and listed in `msp-environment.yml` (user's answer in 3.18). It brought one other package, `execnet` 2.1.2; nothing else in the env changed. The tests that need the full-size image must not run side by side (about 5 GB each), so the suite is run in two commands:
+
+```
+conda run -n bigfish-msp python -m pytest -n 6 -m "not full_image"
+conda run -n bigfish-msp python -m pytest -m full_image
+```
+
+| Run | Result |
+|---|---|
+| Without the full-size image, 6 processes | 1,194 passed, 3 min 19 s |
+| The same, 4 processes, twice | 1,194 passed, 5 min 31 s and 4 min 16 s |
+| The full-size tests, one at a time | 3 passed, 2 min 8 s |
+| Whole suite one test at a time, with the full-size image (commit `e4805a4`) | 1,197 passed (136 and 1,061), 13 min 13 s |
+
+In parallel the whole suite takes about 5 and a half minutes, within the aim of 8 minutes set in 3.8 (deviation 12 of 3.11 and 3.18). No test failed in any of the three parallel runs, and no worker or `caffeinate` process was left afterwards. Without `-n` the tests run one at a time as before.
+
+**After the fixes of 3.20 and 3.21** (findings 29 to 40 of the fourth review):
+
+- Every finding has a test that failed on the code as it was. The suite grew from 1,160 to 1,197 tests.
+- The comparisons with the v1 reference pass unchanged; the fixes change no table.
+- The six small samples were made again (`~/bigfish-testdata/phase3/samples/`): same counts as in 3.18, the final QC of the test kit is the same file byte for byte, and `terminal.txt` now ends with the run folder, the summary and the final message, in that order. The full-size sample of 3.18 was not made again: no figure changed.
+- Not run again after 3.20 and 3.21: the suite as on a computer without the Cellpose model, and the checks of the main env (no file of v1 and nothing in the main env was touched).
+
+**Changes in behaviour since the user's review of 3.18**, all from the fourth review:
+
+1. A batch stops before it starts only when no image at all can be used. An image that cannot be used, also the first in the list, fails on its own and the run goes on (3.21). A channel index that only some images lack no longer stops the run.
+2. Packed TIFF files of 4, 10 or 14 bits are refused; only 8, 12 and 16 bits stored per pixel are accepted (3.20).
+3. A TIFF file whose metadata gives any axes other than the layout of the run fails, not only one of the five layouts in another order (3.20).
+4. The last line in the terminal is the message with the failed and skipped channels; the run folder comes before the summary (3.21).
+5. A failure to rejoin the OMERO session stops the run only when the server refuses the session key or says the session was removed or timed out (3.20).
+
+**Deviations added**
+
+| # | Deviation | Entry |
+|---|---|---|
+| 12 | Now: the whole suite takes about 5 and a half minutes in parallel, 13 minutes one test at a time. | here |
+| 24 | The check of the settings against the first image (Phase 1, spec 7.1) is replaced by a check of every image's header; the run stops before it starts only when no image can be used. Orchestrator's choice in answer to finding 35; spec 7.1 and 13 changed. | 3.21 |
+| 25 | Packed 10- and 14-bit TIFF files are refused, which reverses the choice recorded in 3.13. Orchestrator's choice in answer to finding 33, following the user's decision on pixel types to the letter. | 3.20 |
+
+**Points carried forward, added**
+
+30. Phase 5: the app can show `plan.problems` (the reason each image cannot be used) before a run starts, as `check` does.
+31. Phase 6: an odd file in the input folder fails on its own; the documentation should say that `check` lists such files before a run.
+32. Left as it is: a stop from the Cellpose step that arrives while late results are collected after a lost worker is seen one pass later (3.21).
+
+**Not verified, for the user's OMERO check on the real server:** what the server sends when a session key has expired (3.20).
+
+**Housekeeping:** `msp` is 53 commits ahead of GitHub; nothing of Phase 3 has been pushed.
