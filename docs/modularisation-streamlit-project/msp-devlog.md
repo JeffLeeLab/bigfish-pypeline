@@ -1651,6 +1651,8 @@ Waiting for the user's review of the samples.
 
 ### 3.11 Phase 3 review (24 Nov 2026)
 
+The numbers after the fixes of 3.13 to 3.17 are in entry 3.18.
+
 Checks run in a fresh shell, at commit `bf270e0`. One command is cut off after 10 minutes, so each suite run was made in two parts.
 
 | Check | Result |
@@ -2086,3 +2088,118 @@ Done by Opus 5.5 (medium) in `segmentation.py` and `clusters.py`, commit `9b7936
 **Departure from v1.** The `clusters` array of the `.npz` files and the centre columns of `clusters.csv` always hold decimal numbers. In v1 they held whole numbers when subpixel fitting was off, and decimals when it was on. The tests that compared the centres exactly with the v1 reference now ask for the same clusters and spot numbers and for each centre less than 1 px above v1's on each axis.
 
 **Tests changed:** the pre-treatment tests of 2.1 (new order, camera offset above the clip value, no negative values after a mean projection with either method); the five comparisons of cluster centres with v1 (test kit as configured and with the automatic threshold, the `.npz` files, the end-to-end run with label files, and decomposition on the crop).
+
+### 3.18 Phase 3 review brought up to date (26 Nov 2026)
+
+The checks of 3.11 run again after tasks 3.13 to 3.17, at commit `9b7936f`. Each suite run was made in two parts, in the background.
+
+| Check | Result |
+|---|---|
+| Whole suite, with the full-size image | 1,160 passed (128 and 1,032), none skipped, 13 min 0 s in all |
+| The same without the full-size image (`-m "not full_image"`) | 1,157 passed (128 and 1,029); run by the executor of 3.16 after its last change |
+| The same on a computer without the Cellpose model (model folder set to an empty folder) | 1,154 passed (125 and 1,029), 6 skipped, 11 min 51 s |
+| v1 imports in the main env (`image_utils`, `omero_tools` from `src/`, Python 3.9.23, Cellpose 3.1.1.2) | work as before |
+| Main env | `conda env export` identical to the export stored with the reference run |
+| v1 files (`environment.yml`, `image_utils.py`, `omero_tools.py`) | unchanged since `v1.0` |
+| `msp-environment.yml` | one line added: `imagecodecs==2026.11.11`, already installed (3.13). `pyproject.toml` unchanged |
+| Worker and `caffeinate` processes left after the tests | none |
+
+Phase 3 "done when" (plan):
+
+| Condition | Result | Entry |
+|---|---|---|
+| A full run on the test kit produces every output | yes | 3.6, 3.8 |
+| Repeating the run from `run_config.yaml` gives the same tables | yes | 3.8 |
+| The user has reviewed sample QC images and the log | the samples, made again, are with the user | below |
+| The `workers: auto` estimate is confirmed with the QC outputs on | confirmed (3.9). The fixes change no step that holds a full-size channel in memory; the estimate was not measured again | 3.9 |
+| The confirmed findings of 3.12 are fixed | findings 1 to 28, each with a test | 3.13–3.15 |
+| The decisions after 3.12 are carried out | pixel types, pre-treatment order, exact cluster centres, cluster outlines, the final message, checksums: done. The rolling-ball radius is compared; the default waits for the user | 3.13–3.17 |
+
+**What tasks 3.13 to 3.17 changed for a user**
+
+- Images that are not 8-bit, 12-bit or 16-bit are refused with how to convert them, and a TIFF file whose own axes differ from the layout of the run fails with a message (3.13).
+- The final QC shows only the cells of `cells.csv`; clusters are outlines; the elbow plot, the Cellpose QC figure and the calibration plot say what they show (3.14).
+- The settings check refuses values the steps cannot use; `calibration.csv` has the column `elbow_threshold`; the last line of a run counts failed and skipped channels; `run_info.yaml` records the label and model files read (3.15).
+- Cellpose pre-treatment clips after background subtraction; cluster centres are exact (3.16).
+- 9,979 lines in `src/bigfish_pypeline/`, 1,160 tests.
+
+**Deviations added to those of 3.11**
+
+| # | Deviation | Entry |
+|---|---|---|
+| 12 | Now: the whole suite takes 13 min with the full-size image, against an aim of 8 minutes. | 3.8, here |
+| 16 | 32-bit float images are refused, where the spec had them processed. User's decision; spec 5.3 and 13 changed. | 3.12, 3.13 |
+| 17 | Clusters are drawn as outlines, not v1's filled shapes. User's decision. | 3.14 |
+| 18 | Cellpose pre-treatment clips after background subtraction, where v1 clipped before, and sets values below 0 to 0 after background subtraction. User's decision; spec 5.7 changed. | 3.16 |
+| 19 | Cluster centres always have decimals, in `clusters.csv` and in the `clusters` array of the `.npz` files, where v1 gave whole pixels with subpixel fitting off. User's decision; spec 5.6 and 8.2 changed. | 3.16 |
+| 20 | `run_info.yaml` has the key `files_read` and four more package versions; `calibration.csv` has the column `elbow_threshold`. Spec 8.2 and 8.4 changed. | 3.15 |
+| 21 | The measurements of 3.17 were made by the Opus executor, not by the orchestrator, who checked them with a separate script. | 3.17 |
+| 22 | Three small changes were written by the orchestrator: the sentence on "Scale when converting" in the message for a refused pixel type, the rule that the elbow values cannot fail a channel with a given threshold, and the wording of one docstring. | 3.13, 3.15, 3.16 |
+| 23 | A result that arrives in the same pass as a stop is not kept, and `run.log` gives the stop message at the end of the log. | 3.15 |
+
+**Samples, made again** (`~/bigfish-testdata/phase3/samples/`, by `make_samples.py` in that folder; each has its `settings.yaml`, the text the terminal showed and the run folder):
+
+| Sample | Folder | Shows |
+|---|---|---|
+| Test kit with its label file | `kit_label_files_png/` | elbow plot with the new axis, detection plot and final QC with cluster outlines (44 cells), `.npz` file |
+| The same with the final QC as HTML | `kit_label_files_html/` | the interactive page |
+| The same with `drop_border_cells` on | `kit_border_cells_dropped/` | the final QC with 26 cells; the log line "44 cells in the label image, 26 kept" |
+| Test kit with Cellpose | `kit_cellpose/` | the Cellpose QC figure with "image after pre-treatment" and "no diameter set (image used at its own scale)" (43 cells; masks not judged) |
+| Calibrated threshold, four small images | `calibrated_four_images/` | `calibration.csv` with `elbow_threshold`, the calibration plot |
+| The same with a lower limit of 14 | `calibrated_lower_limit/` | three of the four images raised from 13 to 14, marked on the plot |
+| Full-size image with Cellpose | `full_size_cellpose/` | the QC images at full size: 36,867 spots, 265 clusters and 1,287 cells, as in the run of 3.9 for this image; 6 min 7 s |
+
+The crop's QC images: [elbow plot](figures/phase3/crop_ch2_elbow.png), [detection plot](figures/phase3/crop_ch2_detection.png), [final QC](figures/phase3/crop_ch2_final.png), [final QC with the border cells left out](figures/phase3/crop_ch2_final_border_cells_dropped.png); the calibration plots [without](figures/phase3/calibration_four_images.png) and [with a lower limit](figures/phase3/calibration_lower_limit.png).
+
+Looked at by the orchestrator: every sample finished without a warning; the logs, `run_info.yaml` and `calibration.csv` hold the new items; the figures above and the full-size detection plot. The run folders of 3.9 named in 3.10 keep the old look of the figures.
+
+**Points carried forward, added to those of 3.11**
+
+Phase 4 and Phase 5:
+
+11. `io.check_image` and `io.pixel_type_problem` check an image from its header; the notebook and the app should use them before reading pixels.
+12. The final QC functions draw only the cells of the cells table they are given (3.14).
+13. From the reviews: freeing Cellpose's GPU memory while an abandoned segmentation still runs; the check for damaged files is not made for use from several threads, which matters if the app reads images itself.
+
+Phase 6 (documentation):
+
+14. Converting an image to 16-bit in Fiji: the "Scale when converting" box, and a 16-bit signed image, which needs another route.
+15. A Fiji hyperstack is stored `ZCYX`, so the layout of the run must say so.
+16. The rolling-ball radius is in pixels, so the same setting means another size at another pixel size.
+17. SNR values depend on the background method and on how far the ring lies from the spot; they cannot be compared between rolling-ball and top-hat runs.
+18. The spot-radius formula for a confocal takes a very small pinhole; a spinning disk is nearer the widefield case. On the test image the radius is 0.99 px in Y and X, so a small change in wavelength or pixel size makes the detection window larger.
+19. With decomposition and subpixel fitting both on, the spots of one focus are pulled towards the same peak.
+20. The size of the HTML final QC (about 12 MB for a full-size image and channel).
+21. With a nuclear label image the tables still say "cells", and spots above and below a nucleus count as nuclear.
+22. The reference-spot picture is not the spot that decomposition fits; each QC picture sets its own contrast.
+23. Counts above 2,000 spots change slightly with the image name (renamed files, a local copy against the OMERO image), because the seed comes from the name.
+24. The defaults were checked on one specimen and its crops.
+25. A manual threshold and a `min_spots` value chosen with top-hat do not carry over to rolling ball at 5 px; from 10 px up the threshold does (3.17).
+
+Small points left as they are:
+
+26. The calibration plot's axis shows decimals for whole-number thresholds.
+27. The Cellpose QC figure counts every cell Cellpose found, also with `drop_border_cells` on.
+28. In a run with label files, an image the runner marks failed has no segmentation status in `images.csv`.
+29. If a later version of the OMERO library joins a session in another way, an ended session would be reported for each image as a connection problem; the tests with the real library would then fail (3.13).
+
+**For the user to decide**
+
+- The default rolling-ball radius for FISH channels (3.17). If it changes, `config.py`, the spec and the test kit's expected rolling-ball tables are updated before sign-off.
+- Whether the tests may run in parallel (`pytest-xdist` in `msp-environment.yml`); the suite now takes 13 minutes.
+- The sentence on "Scale when converting" in the message for a refused pixel type (3.13): keep it in the message, or in the documentation only.
+
+**Manual checks for the user**
+
+1. The samples above: the QC images, `run.log` and `run_info.yaml`. Are the pictures, the wording and the file names what you expect?
+2. Open a label file written by a Cellpose run in Fiji, e.g. the one in `samples/kit_cellpose/` under `labels/`, and see that Image › Properties gives the pixel size in µm (3.15).
+3. Try `bigfish-pypeline check` on a settings file with a value out of range, e.g. `alpha: 1.5`, and on a folder that holds a 32-bit image: are the messages clear?
+4. Read the "choices the plan does not settle" and "changes in behaviour" in entries 3.13, 3.14 and 3.15.
+5. The manual checks of 3.11 that are still open: the HTML final QC in a browser, and the test kit run from the command line.
+6. Still open from Phase 2: the OMERO fix on the real server, which now also covers the new rejoining code of 3.13, and an image for the Cellpose mask review.
+
+**Housekeeping**
+
+- `~/bigfish-testdata/phase3/` holds 1.9 GB: 1.7 GB in `rolling_ball/` (1.6 GB of saved background results in its `cache/`, which can be deleted and made again) and 0.14 GB of samples.
+- `docs/modularisation-streamlit-project/figures/` holds 5.6 MB, of which 1.9 MB is the rolling-ball comparison.
+- `msp` is 44 commits ahead of GitHub: none of the Phase 3 work has been pushed.
