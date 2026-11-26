@@ -348,6 +348,26 @@ def test_update_channel_uses_the_channel_index_not_the_position(config):
     assert [c.name for c in changed.channels] == ["first", "ch2"]
 
 
+def test_channel_gives_the_settings_of_the_channel_with_that_index(config):
+    assert config.channel(0) is config.channels[0]
+    assert config.channel(2) is config.channels[1]
+    assert config.channel(2).index == 2
+
+
+def test_channel_unknown_channel_names_the_channels_held(config):
+    assert messages(lambda c, i: c.channel(i), config, 5) == [
+        "Channel 5 is not in the settings; the settings hold channels 0 and 2."
+    ]
+    assert messages(lambda c, i: c.channel(i), remove_channel(config, 0), 0) == [
+        "Channel 0 is not in the settings; the settings hold channel 2."
+    ]
+
+
+@pytest.mark.parametrize("bad_index", [True, "2", 2.5, None])
+def test_channel_index_must_be_one_of_the_channels(config, bad_index):
+    assert "is not in the settings" in messages(lambda c, i: c.channel(i), config, bad_index)[0]
+
+
 def test_update_channel_does_not_change_the_config_given_and_keeps_its_folder(config, tmp_path):
     before = config.to_dict()
     changed = update_channel(config, 2, {"clusters": {"radius_nm": 300}})

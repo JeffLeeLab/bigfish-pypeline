@@ -646,3 +646,178 @@ def test_importing_the_module_does_not_load_plotly_or_pyplot(tmp_path):
 
     assert done.returncode == 0, done.stderr
     assert "ok" in done.stdout
+
+
+# ---------------------------------------------------------------------------
+# Reference spot
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def crop_detection(crop_channels):
+    """The crop's smFISH channel filtered, with its spots found at a manual threshold of 18."""
+    filtered = detection.filter_channel(crop_channels[FISH_CHANNEL], SPOT_RADIUS_PX)
+    detected = detection.detect_spots(
+        filtered["rna_log"], SPOT_RADIUS_PX, threshold_mode="manual", threshold=18, elbow=True
+    )
+    return filtered, detected
+
+
+def _spot_panels(figure):
+    """The axes that hold a picture (the colour bar is not one of them)."""
+    return [axes for axes in figure.axes if axes.images]
+
+
+def test_reference_spot_has_one_panel_per_plane_on_one_colour_scale():
+    spot = np.arange(5 * 4 * 4, dtype=np.uint16).reshape(5, 4, 4)
+
+    figure = qc.draw_reference_spot(spot, image_name="slide 3", channel=2, channel_name="exon")
+
+    assert isinstance(figure, Figure)
+    panels = _spot_panels(figure)
+    assert [axes.get_title() for axes in panels] == [f"plane {n} of 5" for n in range(1, 6)]
+    limits = {image.get_clim() for axes in panels for image in axes.images}
+    assert limits == {(0.0, float(spot.max()))}
+    assert np.array_equal(np.asarray(panels[2].images[0].get_array()), spot[2])
+    assert figure.get_suptitle() == "slide 3 | channel 2 (exon) | reference spot"
+
+
+def test_reference_spot_of_a_2d_image_is_one_panel():
+    figure = qc.draw_reference_spot(np.ones((5, 5)) * 7)
+
+    panels = _spot_panels(figure)
+    assert [axes.get_title() for axes in panels] == ["single plane"]
+    assert figure.get_suptitle() == "reference spot"
+
+
+def test_reference_spot_with_many_planes_shows_evenly_spaced_ones_and_says_so():
+    spot = np.random.default_rng(0).poisson(20, (15, 6, 6))
+
+    figure = qc.draw_reference_spot(spot)
+
+    titles = [axes.get_title() for axes in _spot_panels(figure)]
+    assert len(titles) == qc.REFERENCE_SPOT_MAX_PANELS
+    assert titles[0] == "plane 1 of 15" and titles[-1] == "plane 15 of 15"
+    assert "9 of 15 planes, evenly spaced" in figure.get_suptitle()
+
+
+def test_reference_spot_of_a_flat_spot_still_gives_a_figure():
+    figure = qc.draw_reference_spot(np.full((3, 4, 4), 9))
+
+    assert len(_spot_panels(figure)) == 3
+
+
+def test_reference_spot_without_a_spot_or_with_a_wrong_shape_is_refused():
+    with pytest.raises(ValueError, match="decomposition is switched off or was skipped"):
+        qc.draw_reference_spot(None)
+    with pytest.raises(ValueError, match="1 dimensions"):
+        qc.draw_reference_spot(np.ones(5))
+    with pytest.raises(ValueError, match="4 dimensions"):
+        qc.draw_reference_spot(np.ones((2, 2, 2, 2)))
+
+
+def test_reference_spot_does_not_change_the_spot():
+    spot = np.random.default_rng(0).poisson(30, (5, 5, 5)).astype(np.uint16)
+    before = spot.copy()
+
+    qc.draw_reference_spot(spot)
+
+    assert np.array_equal(spot, before)
+
+
+def test_reference_spot_of_the_crop(crop_channels, crop_detection):
+    from bigfish_pypeline import steps
+    from bigfish_pypeline.config import load_config
+    from conftest import TEST_DATA, CROP_NAME
+
+    config = load_config(TEST_DATA / f"{CROP_NAME}_config.yaml")
+    filtered, detected = crop_detection
+    decomposed = steps.decompose(
+        config, config.channels[0], CROP_NAME, filtered["rna"], detected["spots"],
+        steps.spot_radius(config, config.channels[0])["spot_radius_nm"],
+    )
+
+    figure = qc.draw_reference_spot(decomposed["reference_spot"], CROP_NAME, 2, "jim-exon")
+
+    assert len(_spot_panels(figure)) == decomposed["reference_spot"].shape[0]
+
+
+# ---------------------------------------------------------------------------
+# Threshold in words
+# ---------------------------------------------------------------------------
+
+def _detected(spots=5, threshold=18.0, auto_threshold=None, elbow=True):
+    """What `steps.detect` gives, with an elbow curve that bends at about 12."""
+    thresholds = np.arange(1.0, 40.0)
+    counts = np.log(1 + 400 * np.exp(-thresholds / 6)) + (thresholds < 12) * 3.0
+    return {
+        "spots": np.zeros((spots, 3), dtype=np.int64),
+        "threshold": threshold,
+        "auto_threshold": auto_threshold,
+        "elbow_thresholds": thresholds if elbow else None,
+        "elbow_counts": counts if elbow else None,
+        "warning": None,
+    }
+
+
+def test_threshold_text_for_a_manual_value_names_the_automatic_one_beside_it():
+    from bigfish_pypeline.qc import _elbow_method_value
+
+    detected = _detected(spots=473, threshold=18.0)
+    automatic = _elbow_method_value(detected["elbow_thresholds"], detected["elbow_counts"])
+
+    lines = qc.describe_threshold(detected, "manual")
+
+    assert lines[0] == "Threshold used: 18.0 (manual)."
+    assert lines[1] == f"The automatic threshold of this image would be {automatic:.1f}."
+    assert lines[-1] == "473 spots found."
+
+
+def test_threshold_text_for_a_calibrated_value_names_the_automatic_one_too():
+    lines = qc.describe_threshold(_detected(threshold=14.5), "calibrated")
+
+    assert lines[0] == "Threshold used: 14.5 (calibrated)."
+    assert lines[1].startswith("The automatic threshold of this image would be ")
+
+
+def test_threshold_text_for_an_automatic_value_is_one_line_and_the_count():
+    lines = qc.describe_threshold(_detected(threshold=13.0, auto_threshold=13.0), "auto")
+
+    assert lines == ["Threshold used: 13.0 (automatic).", "5 spots found."]
+
+
+def test_threshold_text_says_when_the_lower_limit_raised_the_automatic_value():
+    lines = qc.describe_threshold(_detected(threshold=15.0, auto_threshold=11.0), "auto", lower_limit=15)
+
+    assert lines[0] == "Threshold used: 15.0 (automatic)."
+    assert lines[1] == (
+        "The automatic threshold of this image is 11.0; it was raised to the lower limit of 15.0."
+    )
+
+
+def test_threshold_text_with_a_lower_limit_that_did_not_act_has_no_extra_line():
+    lines = qc.describe_threshold(_detected(threshold=13.0, auto_threshold=13.0), "auto", lower_limit=5)
+
+    assert len(lines) == 2
+
+
+def test_threshold_text_without_a_threshold_says_there_are_no_spots():
+    detected = _detected(spots=0, threshold=None, elbow=False)
+
+    lines = qc.describe_threshold(detected, "auto")
+
+    assert len(lines) == 1 and "no candidate spots" in lines[0]
+
+
+def test_threshold_text_for_a_manual_value_without_an_elbow_curve():
+    lines = qc.describe_threshold(_detected(threshold=18, elbow=False), "manual")
+
+    assert lines[1] == "The elbow method gives no automatic threshold for this image."
+
+
+def test_threshold_text_of_the_crop(crop_detection):
+    _, detected = crop_detection
+
+    lines = qc.describe_threshold(detected, "manual")
+
+    assert lines[0] == "Threshold used: 18.0 (manual)."
+    assert lines[-1] == f"{len(detected['spots'])} spots found."

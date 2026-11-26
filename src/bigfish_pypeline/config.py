@@ -503,6 +503,13 @@ class Config(_Settings):
 
     # -- other helpers --------------------------------------------------------
 
+    def channel(self, channel_index):
+        """The settings of the channel with this index (its number in the image file).
+
+        Raises `ConfigError` when the config has no such channel.
+        """
+        return self.channels[_channel_position(self, channel_index)]
+
     def to_dict(self):
         """Settings as plain Python values, in the order of the file."""
         data = self.model_dump()

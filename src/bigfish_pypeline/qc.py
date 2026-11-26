@@ -2115,3 +2115,126 @@ def write_log_projection(rna_log_mip, path, pixel_size_nm=None):
         ),
     )
     return path
+
+
+# Reference spot and threshold, as shown in the notebook
+
+REFERENCE_SPOT_MAX_PANELS = 9
+REFERENCE_SPOT_PANEL_SIZE = 2.6
+
+
+def _planes_to_show(n_planes, max_panels):
+    """Positions of the planes drawn: all of them, or evenly spaced ones, the first and last included."""
+    if n_planes <= max_panels:
+        return list(range(n_planes))
+    return sorted({int(round(position)) for position in np.linspace(0, n_planes - 1, max_panels)})
+
+
+def draw_reference_spot(reference_spot, image_name=None, channel=None, channel_name=None):
+    """
+    Draw the reference spot of decomposition, plane by plane, and return the
+    figure without showing or saving it.
+
+    reference_spot: the "reference_spot" of `steps.decompose` (z, y, x), or a
+        2D picture (y, x) for a 2D image. It is the typical single spot of the
+        image; decomposition uses it to tell how many spots a dense region holds.
+    image_name, channel, channel_name: shown at the start of the title.
+
+    Every plane is drawn on one colour scale, from the lowest to the highest
+    value of the spot, so that the planes can be compared. A spot with more
+    than REFERENCE_SPOT_MAX_PANELS planes is drawn with evenly spaced planes;
+    the title says so.
+
+    Returns a matplotlib `Figure` that is not tied to `matplotlib.pyplot`.
+    Raises ValueError, in plain words, when there is no reference spot to draw.
+    """
+    if reference_spot is None:
+        raise ValueError(
+            "There is no reference spot to draw: decomposition is switched off or was skipped."
+        )
+    spot = np.asarray(reference_spot)
+    if spot.ndim == 2:
+        spot = spot[np.newaxis]
+    if spot.ndim != 3 or spot.size == 0:
+        raise ValueError(
+            "The reference spot must be a picture (y, x) or a stack of planes (z, y, x); "
+            f"it has {np.asarray(reference_spot).ndim} dimensions."
+        )
+    n_planes = spot.shape[0]
+    shown = _planes_to_show(n_planes, REFERENCE_SPOT_MAX_PANELS)
+    low, high = float(spot.min()), float(spot.max())
+    if high <= low:
+        high = low + 1.0
+
+    figure, axes = _empty_figure(
+        (REFERENCE_SPOT_PANEL_SIZE * len(shown) + 1.0, REFERENCE_SPOT_PANEL_SIZE + 0.9),
+        ncols=len(shown),
+    )
+    axes = axes[0]
+    for panel, plane in zip(axes, shown):
+        picture = panel.imshow(
+            spot[plane].astype(np.float32), cmap=DETECTION_COLOUR_MAP, vmin=low, vmax=high,
+            interpolation="nearest",
+        )
+        label = f"plane {plane + 1} of {n_planes}" if n_planes > 1 else "single plane"
+        panel.set_title(label, fontsize=10)
+        panel.axis("off")
+    figure.colorbar(picture, ax=list(axes), shrink=0.8, label="Pixel value")
+
+    extra = []
+    if len(shown) < n_planes:
+        extra.append(f"{len(shown)} of {n_planes} planes, evenly spaced")
+    figure.suptitle(
+        _view_title(image_name, channel, channel_name, "reference spot", extra),
+        fontsize=11, fontweight="bold",
+    )
+    return figure
+
+
+def describe_threshold(detected, threshold_mode, lower_limit=None):
+    """
+    The threshold of a channel and the number of spots it gave, as text lines
+    for printing; the automatic threshold of the image is named beside the
+    threshold used.
+
+    detected: what `steps.detect` returned (called with `elbow=True`, so that
+        the automatic value can be found for a manual or calibrated threshold).
+    threshold_mode: "manual", "auto" or "calibrated".
+    lower_limit: the channel's lower limit, or None when none is set.
+
+    Returns a list of sentences.
+    """
+    used = detected.get("threshold")
+    n_spots = len(detected["spots"])
+    auto_value = detected.get("auto_threshold")
+    if auto_value is None and _has_elbow_values(
+        detected.get("elbow_thresholds"), detected.get("elbow_counts")
+    ):
+        auto_value = _elbow_method_value(detected["elbow_thresholds"], detected["elbow_counts"])
+
+    if used is None:
+        return [
+            "No threshold was found: the elbow method found no candidate spots, "
+            "so there are no spots in this channel."
+        ]
+    words = {"manual": "manual", "auto": "automatic", "calibrated": "calibrated"}
+    lines = [f"Threshold used: {_value_text(used)} ({words.get(threshold_mode, threshold_mode)})."]
+    raised = (
+        threshold_mode == "auto" and lower_limit is not None
+        and detected.get("auto_threshold") is not None
+        and float(used) > float(detected["auto_threshold"])
+    )
+    if raised:
+        lines.append(
+            f"The automatic threshold of this image is {_value_text(detected['auto_threshold'])}; "
+            f"it was raised to the lower limit of {_value_text(lower_limit)}."
+        )
+    elif threshold_mode != "auto":
+        if auto_value is None:
+            lines.append("The elbow method gives no automatic threshold for this image.")
+        else:
+            lines.append(
+                f"The automatic threshold of this image would be {_value_text(auto_value)}."
+            )
+    lines.append(f"{n_spots} spots found.")
+    return lines
