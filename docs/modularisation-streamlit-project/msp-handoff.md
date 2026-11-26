@@ -13,7 +13,7 @@ Where the work stands, for whoever picks it up next. Updated 26 Nov 2026. Detail
 
 ## Next step
 
-1. Phase 4, as planned in `msp-plan.md`: the user's first look at the notebook in JupyterLab (what to look at is in devlog 4.5, "Not verified"), then the notebook's cells for steps 10 to 13 (the lines each cell calls are in the report summarised in devlog 4.6, first part; the three points "left for task 4.6" in devlog 4.5 still apply to the notebook), 4.7 and 4.8.
+1. Phase 4, as planned in `msp-plan.md`: the user's first look at the notebook in JupyterLab (what to look at is in devlog 4.5, "Not verified"), then the notebook's cells for steps 10 to 13 (what each cell calls is listed in devlog 4.6, first part, and shown from end to end by the tests `test_notebook_chain_...` in `tests/test_notebook_steps.py`; the three points "left for task 4.6" in devlog 4.5 still apply to the notebook), 4.7 and 4.8.
 2. When the user has looked at the Cellpose QC figures of task 3.23 and says so: merge `msp` into `main` and push (ask first, as always).
 
 ## How the work is run
