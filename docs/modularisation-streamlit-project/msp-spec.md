@@ -62,6 +62,7 @@ src/bigfish_pypeline/       installable package
     measurements.py         per-spot SNR and intensity
     segmentation.py         pre-treatment, Cellpose 4, label-file loading, device selection
     cells.py                assignment of spots and clusters to cells, cell table
+    steps.py                the steps of one channel, each reading its settings from the config; used by the batch, the notebook and the app
     outputs.py              tables, run folder, run record, combining per-image files
     qc.py                   QC figures
     batch.py                batch runner (process pool, logging, progress, cancel)

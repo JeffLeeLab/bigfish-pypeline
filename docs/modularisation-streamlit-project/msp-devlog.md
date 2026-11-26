@@ -2445,3 +2445,73 @@ Each function gives a figure and saves nothing, like the other `draw_...` functi
 
 **Not verified:** how the LoG view looks and feels in JupyterLab (only its data, title, pointer text and size were checked), and the TIFF file in Fiji (its tags and the package's own reader give the right pixel size). Both are part of the user's first look at the notebook after task 4.5.
 
+### 4.1 Steps shared with the batch (26 Nov 2026)
+
+Done by Opus 5.5 (medium): the new module `steps.py`, `batch.py`, and `tests/test_steps.py` (48 tests). The orchestrator read the changes line by line against the old function and ran the suite. With tasks 4.1 and 4.2 together, 1,488 tests pass with the full-size image (1,485 in parallel in 3 min 59 s, then the 3 full-size tests in 2 min 7 s).
+
+**What moved.** The batch's function for one channel is now a sequence of calls to `steps.py`. Every step takes the config and the channel's settings, then what the step before gave, and a step that is switched off still returns the same kind of result, so a caller can always call every step in order:
+
+| Function | Reads from the settings | Gives |
+|---|---|---|
+| `spot_radius` | voxel sizes, wavelengths, microscope | spot radius in pixels and in nm |
+| `filter_image` | background method and radius | the channel after background subtraction, and its LoG-filtered copy |
+| `threshold_settings`, `detect` | threshold mode, value, lower limit, calibrated value | spots, the threshold used, the automatic value, the elbow values when asked |
+| `bailout_reason` | bailout switch and limit | the reason the channel is skipped, or nothing |
+| `decompose` | decomposition switch, alpha, beta, the run's seed with the image name and channel | spots after decomposition, the reference spot, the warning |
+| `fit_subpixel` | subpixel switch | subpixel positions, or nothing |
+| `find_clusters` | cluster switch, radius, minimum spots | clusters and the cluster of each spot, built on the subpixel positions when there are any |
+| `measure` | SNR and intensity switches | the measurements at the pixel positions |
+| `assign_to_cells` | `drop_border_cells` | the cell of each spot and cluster, and the cells |
+| `make_tables` | names, voxel sizes, `outputs.npz` | the spots, clusters and cells tables and the `.npz` arrays |
+
+- No chain function was added: running one whole image in memory is task 4.4, and the notebook calls the steps one by one.
+- `ChannelError`, `get_ndim`, `get_voxel_size` and `run_spot_columns` moved to `steps.py` and are still available from `batch` under the same names.
+- The order of the steps, the warnings, the QC material and the points where the large images are freed are unchanged.
+
+**Results unchanged**
+
+- The key test calls the steps one by one, as the notebook will, and compares with what the batch writes for the tissue crop: the spots, clusters and cells files are identical byte for byte and the `.npz` arrays equal, in 11 cases (steps on and off, the HCR-like case, measurements, automatic threshold with a lower limit, calibrated threshold, border cells dropped, no cells, a 2D image).
+- One full-size channel through the batch's own function, before and after (one worker, every step and QC file on, `.npz` on, label file; the condition w_b of 3.9):
+
+| | Time | Peak memory |
+|---|---|---|
+| Before (commit `f523522`) | 304.1 s | 5,242 MiB |
+| After | 300.5 s | 5,248 MiB |
+
+- Both runs: 37,126 spots, 271 clusters, 1,287 cells; the tables are identical byte for byte and the `.npz` arrays equal. Both lie within the spread of 3.9 (293.7 s, 5,268 MiB). One pair of runs, not repeated. Scripts and results are in `~/bigfish-testdata/benchmarks/phase4/`.
+- One existing test was tightened by the orchestrator: the test that a refused image is not worked on now also guards the filter step in `steps.py`.
+
+**Deviation from the spec:** the list of modules (spec 4.1) gains `steps.py` (decision 1 of 4.0).
+
+### 4.2 Starting a config (26 Nov 2026)
+
+Done by Sonnet 5.5 (high) in `config.py` and `io.py`, additions only, with 117 tests in two new files (`tests/test_new_config.py`, `tests/test_io_suggestions.py`). It ran alongside 4.1. The orchestrator read the changes and ran the settings and image-reading tests (474 pass); the whole suite is in 4.1.
+
+**Starting and changing a config** (`config.py`). Each function returns a new, checked config and leaves the one given unchanged; a bad value or a misspelt name gives the same message as in a settings file.
+
+| Function | Does |
+|---|---|
+| `new_config(axes, voxel_size_nm, channels, cell_results, microscope)` | A complete config from the preset choices |
+| `update_config(config, changes)` | Changes the values named, written like the settings file: `{"segmentation": {"cellpose": {"diameter": 60}}}` |
+| `update_channel(config, channel_index, changes)` | The same for one channel, found by its channel number |
+| `add_channel(config, channel)`, `remove_channel(config, channel_index)` | One more channel, or one fewer |
+
+- **Presets** (spec 5.2). Each channel names its assay type: `smFISH` (decomposition and clusters on) or `amplified` (both off); subpixel fitting and the measurements are off in both. `cell_results` switches segmentation on or off. Presets set switches only and are not written to the settings file. The `smFISH` preset equals the model defaults; a test checks that a preset differs from the defaults in those switches only.
+- An unknown assay type: "`channels[0].assay_type` must be one of `smFISH` or `amplified` (found `HCR`). Use `amplified` for amplified FISH such as HCR or RNAscope."
+- A channel that is not in the config: "Channel 5 is not in the settings; the settings hold channels 0 and 2."
+
+**Values suggested from an image** (`io.py`)
+
+- `suggest_image_settings(info)` takes the header of a TIFF file or of an OMERO image and gives the layout, the voxel sizes in the shape the config wants, the numbers of planes and channels, the pixel type, notes, and the reasons the image cannot be used. `describe_suggestion` writes it as a few lines of text.
+- When a file does not give its layout, every layout with its number of axes is offered with the planes and channels each would mean. For an OMERO image, `ZCYX` and `CZYX` are both offered, since the server does not store an order.
+- Different pixel sizes in x and y are a note, with the size left for the user to enter (spec 5.3); they do not refuse the image.
+- `numbered_images(images)` gives the numbered lines from which a user picks an image, counted from 0, for a folder or an OMERO list.
+
+**Choices the plan does not settle**
+
+- The assay type must be given for each channel; there is no silent default.
+- `update_channel` cannot change the assay type; the switches are changed by name, or the channel is removed and added again.
+- The suggestion reads the header only, so a colour image is found later by `io.check_image`.
+
+**Not verified:** OMERO on a real server (image information built by hand in the tests).
+
