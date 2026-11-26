@@ -2271,3 +2271,25 @@ The user supplied an image of cultured cells for the Cellpose 4 mask review (spe
 - Top-left corner at y = 640, x = 1344, 384 × 384 px, every plane (31), channels 0–2, so the exon channel keeps index 2 as in the tissue crop. It holds three to four cells, two of which touch, and the lower planes overlap, so that task 3.23 can be tested on it.
 - Saved with lossless (zlib) compression: 14.9 MB, against 27.4 MB without. Every plane is kept because the new setting needs the lower planes; 25 planes would have saved 3 MB. The package's reader gives the layout `ZCYX`, 65 nm pixels, a 200 nm Z-step and pixel values equal to the full image.
 - Settings: Cellpose on channel 1 (maximum projection, rolling ball at 200 px before Cellpose, as the defaults), spots in channel 2 with an automatic threshold, rolling ball at 5 px and the default cluster settings. The file loads with `load_config`. No test uses the crop yet; the tests of 3.23 will. The existing tests select the tissue crop by name, so they are unchanged.
+
+### 3.20 Reading images: fixes after the fourth review (26 Nov 2026)
+
+Done by Opus 5.5 (medium) in `io.py` and `detection.py`, commit `dfc2087`. Each finding was first reproduced by a test that failed on the code as it was. The orchestrator read the changes and ran the reading and detection tests (219 pass); the whole suite is in 3.22.
+
+- **Finding 29, axes given by the file.** Axes that a file's metadata gives must equal the layout of the run, whatever they are. The reviewer's `YXC` file read as `CYX` now fails: "`<file>`: the file's own information says its axes are stored in the order YXC, which does not match the layout CYX of this run (`image.axes` in the settings). Save the image with its axes in the order CYX." When the file's axes are one of the five layouts, the message still ends "or run it with the layout ZCYX".
+- How `tifffile` 2026.11.16 reports each kind of file, checked with real files:
+
+| File | Axes the file gives | Outcome |
+|---|---|---|
+| ImageJ hyperstack, T of length 1 | `ZCYX` (length-1 axes left out) | read as `ZCYX`; refused with another layout |
+| OME-TIFF, T and C of length 1 | `ZYX` | read as `ZYX`; refused with another layout |
+| Written by `tifffile` with axes `ZCYX` | `ZCYX` | read as `ZCYX`; refused with another layout |
+| Written by `tifffile` with axes `YXC` | `YXC` | refused with the new message |
+| Written by `tifffile` with axes `TCYX`, T of length 1 | `TCYX` (length-1 axis kept) | refused for its number of axes, as before |
+| Written by `tifffile` without axes, plain TIFF, or ImageJ with only the number of images | none (`tifffile` gives stand-in letters `Q` or `I`) | read with the layout of the run, as before |
+| Colour (RGB) file | – | refused as a colour image, as before |
+
+- **Finding 31, OMERO session ended.** The session counts as ended only when the server refuses the session key (`PermissionDeniedException`), or says the session was removed or has timed out (those errors on their own, or named in the server's "cannot create session" answer). Any other answer, such as "session service unavailable", is a connection problem: "the OMERO server at `<host>:<port>` could not rejoin the session (CannotCreateSessionException: session service unavailable)", so that image fails and the next one tries to rejoin. Messages for an OMERO error now give the server's own reason, not only the error's name.
+- What the installed OMERO library shows: a session key that the server no longer knows gives `PermissionDeniedException` (its command-line tool shows that reason for a session that cannot be attached); the server wraps other errors in a "cannot create session" answer with the error's name in it. **Not verified:** what the lab server really sends for an expired key, and whether a removed session arrives with its name in that answer. No server was contacted.
+- **Finding 33, stored bit depth.** A TIFF file must store 8, 12 or 16 bits per pixel; packed 4-, 10- and 14-bit files are refused with the usual message ("the pixel type is 10-bit"). This reverses the note in 3.13 that packed 10- and 14-bit files were accepted. 12-bit values in a 16-bit file are a 16-bit file. `check` and the runner see the depth in the image header.
+- **Finding 39.** The docstrings in `detection.py` say what gives "no automatic threshold": a curve of fewer than two points, or one for which big-fish cannot give a value. A test records that a straight falling line still gets big-fish's value.
