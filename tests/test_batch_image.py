@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 import tifffile
 
-from bigfish_pypeline import batch, detection, io, measurements, outputs
+from bigfish_pypeline import batch, detection, io, measurements, outputs, steps
 from bigfish_pypeline.config import load_config, parse_config
 from bigfish_pypeline.decomposition import NO_SPOTS_WARNING
 from conftest import CROP_NAME, FISH_CHANNEL, assert_clusters_as_v1
@@ -553,6 +553,7 @@ def test_other_pixel_types_refused_before_any_work(tmp_path, monkeypatch, dtype)
 
     monkeypatch.setattr(io, "read_channel", no_work)
     monkeypatch.setattr(batch, "filter_channel", no_work)
+    monkeypatch.setattr(steps, "filter_channel", no_work)
     config = synthetic_config(channels=[{"index": 0}, {"index": 1}])
     summary = batch.process_image(config, "other", path, tmp_path / "run")
     assert [row["status"] for row in summary["rows"]] == ["failed", "failed"]

@@ -33,20 +33,16 @@ import psutil
 from bigfish_pypeline import __version__, io
 from bigfish_pypeline import outputs
 from bigfish_pypeline import segmentation
-from bigfish_pypeline.cells import assign_cells, border_labels
-from bigfish_pypeline.clusters import detect_clusters
-from bigfish_pypeline.decomposition import NO_SPOT_MODEL_WARNING, decompose_dense_regions, get_seed
+from bigfish_pypeline import steps
+from bigfish_pypeline.cells import border_labels
 from bigfish_pypeline.detection import (
     calibrate_threshold,
     detect_spots,
-    exceeds_bailout,
     filter_channel,
-    get_spot_radius_nm,
     get_spot_radius_px,
 )
-from bigfish_pypeline.measurements import measure_spots
 from bigfish_pypeline.segmentation import LabelFileError, read_label_file_contents
-from bigfish_pypeline.subpixel import fit_subpixel
+from bigfish_pypeline.steps import ChannelError, get_ndim, get_voxel_size, run_spot_columns
 
 # Problems that stop the whole run rather than one image or channel.
 PASS_THROUGH = (io.OmeroSessionEnded, KeyboardInterrupt, MemoryError)
@@ -84,10 +80,6 @@ def hide_mean_intensity_warning():
     warnings.filterwarnings("ignore", message=MEAN_INTENSITY_WARNING, category=FutureWarning)
 
 
-class ChannelError(Exception):
-    """A channel that cannot be processed with the settings given, with a plain one-line reason."""
-
-
 # OMERO connection of this process, joined once and reused for later images.
 _omero = {"conn": None, "session": None}
 
@@ -95,30 +87,6 @@ _omero = {"conn": None, "session": None}
 # ---------------------------------------------------------------------------
 # Small helpers shared with the batch runner
 # ---------------------------------------------------------------------------
-
-
-def get_ndim(config):
-    """3 for 3D layouts (with Z), 2 for 2D layouts."""
-    return 3 if "Z" in config.image.axes else 2
-
-
-def get_voxel_size(config):
-    """Voxel size in nm from the config: (z, yx, yx) in 3D, (yx, yx) in 2D."""
-    voxel_size_yx = config.image.voxel_size_nm.yx
-    if get_ndim(config) == 3:
-        return (config.image.voxel_size_nm.z, voxel_size_yx, voxel_size_yx)
-    return (voxel_size_yx, voxel_size_yx)
-
-
-def run_spot_columns(config):
-    """Columns of every spots table of the run: subpixel, SNR and intensity columns
-    are present when any channel has them switched on."""
-    return outputs.spot_columns(
-        get_ndim(config),
-        subpixel=any(channel.subpixel.enabled for channel in config.channels),
-        snr=any(channel.measurements.snr for channel in config.channels),
-        intensity=any(channel.measurements.intensity for channel in config.channels),
-    )
 
 
 def run_has_clusters(config):
@@ -291,26 +259,9 @@ def _hide_session_key(text, key):
 # ---------------------------------------------------------------------------
 
 
-def _threshold_settings(config, channel):
-    """(threshold value, lower limit) for detect_spots; raises ChannelError when a
-    calibrated value is missing."""
-    mode = channel.threshold.mode
-    if mode == "manual":
-        return channel.threshold.value, None
-    if mode == "auto":
-        return None, channel.threshold.lower_limit
-    thresholds = config.resolved.thresholds if config.resolved is not None else {}
-    if channel.index not in thresholds:
-        raise ChannelError(
-            f"no calibrated threshold for channel {channel.index}: the calibration has not "
-            "been run or gave no value"
-        )
-    return thresholds[channel.index], None
-
-
 def _process_channel(config, channel, image_name, read_channel, masks, spot_columns, found):
     """
-    Steps 1–8 and 10 for one channel.
+    Steps 1–8 and 10 for one channel, through the functions of `steps`.
 
     found: a dict filled in as the steps go, so that the threshold and the
     number of detected spots are known even if a later step fails.
@@ -324,16 +275,14 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
     projections, made once, so that no second copy of the 3D channel is kept.
     """
     ndim = get_ndim(config)
-    voxel_size = get_voxel_size(config)
-    voxel_size_yx = voxel_size[-1]
-    voxel_size_z = voxel_size[0] if ndim == 3 else None
-    microscope = config.microscope
+    voxel_size_yx = get_voxel_size(config)[-1]
     index = channel.index
     warnings = []
     qc_settings = config.outputs.qc
     material = {} if channel_qc_wanted(config) else None
 
-    threshold, lower_limit = _threshold_settings(config, channel)
+    # a missing calibrated threshold stops the channel before it is read
+    steps.threshold_settings(config, channel)
 
     # step 1: read the channel
     image = read_channel(index)
@@ -342,30 +291,20 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
         material["picture"] = _projection(image)
 
     # step 2: spot radius
-    spot_radius_px = get_spot_radius_px(
-        voxel_size, channel.ex, channel.em, microscope.NA, microscope.RI, microscope.type
-    )
-    spot_radius_nm = get_spot_radius_nm(
-        voxel_size, channel.ex, channel.em, microscope.NA, microscope.RI, microscope.type
-    )
+    radius = steps.spot_radius(config, channel)
+    spot_radius_px = radius["spot_radius_px"]
+    spot_radius_nm = radius["spot_radius_nm"]
 
     # step 3: background and LoG filter
-    filtered = filter_channel(
-        image, spot_radius_px,
-        bg_radius=channel.background.radius_px,
-        bg_method=channel.background.method,
-    )
+    filtered = steps.filter_image(config, channel, image, spot_radius_px)
     del image
     rna = filtered["rna"]
     rna_log = filtered["rna_log"]
     del filtered
 
     # step 4: detection
-    detected = detect_spots(
-        rna_log, spot_radius_px,
-        threshold_mode=channel.threshold.mode,
-        threshold=threshold,
-        lower_limit=lower_limit,
+    detected = steps.detect(
+        config, channel, rna_log, spot_radius_px,
         elbow=material is not None and qc_settings.elbow_plot,
     )
     spots = detected["spots"]
@@ -391,102 +330,52 @@ def _process_channel(config, channel, image_name, read_channel, masks, spot_colu
     }
 
     # bailout
-    if channel.bailout.enabled and exceeds_bailout(len(spots), channel.bailout.max_spots):
+    reason = steps.bailout_reason(config, channel, spots)
+    if reason is not None:
         result["status"] = "skipped"
-        result["reason"] = (
-            f"bailout: {len(spots)} spots detected, above the limit of "
-            f"{channel.bailout.max_spots}"
-        )
+        result["reason"] = reason
         return result
 
     # step 5: decomposition of dense regions
-    if channel.decomposition.enabled:
-        decomposed = decompose_dense_regions(
-            rna, spots, voxel_size, spot_radius_nm,
-            alpha=channel.decomposition.alpha,
-            beta=channel.decomposition.beta,
-            seed=get_seed(config.run.seed, image_name, index),
-        )
-        spots_post_decomposition = decomposed["spots_post_decomposition"]
-        if decomposed["warning"]:
-            warnings.append(decomposed["warning"])
-        if material is not None and NO_SPOT_MODEL_WARNING not in (decomposed["warning"] or ""):
-            # None when decomposition was skipped for want of spots or of a reference spot
-            material["reference_spot"] = decomposed["reference_spot"]
-        del decomposed
-    else:
-        spots_post_decomposition = spots
+    decomposed = steps.decompose(config, channel, image_name, rna, spots, spot_radius_nm)
+    spots_post_decomposition = decomposed["spots_post_decomposition"]
+    if decomposed["warning"]:
+        warnings.append(decomposed["warning"])
+    if material is not None and decomposed["reference_spot_for_qc"]:
+        # None when decomposition was skipped for want of spots or of a reference spot
+        material["reference_spot"] = decomposed["reference_spot"]
+    del decomposed
 
     # step 6: subpixel fitting
-    spots_subpixel = None
-    if channel.subpixel.enabled:
-        spots_subpixel = fit_subpixel(rna, spots_post_decomposition, voxel_size, spot_radius_nm)
+    fitted = steps.fit_subpixel(config, channel, rna, spots_post_decomposition, spot_radius_nm)
 
     # step 7: clusters, on the subpixel positions when there are any
-    clusters = None
-    spots_post_clustering = None
-    cluster_id = np.full(len(spots_post_decomposition), -1, dtype=np.int64)
-    if channel.clusters.enabled:
-        positions = spots_subpixel if spots_subpixel is not None else spots_post_decomposition
-        spots_post_clustering, clusters = detect_clusters(
-            positions, voxel_size,
-            radius=channel.clusters.radius_nm,
-            nb_min_spots=channel.clusters.min_spots,
-        )
-        cluster_id = spots_post_clustering[:, ndim].astype(np.int64)
+    clustered = steps.find_clusters(config, channel, spots_post_decomposition, fitted["spots_subpixel"])
 
     # step 8: measurements, at the pixel positions
-    spot_measurements = {}
-    if channel.measurements.snr or channel.measurements.intensity:
-        spot_measurements = measure_spots(
-            rna, rna_log, spots_post_decomposition, spot_radius_px,
-            snr=channel.measurements.snr,
-            intensity=channel.measurements.intensity,
-        )
+    measured = steps.measure(config, channel, rna, rna_log, spots_post_decomposition, spot_radius_px)
     if material is not None and qc_settings.detection:
         # the detection plot is drawn on the channel after background subtraction, as in v1
         material["detection_picture"] = _projection(rna)
     del rna, rna_log
 
     # step 10: cell assignment, at the pixel positions
-    spot_cell_id = None
-    cluster_cell_id = None
+    assigned = steps.assign_to_cells(config, channel, masks, spots_post_decomposition, clustered)
     if masks is not None:
-        spots_with_cluster = np.column_stack([spots_post_decomposition, cluster_id])
-        spot_cell_id, cluster_cell_id, cells = assign_cells(
-            masks, spots_with_cluster, ndim, voxel_size_yx,
-            clusters=clusters,
-            drop_border_cells=config.segmentation.drop_border_cells,
-        )
-        if clusters is None:
-            cluster_cell_id = None
-        result["cells"] = outputs.make_cells_table(image_name, index, channel.name, cells)
-        result["n_cells"] = len(cells)
+        result["n_cells"] = len(assigned["cells"])
 
-    result["spots"] = outputs.make_spots_table(
-        image_name, index, channel.name, spots_post_decomposition, ndim,
-        voxel_size_yx, voxel_size_z,
-        cluster_id=cluster_id,
-        cell_id=spot_cell_id,
-        subpixel=spots_subpixel,
-        snr=spot_measurements.get("snr"),
-        log_intensity=spot_measurements.get("log_intensity"),
-        columns=spot_columns,
+    tables = steps.make_tables(
+        config, channel, image_name, spots_post_decomposition, fitted, clustered, measured, assigned,
+        spot_columns=spot_columns,
     )
-    result["clusters"] = outputs.make_clusters_table(
-        image_name, index, channel.name, clusters, ndim, voxel_size_yx, voxel_size_z,
-        cell_id=cluster_cell_id,
-    )
-    if config.outputs.npz:
-        # the arrays and names of the v1 scripts: the general script with
-        # clusters, the HCRv3 script without
-        if channel.clusters.enabled:
-            result["arrays"] = {"spots_post_clustering": spots_post_clustering, "clusters": clusters}
-        else:
-            final_spots = spots_subpixel if spots_subpixel is not None else spots_post_decomposition
-            result["arrays"] = {"spots": final_spots}
+    result["cells"] = tables["cells"]
+    result["spots"] = tables["spots"]
+    result["clusters"] = tables["clusters"]
+    if tables["arrays"] is not None:
+        result["arrays"] = tables["arrays"]
+    clusters = clustered["clusters"]
     if material is not None:
-        material["spots"] = spots_subpixel if spots_subpixel is not None else spots_post_decomposition
+        material["spots"] = steps.final_positions(spots_post_decomposition, fitted)
         material["clusters"] = None if clusters is None else clusters[:, :ndim]
         material["spot_radius_px"] = spot_radius_px
         material["cluster_radius_px"] = (
